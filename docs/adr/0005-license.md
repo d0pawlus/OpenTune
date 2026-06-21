@@ -1,6 +1,6 @@
-# 0005 — Open-source license (recommend GPL-3.0)
+# 0005 — Open-source license (GPL-3.0-or-later)
 
-- **Status:** Proposed (awaiting project owner's decision)
+- **Status:** Accepted
 - **Date:** 2026-06-21
 
 ## Context
@@ -51,7 +51,8 @@ for existing. *Final choice rests with the project owner.*
 
 ## Action required
 
-- [ ] Project owner selects a license.
-- [ ] Add the corresponding `LICENSE` file at the repo root.
-- [ ] Update `README.md` and add `SPDX-License-Identifier` headers in source files
-      once code lands.
+- [x] Project owner selects a license — **GPL-3.0-or-later**.
+- [x] Add the corresponding `LICENSE` file at the repo root (full GPL-3.0 text).
+- [x] Update `README.md`.
+- [ ] Add `SPDX-License-Identifier: GPL-3.0-or-later` headers in source files once
+      code lands (M0).

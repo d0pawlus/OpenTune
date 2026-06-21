@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { useEffect, useState } from "react";
+import { commands, events, type AppInfo } from "./ipc/bindings";
+import { useConnectionStore } from "./stores/connection";
+import { t, type Locale } from "./i18n";
+
+function App() {
+  const [info, setInfo] = useState<AppInfo | null>(null);
+  const lastSeq = useConnectionStore((s) => s.lastSeq);
+  const [locale, setLocale] = useState<Locale>("en");
+  const [theme, setTheme] = useState<"default" | "high-contrast">("default");
+
+  useEffect(() => {
+    commands.appInfo().then(setInfo);
+  }, []);
+
+  useEffect(() => {
+    const unlisten = events.heartbeat.listen((e) =>
+      useConnectionStore.getState().setSeq(e.payload.seq),
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme =
+      theme === "high-contrast" ? "high-contrast" : "";
+  }, [theme]);
+
+  const toggleLocale = () => setLocale((prev) => (prev === "en" ? "pl" : "en"));
+  const toggleTheme = () =>
+    setTheme((prev) =>
+      prev === "high-contrast" ? "default" : "high-contrast",
+    );
+
+  return (
+    <main>
+      <h1>{t("app.title", locale)}</h1>
+      {info ? `${info.name} v${info.version}` : "…"}
+      <p>heartbeat: {lastSeq ?? "—"}</p>
+      <p>{t("connection.disconnected", locale)}</p>
+      <button onClick={toggleLocale}>
+        {locale === "en" ? "Switch to Polish" : "Przełącz na angielski"}
+      </button>
+      <button onClick={toggleTheme}>
+        {theme === "high-contrast" ? "Default theme" : "High-contrast theme"}
+      </button>
+    </main>
+  );
+}
+
+export default App;

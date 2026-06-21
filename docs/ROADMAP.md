@@ -27,20 +27,25 @@ Legend: ⬜ not started · 🟦 in progress · ✅ done
 
 ---
 
-## M0 — Foundations ⬜
+## M0 — Foundations ✅
 
 Goal: a buildable, runnable, empty-but-real Tauri app and the dev infrastructure.
 
-- ⬜ Tauri v2 app skeleton (`src/` + `src-tauri/`) that launches on macOS/Win/Linux.
-- ⬜ Rust workspace with empty `ini`, `model`, `protocol`, `transport`,
+- ✅ Tauri v2 app skeleton (`src/` + `src-tauri/`) that builds on macOS/Win/Linux.
+- ✅ Rust workspace with empty `ini`, `model`, `protocol`, `transport`,
   `realtime`, `datalog`, `project`, `simulator` crates.
-- ⬜ Frontend skeleton (React + TS + Vite), routing, theming, i18n scaffolding.
-- ⬜ Typed IPC plumbing (one demo command + one demo event) with generated TS types.
-- ⬜ CI: build + test on all three OSes; lint/format (clippy, rustfmt, eslint,
-  prettier).
-- ⬜ `CONTRIBUTING.md` dev setup verified end-to-end.
+- ✅ Frontend skeleton (React + TS + Vite), theming, i18n (PL/EN) scaffolding.
+  (Routing deferred — one screen; added when a second screen exists.)
+- ✅ Typed IPC plumbing (`app_info` command + `Heartbeat` event) with TS types
+  **generated** from Rust via `tauri-specta` (the no-hand-duplication guardrail).
+- 🟦 CI: build + test + lint/format (clippy, rustfmt, eslint, prettier) on
+  **macOS + Linux**. `windows-latest` deferred (CI-only CRLF/Prettier line-ending
+  issue, not an app problem; re-enable with `.gitattributes eol=lf`).
+- ✅ `CONTRIBUTING.md` dev setup verified end-to-end.
 
-**Demo:** the app opens to an empty shell on all platforms; CI is green.
+**Demo:** the app builds to an empty shell; the full lint/test/build gate suite is
+green locally and in CI (macOS + Linux). Implemented via the
+[M0 plan](superpowers/plans/2026-06-21-m0-foundations.md).
 
 ## M1 — Connect & identify ⬜
 

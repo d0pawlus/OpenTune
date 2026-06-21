@@ -33,7 +33,7 @@ To supersede an old decision, write a new ADR and mark the old one
 | [0002](0002-data-driven-ini.md) | Data-driven, universal core based on firmware INI | Accepted |
 | [0003](0003-frontend-stack.md) | React + TypeScript + Vite for the frontend | Accepted |
 | [0004](0004-ecu-simulator.md) | A first-class ECU simulator | Accepted |
-| [0005](0005-license.md) | Open-source license (recommend GPL-3.0) | Proposed |
+| [0005](0005-license.md) | Open-source license (GPL-3.0-or-later) | Accepted |
 | [0006](0006-reuse-existing-parsers.md) | Port/reuse existing parsers rather than re-deriving them | Proposed |
 | [0007](0007-positioning-vs-libretune.md) | Positioning relative to LibreTune | Proposed |
 | [0008](0008-ai-integration.md) | AI integration on a deterministic core | Accepted |

@@ -38,3 +38,5 @@ Thumbs.db
 # --- Local tuning artifacts (do not commit users' tunes/logs by default) ---
 *.msq
 *.mlg
+.superpowers/
+.claude/

@@ -1,0 +1,3 @@
+src/ipc/bindings.ts
+dist/
+node_modules/
