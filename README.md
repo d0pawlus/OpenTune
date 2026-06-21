@@ -1,0 +1,113 @@
+# OpenTune
+
+> **Working title — name TBD.** A modern, open-source, cross-platform tuning
+> application for engine management ECUs. The goal is to be a first-class
+> replacement for TunerStudio, with native support for Apple Silicon macOS,
+> Windows, and Linux.
+
+---
+
+## Why this project exists
+
+[TunerStudio](https://www.tunerstudio.com/) is the de-facto standard tuning
+application for a large family of open and semi-open ECUs (Speeduino, MegaSquirt,
+rusEFI, and many others). It is, however:
+
+- **Aging and effectively closed.** It is a Java/Swing application whose future
+  on modern macOS (Apple Silicon, tightened notarization/Gatekeeper rules) is
+  uncertain, and it is not open source.
+- **Not optimized for modern hardware.** Real-time gauges, large datalogs, and
+  3D table rendering are heavier than they need to be.
+- **Hard to extend by the community.** There is no open contribution model.
+
+**OpenTune** aims to fix all three: a fast, modern, genuinely open-source tool
+that the community can own and evolve.
+
+## Vision & principles
+
+1. **Universal by design.** Almost everything ECU-specific is *data-driven* from
+   the firmware's `.ini` definition file (the same format TunerStudio uses). The
+   application core is generic — supporting a new ECU means supporting its INI,
+   not writing new code. This is how we target Speeduino, MegaSquirt, rusEFI and
+   "many others" *at once*.
+2. **Fast and lean.** Tauri (Rust backend + web frontend) gives us native
+   performance, tiny binaries, and a serial/real-time data path written in Rust.
+3. **Easy to develop.** A documented, modular architecture, a built-in **ECU
+   simulator** so contributors can work without physical hardware, and a
+   mainstream frontend stack (React + TypeScript).
+4. **Truly open source.** Open license, open roadmap, open contribution model.
+5. **Interoperable.** Read and write the file formats people already have:
+   `.msq` tunes, `.mlg`/CSV datalogs, and standard `.ini` definitions.
+
+## Target platforms
+
+| Platform | Status (planned) |
+| --- | --- |
+| macOS (Apple Silicon, arm64) | First-class target |
+| macOS (Intel, x64) | Supported |
+| Windows 10/11 (x64) | Supported |
+| Linux (x64, arm64) | Supported |
+
+## Supported ECUs (goal)
+
+Because support is driven by the firmware INI, the goal is to work with any ECU
+that ships a TunerStudio-compatible `.ini` definition, including:
+
+- **Speeduino**
+- **rusEFI**
+- **MegaSquirt** (MS1/MS2/MS3 family)
+- and other MS-protocol-compatible controllers.
+
+See [`docs/protocol.md`](docs/protocol.md) and
+[`docs/ini-format.md`](docs/ini-format.md) for how this works.
+
+## Project status
+
+🚧 **Pre-alpha — architecture & design phase.** There is no application code yet.
+This repository currently contains the architecture and design documentation that
+will guide implementation.
+
+Start here:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the system architecture.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and what we build, in order.
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records (the *why* behind key
+  choices).
+- [`docs/ini-format.md`](docs/ini-format.md) — the firmware definition format.
+- [`docs/protocol.md`](docs/protocol.md) — the ECU communication protocol.
+- [`docs/glossary.md`](docs/glossary.md) — domain terms for newcomers.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to get involved.
+
+## Planned high-level architecture
+
+```mermaid
+flowchart LR
+    ECU["ECU\n(Speeduino / MS / rusEFI)"] <-->|USB serial / CAN / TCP| Transport
+    subgraph Backend["Rust backend (src-tauri)"]
+        Transport[Transport layer] --> Protocol[Protocol layer]
+        INI[INI definition parser] --> Model[Tune & channel model]
+        Protocol --> Model
+        Model --> RT[Real-time engine]
+        RT --> Logger[Datalogger]
+        Model --> Store[(Project / tune files)]
+    end
+    subgraph Frontend["React + TS frontend (src)"]
+        Dialogs[Data-driven dialog engine]
+        Tables[2D/3D table editors]
+        Dash[Gauge dashboard]
+        LogView[Datalog viewer & analysis]
+    end
+    Backend <-->|Tauri commands + events| Frontend
+```
+
+## License
+
+To be finalized — see [`docs/adr/0005-license.md`](docs/adr/0005-license.md).
+The recommendation is **GPL-3.0**, matching the ethos of the open ECU ecosystem
+(Speeduino and rusEFI firmware are GPL).
+
+## Acknowledgements
+
+This project stands on the shoulders of the open ECU community — Speeduino,
+rusEFI, MegaSquirt/MShift, MegaTunix, and the documented TunerStudio INI format.
+We aim to be a good citizen of that ecosystem and remain interoperable with it.
