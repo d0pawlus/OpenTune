@@ -192,7 +192,14 @@ an external agent over MCP.
 - Plugin API for custom gauges, math channels, and analysis tools.
 - Scripting for automated tuning workflows.
 - Cloud-optional tune/log sharing (privacy-first, never required).
-- Mobile companion (the architecture should not preclude it).
+- **Mobile app (Android/iOS) — part of the OpenTune ecosystem.** Staged like the
+  AI authority levels: **live parameter view first** (read-only realtime
+  dashboard), **tune editing later**. Open architectural question for when it's
+  scheduled: does mobile talk *directly* to the ECU (reusing the decoupled Rust
+  core crates — `ini`/`model`/`protocol`/`transport`/`analysis` — compiled for
+  mobile) or act as a *remote view* of a running desktop session? The decoupled
+  core (see [ARCHITECTURE.md §5](ARCHITECTURE.md#5-backend-rust-modules)) is what
+  keeps both options open.
 
 ---
 

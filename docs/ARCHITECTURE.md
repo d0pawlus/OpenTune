@@ -42,7 +42,10 @@ document focuses on the overall structure and the interaction between components
 ### Non-goals (for now)
 
 - Not aiming to be byte-for-byte bug-compatible with every TunerStudio quirk.
-- Not (initially) a mobile app, though the architecture should not preclude it.
+- Not (initially) a mobile app, though the architecture should not preclude it. A
+  mobile (Android/iOS) companion is a planned ecosystem direction — live view
+  first, tune editing later; the decoupled core crates (§5) are what keep that
+  open. See [ROADMAP.md](ROADMAP.md) "Beyond 1.0".
 - Not a firmware development tool; we *tune and configure* ECUs, we don't build
   their firmware.
 - No proprietary/encrypted INI handling (some commercial firmwares ship locked
