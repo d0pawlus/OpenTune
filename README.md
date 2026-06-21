@@ -112,9 +112,11 @@ flowchart LR
 
 ## License
 
-To be finalized — see [`docs/adr/0005-license.md`](docs/adr/0005-license.md).
-The recommendation is **GPL-3.0**, matching the ethos of the open ECU ecosystem
-(Speeduino and rusEFI firmware are GPL).
+**GPL-3.0-or-later** — see [`LICENSE`](LICENSE) and
+[`docs/adr/0005-license.md`](docs/adr/0005-license.md). This matches the ethos of
+the open ECU ecosystem (Speeduino and rusEFI firmware are GPL) and protects the
+work from a closed-source fork. Source files will carry
+`SPDX-License-Identifier: GPL-3.0-or-later` headers once code lands.
 
 ## Acknowledgements
 
