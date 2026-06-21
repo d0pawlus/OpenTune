@@ -2381,6 +2381,12 @@ version = "0.0.0"
 [[package]]
 name = "opentune-simulator"
 version = "0.0.0"
+dependencies = [
+ "opentune-ini",
+ "opentune-protocol",
+ "opentune-transport",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "opentune-transport"
