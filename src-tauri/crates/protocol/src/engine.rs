@@ -11,14 +11,12 @@
 //!
 //! # MS-envelope 1.0 (CRC protocol)
 //!
-//! Command frame sent to ECU:
-//!   `[0x00, payload_len_u8, ...payload...]`
-//!
-//! Response frame from ECU:
+//! Both commands **and** responses use the same symmetric frame:
 //!   `[len_hi, len_lo, ...payload..., crc_b3, crc_b2, crc_b1, crc_b0]`
 //!
 //! The 2-byte big-endian length covers payload bytes only. The 4-byte CRC32
 //! (ISO-3309, same as Ethernet/zlib) covers the payload bytes only.
+//! Source: Speeduino `comms.cpp` / rusEFI `tunerstudio.cpp` (ADR-0006).
 
 use crate::{EcuIdentity, Protocol, ProtocolError, Result};
 use opentune_ini::{CommsSettings, EnvelopeFormat};
@@ -40,6 +38,11 @@ impl<T: Transport> MsProtocol<T> {
     /// protocol operation is called.
     pub fn new(comms: CommsSettings, transport: T) -> Self {
         Self { comms, transport }
+    }
+
+    /// Borrow the underlying transport (useful for test introspection).
+    pub fn transport_ref(&self) -> &T {
+        &self.transport
     }
 
     // ── Dispatch ────────────────────────────────────────────────────────────
@@ -88,12 +91,20 @@ impl<T: Transport> MsProtocol<T> {
         self.envelope_read_string()
     }
 
-    /// Write `[0x00, len, ...payload...]` frame to the transport.
+    /// Write a symmetric msEnvelope_1.0 command frame:
+    /// `[len_hi, len_lo, ...payload..., crc_b3, crc_b2, crc_b1, crc_b0]`
+    ///
+    /// Both command and response use the same framing format (symmetric). The
+    /// 2-byte big-endian length covers payload bytes only; the 4-byte CRC32
+    /// covers the payload bytes only. Ported from Speeduino `comms.cpp` and
+    /// rusEFI `tunerstudio.cpp` (ADR-0006).
     fn envelope_write(&mut self, payload: &[u8]) -> Result<()> {
-        let mut frame = Vec::with_capacity(2 + payload.len());
-        frame.push(0x00); // envelope header byte
-        frame.push(payload.len() as u8);
+        let len = payload.len() as u16;
+        let crc = crc32_of(payload);
+        let mut frame = Vec::with_capacity(2 + payload.len() + 4);
+        frame.extend_from_slice(&len.to_be_bytes());
         frame.extend_from_slice(payload);
+        frame.extend_from_slice(&crc.to_be_bytes());
         self.transport.write(&frame)?;
         Ok(())
     }
@@ -135,16 +146,24 @@ impl<T: Transport> Protocol for MsProtocol<T> {
     }
 
     fn signature(&mut self) -> Result<String> {
-        let cmd = self.comms.query_command.as_bytes().first().copied().ok_or_else(|| {
-            ProtocolError::MalformedResponse("queryCommand is empty".to_string())
-        })?;
+        let cmd = self
+            .comms
+            .query_command
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or_else(|| ProtocolError::MalformedResponse("queryCommand is empty".to_string()))?;
         self.send_query(cmd)
     }
 
     fn version(&mut self) -> Result<String> {
-        let cmd = self.comms.version_info.as_bytes().first().copied().ok_or_else(|| {
-            ProtocolError::MalformedResponse("versionInfo is empty".to_string())
-        })?;
+        let cmd = self
+            .comms
+            .version_info
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or_else(|| ProtocolError::MalformedResponse("versionInfo is empty".to_string()))?;
         self.send_query(cmd)
     }
 
@@ -155,9 +174,15 @@ impl<T: Transport> Protocol for MsProtocol<T> {
     /// channel layout. The remainder of the response is discarded because M1
     /// only needs the counter; M3's realtime engine will use the full frame.
     fn read_secl(&mut self) -> Result<u8> {
-        let cmd = self.comms.och_get_command.as_bytes().first().copied().ok_or_else(|| {
-            ProtocolError::MalformedResponse("ochGetCommand is empty".to_string())
-        })?;
+        let cmd = self
+            .comms
+            .och_get_command
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                ProtocolError::MalformedResponse("ochGetCommand is empty".to_string())
+            })?;
         self.transport.flush()?;
         match self.comms.envelope {
             EnvelopeFormat::Plain => {

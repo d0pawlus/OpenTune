@@ -128,8 +128,29 @@ fn plain_signature_sends_q_and_returns_text() {
 
     let result = proto.signature().unwrap();
     assert_eq!(result, sig);
+    // Plain protocol: command is a single bare ASCII byte — 'Q' (0x51).
+    // Ported from Speeduino comms.cpp (ADR-0006).
+    assert_eq!(
+        proto.transport_ref().sent,
+        &[b'Q'],
+        "plain query must send exactly one byte: 'Q'"
+    );
 }
 
+#[test]
+fn plain_version_sends_s_byte() {
+    // Confirms the 'S' (0x53) command byte for versionInfo in plain protocol.
+    // Source: Speeduino comms.cpp / rusEFI tunerstudio.cpp (ADR-0006).
+    let comms = plain_comms("speeduino 202504-dev");
+    let transport = ScriptedTransport::with_response(plain_response("Speeduino 2025.04"));
+    let mut proto = MsProtocol::new(comms, transport);
+    proto.version().unwrap();
+    assert_eq!(
+        proto.transport_ref().sent,
+        &[b'S'],
+        "plain version query must send exactly one byte: 'S'"
+    );
+}
 
 // ── Plain protocol: version query ──────────────────────────────────────────
 
@@ -193,6 +214,57 @@ fn plain_read_secl_returns_first_byte() {
 
 // ── MS-envelope 1.0 (CRC) protocol ────────────────────────────────────────
 
+/// Build the expected msEnvelope_1.0 command frame for a single-byte command.
+///
+/// Both commands and responses use the symmetric frame:
+///   `[len_hi, len_lo, payload..., crc_b3, crc_b2, crc_b1, crc_b0]`
+/// Source: Speeduino `comms.cpp` / rusEFI `tunerstudio.cpp` (ADR-0006).
+fn envelope_command(cmd: u8) -> Vec<u8> {
+    let payload = [cmd];
+    let len = payload.len() as u16;
+    let crc = crc32_of(&payload);
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&len.to_be_bytes());
+    frame.extend_from_slice(&payload);
+    frame.extend_from_slice(&crc.to_be_bytes());
+    frame
+}
+
+#[test]
+fn envelope_signature_command_frame_is_correct() {
+    // Confirms msEnvelope_1.0 command framing: [len_hi, len_lo, payload, crc32(4B)].
+    // This is symmetric with the response frame — NOT the legacy [0x00, len, payload].
+    // Source: Speeduino comms.cpp, rusEFI tunerstudio.cpp (ADR-0006).
+    let sig = "speeduino 202504-dev";
+    let comms = envelope_comms(sig);
+    let transport = ScriptedTransport::with_response(envelope_response(sig));
+    let mut proto = MsProtocol::new(comms, transport);
+    proto.signature().unwrap();
+    let expected = envelope_command(b'Q');
+    assert_eq!(
+        proto.transport_ref().sent,
+        expected,
+        "msEnvelope_1.0 command must be [len_hi, len_lo, 'Q', crc32(4B)]"
+    );
+}
+
+#[test]
+fn envelope_version_command_frame_is_correct() {
+    // Confirms 'S' command is framed correctly in msEnvelope_1.0:
+    // [len_hi, len_lo, 'S', crc32(4B)] — symmetric with response framing.
+    // Source: Speeduino comms.cpp, rusEFI tunerstudio.cpp (ADR-0006).
+    let comms = envelope_comms("speeduino 202504-dev");
+    let transport = ScriptedTransport::with_response(envelope_response("Speeduino 2025.04"));
+    let mut proto = MsProtocol::new(comms, transport);
+    proto.version().unwrap();
+    let expected = envelope_command(b'S');
+    assert_eq!(
+        proto.transport_ref().sent,
+        expected,
+        "msEnvelope_1.0 command must be [len_hi, len_lo, 'S', crc32(4B)]"
+    );
+}
+
 #[test]
 fn envelope_signature_returns_text() {
     let sig = "speeduino 202504-dev";
@@ -237,7 +309,10 @@ fn envelope_crc_mismatch_returns_error() {
     let transport = ScriptedTransport::with_response(bad);
     let mut proto = MsProtocol::new(comms, transport);
     let err = proto.signature().unwrap_err();
-    assert!(matches!(err, opentune_protocol::ProtocolError::CrcMismatch { .. }));
+    assert!(matches!(
+        err,
+        opentune_protocol::ProtocolError::CrcMismatch { .. }
+    ));
 }
 
 #[test]
