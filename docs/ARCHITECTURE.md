@@ -153,6 +153,8 @@ src-tauri/
 │   ├── transport/    # Serial/TCP transports behind a trait
 │   ├── realtime/     # Polling loop, channel decoding, broadcasting
 │   ├── datalog/      # MLG/CSV readers & writers
+│   ├── analysis/     # Deterministic tuning/analysis: ve_analyze, virtual_dyno, …
+│   ├── ai/           # AI tool registry, permission policy, provider abstraction
 │   ├── project/      # .msq read/write, project save/load, settings
 │   └── simulator/    # Virtual ECU for dev/testing
 └── src/              # Tauri app: wires crates together, defines commands/events
@@ -234,6 +236,31 @@ A first-class `Transport`/`Protocol` implementation that emulates an ECU from a
 real INI (signature, pages, realtime channels with plausible, animated values),
 so contributors and CI can run the whole app without hardware. See §10.
 
+### 5.9 `analysis` — the deterministic tuning core
+
+Pure, side-effect-free, **deterministic** capabilities with explicit
+`(data + params) → result + justification` contracts: `ve_analyze`,
+`virtual_dyno`, `log_stats`, `detect_anomaly`. Same input → identical output; every
+result carries *why* (which log samples drove it, how many, what was filtered).
+Independent of AI and UI. **One engine, many consumers:** the manual AutoTune
+button, the AI layer, and future autonomy all call the same functions — there is
+exactly one implementation of each tuning operation.
+
+### 5.10 `ai` — the AI orchestration layer (built on `analysis`)
+
+The differentiator, designed to never touch the ECU or logs except through the
+deterministic tools in `analysis`. Three parts: a **tool registry** (each
+`analysis` capability exposed with a JSON schema; read-only vs. mutating tools), a
+**permission policy** (`advisory` default → `assisted` → `autonomous`; authority is
+configuration, not hardcoded), and a **provider abstraction** (`AiProvider` trait;
+BYOK cloud, off by default, opt-in — preserving offline-first/privacy-by-default;
+local models addable later). **Guardrails live in the tool layer, not the prompt**
+— mutating tools validate against INI limits, rate-limit, require a healthy
+connection, and audit every action, so the LLM has no path to bypass them. Exposed
+through two channels: the frontend **embedded assistant** (§6.5) and an **MCP
+server**. Full design:
+[AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
+
 ## 6. Frontend (React + TS) modules
 
 ```
@@ -246,6 +273,7 @@ src/
 ├── tables/         # 2D heatmap + 3D surface table editors
 ├── gauges/         # Gauge widgets + dashboard layout editor (canvas)
 ├── datalog/        # Log viewer, charts (uPlot), analysis tools
+├── assistant/      # Embedded AI assistant panel (consumes the `ai` layer)
 ├── components/     # Shared UI primitives
 └── lib/            # Utilities (formatting, math, color maps)
 ```
@@ -276,6 +304,14 @@ events. Layouts are user-editable and saved with the project.
 Time-series and scatter views over recorded logs (uPlot for speed), playback
 synced with the dashboard, and analysis tools (e.g., VE/auto-tune table
 suggestions from logged data).
+
+### 6.5 Embedded AI assistant
+
+A chat/assistant panel that drives the backend `ai` layer (§5.10): the user asks
+for analysis or suggestions; the model calls deterministic tools and explains the
+result. At the default `advisory` level it can propose changes but not write them —
+the user applies. Designed for live in-car tuning; the same backend tool registry
+also backs the MCP server for external agents. Off by default (opt-in, BYOK).
 
 ## 7. The IPC contract
 

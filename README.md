@@ -38,6 +38,13 @@ that the community can own and evolve.
 4. **Truly open source.** Open license, open roadmap, open contribution model.
 5. **Interoperable.** Read and write the file formats people already have:
    `.msq` tunes, `.mlg`/CSV datalogs, and standard `.ini` definitions.
+6. **AI-assisted, deterministically.** The differentiator: an optional AI assistant
+   that analyzes live data and logs and helps tune — built on a **deterministic,
+   auditable core** (the AI orchestrates and explains; the numbers come from
+   reproducible tooling). Off by default, opt-in (BYOK), designed toward future
+   autonomous tuning. See
+   [the AI design](docs/superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md)
+   and [ADR-0008](docs/adr/0008-ai-integration.md).
 
 ## Target platforms
 
@@ -71,6 +78,9 @@ Start here:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the system architecture.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and what we build, in order.
+- [`docs/research/market-and-user-research.md`](docs/research/market-and-user-research.md)
+  — what TunerStudio users actually need, the competitive landscape, and the
+  formats/protocol terrain (with sources).
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records (the *why* behind key
   choices).
 - [`docs/ini-format.md`](docs/ini-format.md) — the firmware definition format.
