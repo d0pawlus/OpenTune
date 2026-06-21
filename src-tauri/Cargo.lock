@@ -2289,6 +2289,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentune-datalog"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-ini"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-model"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-project"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-protocol"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-realtime"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-simulator"
+version = "0.0.0"
+
+[[package]]
+name = "opentune-transport"
+version = "0.0.0"
+
+[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
