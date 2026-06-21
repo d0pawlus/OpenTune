@@ -16,6 +16,10 @@
 //! a first-class type. Page read/write/burn are M2 — their trait methods are
 //! declared here (so the seam is stable) but stubbed with `todo!()`.
 
+mod engine;
+
+pub use engine::{crc32_of, MsProtocol};
+
 use opentune_ini::CommsSettings;
 use opentune_transport::TransportError;
 
