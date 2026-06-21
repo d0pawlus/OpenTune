@@ -47,9 +47,14 @@ Goal: a buildable, runnable, empty-but-real Tauri app and the dev infrastructure
 green locally and in CI (macOS + Linux). Implemented via the
 [M0 plan](superpowers/plans/2026-06-21-m0-foundations.md).
 
-## M1 — Connect & identify ⬜
+## M1 — Connect & identify 🟦
 
 Goal: parse an INI, connect to a (simulated) ECU, and confirm identity.
+
+> Planned in the [M1 plan](superpowers/plans/2026-06-21-m1-connect-identify.md);
+> the cross-crate contracts (`transport::Transport`, `ini::CommsSettings`,
+> `protocol` identity types) are landed and test-pinned so the component agents
+> build in parallel.
 
 - ⬜ `ini` crate: parse enough of a real INI to extract comms settings + signature
   (port from an open reference per [ADR-0006](adr/0006-reuse-existing-parsers.md)).

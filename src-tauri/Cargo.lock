@@ -2303,6 +2303,9 @@ version = "0.0.0"
 [[package]]
 name = "opentune-ini"
 version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "opentune-model"
@@ -2315,6 +2318,11 @@ version = "0.0.0"
 [[package]]
 name = "opentune-protocol"
 version = "0.0.0"
+dependencies = [
+ "opentune-ini",
+ "opentune-transport",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "opentune-realtime"
@@ -2327,6 +2335,9 @@ version = "0.0.0"
 [[package]]
 name = "opentune-transport"
 version = "0.0.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "option-ext"
