@@ -28,8 +28,7 @@ function App() {
       theme === "high-contrast" ? "high-contrast" : "";
   }, [theme]);
 
-  const toggleLocale = () =>
-    setLocale((prev) => (prev === "en" ? "pl" : "en"));
+  const toggleLocale = () => setLocale((prev) => (prev === "en" ? "pl" : "en"));
   const toggleTheme = () =>
     setTheme((prev) =>
       prev === "high-contrast" ? "default" : "high-contrast",

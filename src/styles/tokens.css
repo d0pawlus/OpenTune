@@ -11,4 +11,7 @@
   --color-text: oklch(0% 0 0);
   --color-accent: oklch(45% 0.3 250);
 }
-body { background: var(--color-surface); color: var(--color-text); }
+body {
+  background: var(--color-surface);
+  color: var(--color-text);
+}

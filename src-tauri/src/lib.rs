@@ -63,8 +63,8 @@ mod binding_gen {
             .export(Typescript::default(), "../src/ipc/bindings.ts")
             .expect("failed to export typescript bindings");
 
-        let contents = std::fs::read_to_string("../src/ipc/bindings.ts")
-            .expect("bindings.ts must exist");
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
         assert!(
             contents.contains("Heartbeat"),
             "bindings.ts should contain Heartbeat type, got:\n{contents}"
