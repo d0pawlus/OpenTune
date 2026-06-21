@@ -93,7 +93,7 @@ where
         self.last_reconnect_caused_reidentify = false;
 
         let mut transport = (self.factory)()?;
-        transport.open().map_err(|e| ProtocolError::Transport(e))?;
+        transport.open().map_err(ProtocolError::Transport)?;
         let mut proto = MsProtocol::new(self.comms.clone(), transport);
         let identity = proto.identify()?;
         // Capture baseline secl so reconnect can detect backwards movement.
@@ -125,7 +125,7 @@ where
 
             let result: Result<ConnectionState> = (|| {
                 let mut transport = (self.factory)()?;
-                transport.open().map_err(|e| ProtocolError::Transport(e))?;
+                transport.open().map_err(ProtocolError::Transport)?;
                 let mut proto = MsProtocol::new(self.comms.clone(), transport);
                 let identity = proto.identify()?;
 
@@ -149,7 +149,10 @@ where
         }
 
         let failed = ConnectionState::Failed {
-            reason: format!("reconnect failed after {} attempts", self.config.max_attempts),
+            reason: format!(
+                "reconnect failed after {} attempts",
+                self.config.max_attempts
+            ),
         };
         self.state = failed.clone();
         emitted.push(failed);

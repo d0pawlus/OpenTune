@@ -4,10 +4,10 @@
 //! Wire semantics ported from Speeduino `comms.cpp` (GPL-3),
 //! per [ADR-0006](../../../../docs/adr/0006-reuse-existing-parsers.md).
 
+use opentune_transport::{Transport, TransportError};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use opentune_transport::{Transport, TransportError};
 
 /// Shared state between [`EcuSimulator`] and [`EcuClientTransport`].
 struct Pipe {
@@ -176,7 +176,9 @@ impl EcuSimulator {
     pub const VERSION: &'static str = "Speeduino 2025.04-dev";
 
     pub fn new() -> Self {
-        Self { pipe: Arc::new(Mutex::new(Pipe::new())) }
+        Self {
+            pipe: Arc::new(Mutex::new(Pipe::new())),
+        }
     }
 
     pub fn new_crc() -> Self {

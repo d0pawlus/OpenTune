@@ -21,6 +21,10 @@
 //! `ochGetCommand`. The parsing agent fills [`parse_comms`]; the *shape* is
 //! frozen here so downstream work can begin in parallel.
 
+mod parser;
+
+pub use parser::parse_comms;
+
 /// Byte/field order of multi-byte values, taken from the INI `endianness` key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Endianness {
@@ -97,13 +101,3 @@ pub enum IniError {
 
 /// Result alias for INI parsing.
 pub type Result<T> = std::result::Result<T, IniError>;
-
-/// Parse the comms-settings slice from raw INI text.
-///
-/// Ported behavior (ADR-0006): tokenize `key = value` lines within the
-/// `[MegaTune]`/`[TunerStudio]`/`[Constants]` sections, applying `#if/#define`
-/// preprocessing, and collect the keys above. Unknown sections are skipped, not
-/// errors. The implementing agent replaces this `todo!()`.
-pub fn parse_comms(_ini_text: &str) -> Result<CommsSettings> {
-    todo!("M1: port comms-settings extraction from hyper-tuner/ini (ADR-0006)")
-}

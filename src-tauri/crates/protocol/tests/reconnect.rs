@@ -62,8 +62,8 @@ fn initial_connect_reaches_connected() {
 
 #[test]
 fn drop_link_transitions_to_reconnecting_then_connected() {
-    use std::sync::Arc;
     use opentune_simulator::EcuSimulator;
+    use std::sync::Arc;
 
     let sim = Arc::new(EcuSimulator::new());
     let sim_factory = Arc::clone(&sim);
@@ -170,7 +170,11 @@ fn secl_reboot_triggers_reidentify() {
 
     // Connect while secl=50 — manager captures last_secl=50.
     mgr.connect().unwrap();
-    assert_eq!(mgr.last_secl(), 50, "last_secl must reflect secl at connect time");
+    assert_eq!(
+        mgr.last_secl(),
+        50,
+        "last_secl must reflect secl at connect time"
+    );
 
     // Drop the link (ECU will "reboot" on reconnect via factory closure).
     sim.set_link_dropped(true);

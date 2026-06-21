@@ -119,7 +119,10 @@ mod tests {
         sim.set_link_dropped(true);
         let err = client.write(b"Q").unwrap_err();
         assert!(
-            matches!(err, TransportError::Disconnected | TransportError::Timeout(_)),
+            matches!(
+                err,
+                TransportError::Disconnected | TransportError::Timeout(_)
+            ),
             "expected Disconnected or Timeout after drop, got: {err:?}"
         );
     }
@@ -137,7 +140,9 @@ mod tests {
         // Handshake should now succeed.
         let comms = speeduino_plain_comms();
         let mut proto = MsProtocol::new(comms, client);
-        let identity = proto.identify().expect("identify must succeed after restore");
+        let identity = proto
+            .identify()
+            .expect("identify must succeed after restore");
         assert_eq!(identity.signature, crate::EcuSimulator::SIGNATURE);
         sim.flush();
     }
