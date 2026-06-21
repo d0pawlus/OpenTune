@@ -7,20 +7,17 @@
 //!
 //! # M1 contract (shared seam)
 //!
-//! This file is the *fixed interface* the M1 component agents implement against.
-//! The shapes here are the contract; the function bodies are `todo!()` stubs the
-//! implementing agents replace. Downstream crates (`opentune-protocol`, the
-//! simulator) depend only on the [`Transport`] trait and the error/info types —
-//! never on a concrete implementation.
-//!
 //! Concrete implementations landed by M1:
-//! - `SerialTransport` — USB/UART via the `serialport` crate.
-//! - `SimTransport` — an in-process bridge to `opentune-simulator`.
+//! - [`serial::SerialTransport`] — USB/UART via the `serialport` crate.
+//! - [`sim::SimTransport`] — an in-process loopback for hardware-free dev/CI.
 //!
 //! `TcpTransport` is intentionally **out of M1 scope** (YAGNI) but the trait
 //! leaves room for it.
 
 use std::time::Duration;
+
+pub mod serial;
+pub mod sim;
 
 /// Errors a transport can surface. Byte-level only — no protocol concepts leak
 /// in here. `protocol`/`realtime` map these into richer errors for the UI.
@@ -130,8 +127,27 @@ pub trait Transport: Send {
 
 /// Enumerate the serial ports currently visible to the OS.
 ///
-/// M1 implements this over the `serialport` crate. Returns an empty list — not
-/// an error — when no ports exist.
+/// Uses [`serialport::available_ports`].  Returns an empty list — not an
+/// error — when no ports exist (e.g. in a headless CI environment).
 pub fn enumerate_ports() -> Result<Vec<PortInfo>> {
-    todo!("M1: enumerate serial ports via the `serialport` crate")
+    let raw = serialport::available_ports()
+        .map_err(|e| TransportError::Io(std::io::Error::other(e.to_string())))?;
+    let ports = raw
+        .into_iter()
+        .map(|p| {
+            let (vid, pid, product) =
+                if let serialport::SerialPortType::UsbPort(ref info) = p.port_type {
+                    (Some(info.vid), Some(info.pid), info.product.clone())
+                } else {
+                    (None, None, None)
+                };
+            PortInfo {
+                name: p.port_name,
+                vid,
+                pid,
+                product,
+            }
+        })
+        .collect();
+    Ok(ports)
 }
