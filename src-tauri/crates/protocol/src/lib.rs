@@ -17,6 +17,7 @@
 //! declared here (so the seam is stable) but stubbed with `todo!()`.
 
 mod engine;
+pub mod reconnect;
 
 pub use engine::{crc32_of, MsProtocol};
 

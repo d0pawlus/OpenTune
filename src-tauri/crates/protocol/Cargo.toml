@@ -9,3 +9,6 @@ publish = false
 thiserror = "2"
 opentune-ini = { path = "../ini" }
 opentune-transport = { path = "../transport" }
+
+[dev-dependencies]
+opentune-simulator = { path = "../simulator" }

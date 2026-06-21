@@ -2370,6 +2370,7 @@ name = "opentune-protocol"
 version = "0.0.0"
 dependencies = [
  "opentune-ini",
+ "opentune-simulator",
  "opentune-transport",
  "thiserror 2.0.18",
 ]
