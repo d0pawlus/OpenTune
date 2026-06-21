@@ -62,7 +62,7 @@ listed here was confirmed to succeed before this guide was published.
 ### Get started
 
 ```sh
-git clone https://github.com/your-org/TuningSoftware.git
+git clone https://github.com/d0pawlus/TuningSoftware.git
 cd TuningSoftware
 npm install
 ```
