@@ -12,8 +12,8 @@
     "lint": "eslint src --max-warnings 0",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
-    "rust:fmt": ". $HOME/.cargo/env && cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
-    "rust:clippy": ". $HOME/.cargo/env && cargo clippy --workspace --manifest-path src-tauri/Cargo.toml -- -D warnings"
+    "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
+    "rust:clippy": "cargo clippy --workspace --manifest-path src-tauri/Cargo.toml -- -D warnings"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
