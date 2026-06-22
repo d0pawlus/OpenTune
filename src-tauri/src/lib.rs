@@ -9,7 +9,10 @@ use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new()
         .commands(collect_commands![commands::app_info])
-        .events(collect_events![events::Heartbeat]);
+        .events(collect_events![
+            events::Heartbeat,
+            events::ConnectionStateEvent
+        ]);
 
     #[cfg(debug_assertions)]
     builder
@@ -42,24 +45,25 @@ pub fn run() {
 mod binding_gen {
     use super::*;
 
+    fn make_builder() -> Builder<tauri::Wry> {
+        Builder::<tauri::Wry>::new()
+            .commands(collect_commands![commands::app_info])
+            .events(collect_events![
+                events::Heartbeat,
+                events::ConnectionStateEvent
+            ])
+    }
+
     #[test]
     fn export_typescript_bindings() {
-        let builder = Builder::<tauri::Wry>::new()
-            .commands(collect_commands![commands::app_info])
-            .events(collect_events![events::Heartbeat]);
-
-        builder
+        make_builder()
             .export(Typescript::default(), "../src/ipc/bindings.ts")
             .expect("failed to export typescript bindings");
     }
 
     #[test]
     fn export_typescript_bindings_includes_heartbeat() {
-        let builder = Builder::<tauri::Wry>::new()
-            .commands(collect_commands![commands::app_info])
-            .events(collect_events![events::Heartbeat]);
-
-        builder
+        make_builder()
             .export(Typescript::default(), "../src/ipc/bindings.ts")
             .expect("failed to export typescript bindings");
 
@@ -68,6 +72,25 @@ mod binding_gen {
         assert!(
             contents.contains("Heartbeat"),
             "bindings.ts should contain Heartbeat type, got:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_connection_state_event() {
+        make_builder()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        assert!(
+            contents.contains("ConnectionStateEvent"),
+            "bindings.ts should contain ConnectionStateEvent type, got:\n{contents}"
+        );
+        // Verify the key variants are present so the frontend can pattern-match.
+        assert!(
+            contents.contains("Reconnecting"),
+            "bindings.ts should contain Reconnecting variant, got:\n{contents}"
         );
     }
 }

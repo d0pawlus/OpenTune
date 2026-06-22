@@ -10,6 +10,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
 };
 
@@ -18,6 +19,31 @@ export type AppInfo = {
 	name: string,
 	version: string,
 };
+
+/**
+ *  IPC-serialisable mirror of [`opentune_protocol::ConnectionState`].
+ * 
+ *  `tauri-specta` requires `specta::Type` on every emitted event type.
+ *  `ConnectionState` lives in the `protocol` crate which intentionally has
+ *  no dependency on `specta`, so we mirror only the fields the UI needs.
+ *  The Rust → TS direction is write-only (backend emits, frontend listens).
+ * 
+ *  # Variants
+ *  - `Disconnected` — no active link.
+ *  - `Connecting` — transport opening / handshake in progress.
+ *  - `Connected` — fully identified; includes the firmware signature.
+ *  - `Reconnecting` — link was lost; retry in progress; `attempt` is 1-based.
+ *  - `Failed` — gave up; `reason` is a human-readable diagnostic.
+ */
+export type ConnectionStateEvent = { type: "disconnected" } | { type: "connecting" } | { type: "connected"; 
+/**  The firmware signature string reported by the ECU. */
+signature: string; 
+/**  The human-readable firmware version string (may be empty). */
+version: string } | { type: "reconnecting"; 
+/**  1-based retry count so the UI can show progress. */
+attempt: number } | { type: "failed"; 
+/**  Diagnostic string; never expose internal paths or hardware details. */
+reason: string };
 
 export type Heartbeat = {
 	seq: number,

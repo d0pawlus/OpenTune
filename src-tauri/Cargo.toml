@@ -28,4 +28,5 @@ serde = { version = "1", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta = "=2.0.0-rc.25"
 specta-typescript = "=0.0.12"
+opentune-protocol = { path = "crates/protocol" }
 
