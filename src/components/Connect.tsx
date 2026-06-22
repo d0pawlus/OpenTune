@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { useEffect, useState } from "react";
-import { commands, type PortInfoDto } from "../ipc/bindings";
+import { useCallback, useEffect, useState } from "react";
+import {
+  commands,
+  type PortInfoDto,
+  type ConnectionStateEvent,
+} from "../ipc/bindings";
 import { useConnectionStore } from "../stores/connection";
 import { t, type Locale } from "../i18n";
 
@@ -8,8 +12,10 @@ interface ConnectProps {
   locale: Locale;
 }
 
-function getConnectionStateText(locale: Locale): string {
-  const state = useConnectionStore((s) => s.connectionState);
+function getConnectionStateText(
+  state: ConnectionStateEvent | null,
+  locale: Locale,
+): string {
   if (state === null) {
     return "—";
   }
@@ -37,7 +43,7 @@ export function Connect({ locale }: ConnectProps) {
   const connectionState = useConnectionStore((s) => s.connectionState);
   const isConnected = connectionState?.type === "connected";
 
-  const refreshPorts = async () => {
+  const refreshPorts = useCallback(async () => {
     setLoadingPorts(true);
     try {
       const result = await commands.listPorts();
@@ -50,11 +56,14 @@ export function Connect({ locale }: ConnectProps) {
     } finally {
       setLoadingPorts(false);
     }
-  };
+  }, [selectedPort]);
 
   useEffect(() => {
-    refreshPorts();
-  }, []);
+    const loadPorts = async () => {
+      await refreshPorts();
+    };
+    void loadPorts();
+  }, [refreshPorts]);
 
   const handleConnect = async () => {
     if (!selectedPort) {
@@ -73,7 +82,7 @@ export function Connect({ locale }: ConnectProps) {
     console.log("Disconnecting");
   };
 
-  const stateText = getConnectionStateText(locale);
+  const stateText = getConnectionStateText(connectionState, locale);
   const signature =
     connectionState?.type === "connected" ? connectionState.signature : "—";
   const version =

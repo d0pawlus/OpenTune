@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { Connect } from "./Connect";
 import { useConnectionStore } from "../stores/connection";
 import * as ipc from "../ipc/bindings";
+import type { PortInfoDto } from "../ipc/bindings";
 
 // Mock the IPC module
 vi.mock("../ipc/bindings", () => ({
@@ -45,13 +46,18 @@ describe("Connect component", () => {
       expect(heading).toBeTruthy();
     });
 
-    const select = screen.getByDisplayValue("COM3 (Arduino Uno)") as HTMLSelectElement;
+    const select = screen.getByDisplayValue(
+      "COM3 (Arduino Uno)",
+    ) as HTMLSelectElement;
     expect(select).toBeTruthy();
   });
 
   it("disables connect button when no port is selected", async () => {
     const mockListPorts = vi.mocked(ipc.commands.listPorts);
-    mockListPorts.mockResolvedValue({ status: "ok", data: [] as any[] });
+    mockListPorts.mockResolvedValue({
+      status: "ok",
+      data: [] as PortInfoDto[],
+    });
 
     render(<Connect locale="en" />);
 
@@ -111,27 +117,31 @@ describe("Connect component", () => {
 
   it("handles empty port list gracefully", async () => {
     const mockListPorts = vi.mocked(ipc.commands.listPorts);
-    mockListPorts.mockResolvedValue({ status: "ok", data: [] as any[] });
+    mockListPorts.mockResolvedValue({
+      status: "ok",
+      data: [] as PortInfoDto[],
+    });
 
     render(<Connect locale="en" />);
 
     await waitFor(() => {
-      expect(
-        screen.getByText("No serial ports available")
-      ).toBeTruthy();
+      expect(screen.getByText("No serial ports available")).toBeTruthy();
     });
   });
 
   it("uses Polish i18n when locale is pl", async () => {
     const mockListPorts = vi.mocked(ipc.commands.listPorts);
-    mockListPorts.mockResolvedValue({ status: "ok", data: [] as any[] });
+    mockListPorts.mockResolvedValue({
+      status: "ok",
+      data: [] as PortInfoDto[],
+    });
 
     render(<Connect locale="pl" />);
 
     await waitFor(() => {
       expect(screen.getByText("Połącz z ECU")).toBeTruthy();
       expect(
-        screen.getByText("Brak dostępnych portów szeregowych")
+        screen.getByText("Brak dostępnych portów szeregowych"),
       ).toBeTruthy();
     });
   });

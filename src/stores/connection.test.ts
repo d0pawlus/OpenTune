@@ -67,9 +67,11 @@ describe("connection store", () => {
     useConnectionStore
       .getState()
       .applyConnectionState({ type: "reconnecting", attempt: 1 });
-    useConnectionStore
-      .getState()
-      .applyConnectionState({ type: "connected", signature: "sig", version: "v" });
+    useConnectionStore.getState().applyConnectionState({
+      type: "connected",
+      signature: "sig",
+      version: "v",
+    });
     expect(useConnectionStore.getState().connectionState).toEqual({
       type: "connected",
       signature: "sig",
@@ -79,9 +81,7 @@ describe("connection store", () => {
 
   it("handles the full lifecycle: connecting → connected → reconnecting → connected", () => {
     // Simulates a connection drop and recovery.
-    useConnectionStore
-      .getState()
-      .applyConnectionState({ type: "connecting" });
+    useConnectionStore.getState().applyConnectionState({ type: "connecting" });
     expect(useConnectionStore.getState().connectionState?.type).toBe(
       "connecting",
     );
