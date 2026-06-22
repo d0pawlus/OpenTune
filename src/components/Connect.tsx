@@ -76,7 +76,7 @@ export function Connect({ locale }: ConnectProps) {
   const handleConnect = async () => {
     setError(null);
     const source = useSimulator
-      ? ({ type: "simulator", ini_path: iniPath || null } as const)
+      ? ({ type: "simulator", ini_path: null } as const)
       : ({
           type: "serial",
           port_name: selectedPort,
@@ -164,18 +164,22 @@ export function Connect({ locale }: ConnectProps) {
         </div>
       )}
 
-      <div>
-        <label>
-          {t("connect.selectIni", locale)}
-          <input
-            type="text"
-            value={iniPath}
-            onChange={(e) => setIniPath(e.target.value)}
-            placeholder={t("connect.iniPlaceholder", locale)}
-            disabled={isConnected}
-          />
-        </label>
-      </div>
+      {/* INI is serial-only: the simulator uses a bundled Speeduino INI that
+          matches it, so a custom (e.g. rusEFI) INI would only mismatch. */}
+      {!useSimulator && (
+        <div>
+          <label>
+            {t("connect.selectIni", locale)}
+            <input
+              type="text"
+              value={iniPath}
+              onChange={(e) => setIniPath(e.target.value)}
+              placeholder={t("connect.iniPlaceholder", locale)}
+              disabled={isConnected}
+            />
+          </label>
+        </div>
+      )}
 
       <div>
         <button onClick={handleConnect} disabled={!canConnect}>
