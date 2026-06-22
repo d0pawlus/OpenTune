@@ -4,3 +4,14 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
+
+[dependencies]
+opentune-transport = { path = "../transport" }
+opentune-protocol = { path = "../protocol" }
+opentune-ini = { path = "../ini" }
+thiserror = "2"
+
+[dev-dependencies]
+opentune-transport = { path = "../transport" }
+opentune-protocol = { path = "../protocol" }
+opentune-ini = { path = "../ini" }

@@ -47,20 +47,25 @@ Goal: a buildable, runnable, empty-but-real Tauri app and the dev infrastructure
 green locally and in CI (macOS + Linux). Implemented via the
 [M0 plan](superpowers/plans/2026-06-21-m0-foundations.md).
 
-## M1 — Connect & identify ⬜
+## M1 — Connect & identify ✅
 
 Goal: parse an INI, connect to a (simulated) ECU, and confirm identity.
 
-- ⬜ `ini` crate: parse enough of a real INI to extract comms settings + signature
+> Planned in the [M1 plan](superpowers/plans/2026-06-21-m1-connect-identify.md);
+> the cross-crate contracts (`transport::Transport`, `ini::CommsSettings`,
+> `protocol` identity types) are landed and test-pinned so the component agents
+> build in parallel.
+
+- ✅ `ini` crate: parse enough of a real INI to extract comms settings + signature
   (port from an open reference per [ADR-0006](adr/0006-reuse-existing-parsers.md)).
-- ⬜ `transport`: serial port enumeration + open/close; `SimTransport`.
-- ⬜ `protocol`: signature/version query; generic MS/TS handshake.
-- ⬜ **Reliable reconnect (pain point #1):** detect drops, auto-reconnect with
+- ✅ `transport`: serial port enumeration + open/close; `SimTransport`.
+- ✅ `protocol`: signature/version query; generic MS/TS handshake.
+- ✅ **Reliable reconnect (pain point #1):** detect drops, auto-reconnect with
   backoff, and resync the firmware second-counter (`secl`) so the link survives
   USB power-save / cable glitches instead of needing an app restart.
-- ⬜ `simulator`: minimal virtual ECU (answers signature/version); able to simulate
+- ✅ `simulator`: minimal virtual ECU (answers signature/version); able to simulate
   a dropped link for reconnect testing.
-- ⬜ UI: pick port + INI, Connect/Disconnect, show signature & connection state
+- ✅ UI: pick port + INI, Connect/Disconnect, show signature & connection state
   (including a clear reconnecting state).
 
 **Demo:** connect to the simulator (and, for testers, a real Speeduino), see its

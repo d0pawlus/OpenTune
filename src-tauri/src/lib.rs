@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod commands;
+pub mod connection;
 pub mod events;
+
+use std::sync::{Arc, Mutex};
 
 use specta_typescript::Typescript;
 use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
@@ -8,8 +11,17 @@ use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new()
-        .commands(collect_commands![commands::app_info])
-        .events(collect_events![events::Heartbeat]);
+        .commands(collect_commands![
+            commands::app_info,
+            commands::list_ports,
+            commands::connect,
+            commands::disconnect,
+            commands::simulate_link_drop,
+        ])
+        .events(collect_events![
+            events::Heartbeat,
+            events::ConnectionStateEvent
+        ]);
 
     #[cfg(debug_assertions)]
     builder
@@ -18,6 +30,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(Arc::new(Mutex::new(None::<connection::ActiveConnection>)))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -42,24 +55,31 @@ pub fn run() {
 mod binding_gen {
     use super::*;
 
+    fn make_builder() -> Builder<tauri::Wry> {
+        Builder::<tauri::Wry>::new()
+            .commands(collect_commands![
+                commands::app_info,
+                commands::list_ports,
+                commands::connect,
+                commands::disconnect,
+                commands::simulate_link_drop,
+            ])
+            .events(collect_events![
+                events::Heartbeat,
+                events::ConnectionStateEvent
+            ])
+    }
+
     #[test]
     fn export_typescript_bindings() {
-        let builder = Builder::<tauri::Wry>::new()
-            .commands(collect_commands![commands::app_info])
-            .events(collect_events![events::Heartbeat]);
-
-        builder
+        make_builder()
             .export(Typescript::default(), "../src/ipc/bindings.ts")
             .expect("failed to export typescript bindings");
     }
 
     #[test]
     fn export_typescript_bindings_includes_heartbeat() {
-        let builder = Builder::<tauri::Wry>::new()
-            .commands(collect_commands![commands::app_info])
-            .events(collect_events![events::Heartbeat]);
-
-        builder
+        make_builder()
             .export(Typescript::default(), "../src/ipc/bindings.ts")
             .expect("failed to export typescript bindings");
 
@@ -68,6 +88,68 @@ mod binding_gen {
         assert!(
             contents.contains("Heartbeat"),
             "bindings.ts should contain Heartbeat type, got:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_connection_state_event() {
+        make_builder()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        assert!(
+            contents.contains("ConnectionStateEvent"),
+            "bindings.ts should contain ConnectionStateEvent type, got:\n{contents}"
+        );
+        assert!(
+            contents.contains("Reconnecting"),
+            "bindings.ts should contain Reconnecting variant, got:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_list_ports_command() {
+        make_builder()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        assert!(
+            contents.contains("listPorts"),
+            "bindings.ts should contain listPorts command, got:\n{contents}"
+        );
+        assert!(
+            contents.contains("PortInfoDto"),
+            "bindings.ts should contain PortInfoDto type, got:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_connect_commands() {
+        make_builder()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        assert!(
+            contents.contains("connect"),
+            "bindings.ts should contain connect command"
+        );
+        assert!(
+            contents.contains("disconnect"),
+            "bindings.ts should contain disconnect command"
+        );
+        assert!(
+            contents.contains("simulateLinkDrop"),
+            "bindings.ts should contain simulateLinkDrop command"
+        );
+        assert!(
+            contents.contains("ConnectSource"),
+            "bindings.ts should contain ConnectSource type"
         );
     }
 }

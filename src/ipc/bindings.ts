@@ -6,10 +6,29 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**  Enumerate available serial ports (does not connect). */
+	listPorts: () => typedError<PortInfoDto[], string>(__TAURI_INVOKE("list_ports")),
+	/**
+	 *  Connect to an ECU (simulator or serial).
+	 * 
+	 *  Emits `ConnectionStateEvent` transitions over IPC as the connection
+	 *  progresses. Returns `Ok(())` once the initial handshake succeeds.
+	 */
+	connect: (source: ConnectSource) => typedError<null, string>(__TAURI_INVOKE("connect", { source })),
+	/**  Disconnect from the ECU and emit `Disconnected`. */
+	disconnect: () => typedError<null, string>(__TAURI_INVOKE("disconnect")),
+	/**
+	 *  Simulator-only: drop the link and drive the reconnect loop.
+	 * 
+	 *  Returns immediately; the reconnect runs on a background thread, emitting
+	 *  `Reconnecting{attempt}` states until `Connected` or `Failed`.
+	 */
+	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 };
 
 /** Events */
 export const events = {
+	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
 };
 
@@ -19,11 +38,64 @@ export type AppInfo = {
 	version: string,
 };
 
+/**  Which ECU to connect to; deserialized from the frontend command payload. */
+export type ConnectSource = 
+/**  Built-in simulator. */
+{ type: "simulator"; 
+/**  Override INI path; `None` → load bundled sample. */
+ini_path: string | null } | 
+/**  Real serial port. */
+{ type: "serial"; port_name: string; 
+/**  INI path (required for serial). */
+ini_path: string };
+
+/**
+ *  IPC-serialisable mirror of [`opentune_protocol::ConnectionState`].
+ * 
+ *  `tauri-specta` requires `specta::Type` on every emitted event type.
+ *  `ConnectionState` lives in the `protocol` crate which intentionally has
+ *  no dependency on `specta`, so we mirror only the fields the UI needs.
+ *  The Rust → TS direction is write-only (backend emits, frontend listens).
+ * 
+ *  # Variants
+ *  - `Disconnected` — no active link.
+ *  - `Connecting` — transport opening / handshake in progress.
+ *  - `Connected` — fully identified; includes the firmware signature.
+ *  - `Reconnecting` — link was lost; retry in progress; `attempt` is 1-based.
+ *  - `Failed` — gave up; `reason` is a human-readable diagnostic.
+ */
+export type ConnectionStateEvent = { type: "disconnected" } | { type: "connecting" } | { type: "connected"; 
+/**  The firmware signature string reported by the ECU. */
+signature: string; 
+/**  The human-readable firmware version string (may be empty). */
+version: string } | { type: "reconnecting"; 
+/**  1-based retry count so the UI can show progress. */
+attempt: number } | { type: "failed"; 
+/**  Diagnostic string; never expose internal paths or hardware details. */
+reason: string };
+
 export type Heartbeat = {
 	seq: number,
 };
 
+/**  Port information for the frontend UI. */
+export type PortInfoDto = {
+	name: string,
+	vid: number | null,
+	pid: number | null,
+	product: string | null,
+};
+
 /* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
+
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;
 
 function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deserialize?: (payload: any) => T) {

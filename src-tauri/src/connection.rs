@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Connection state manager — testable core, decoupled from AppHandle.
+//!
+//! The live connection is stored as `tauri::State<ConnectionStore>` where
+//! `ConnectionStore = Arc<Mutex<Option<ActiveConnection>>>`. Commands borrow
+//! the Arc; tests pass a Vec-collecting emit closure directly.
+
+use std::sync::{Arc, Mutex};
+
+use opentune_ini::{parse_comms, CommsSettings};
+use opentune_protocol::{
+    reconnect::{ConnectionManager, ReconnectConfig},
+    ConnectionState, ProtocolError,
+};
+use opentune_simulator::{ecu::EcuClientTransport, EcuSimulator};
+use opentune_transport::{serial::SerialTransport, SerialConfig};
+
+// ── Type aliases ─────────────────────────────────────────────────────────────
+
+/// Boxed FnMut factory — makes the `ConnectionManager` type nameable in state.
+type SimFactory = Box<dyn FnMut() -> std::result::Result<EcuClientTransport, ProtocolError> + Send>;
+type SerialFactory = Box<dyn FnMut() -> std::result::Result<SerialTransport, ProtocolError> + Send>;
+
+// ── Active connection ────────────────────────────────────────────────────────
+
+/// A live connection held in Tauri managed state.
+pub enum ActiveConnection {
+    Sim {
+        manager: ConnectionManager<EcuClientTransport, SimFactory>,
+        /// Kept so `simulate_link_drop` can reach `set_link_dropped`.
+        simulator: Arc<EcuSimulator>,
+    },
+    Serial {
+        manager: ConnectionManager<SerialTransport, SerialFactory>,
+    },
+}
+
+/// Tauri managed state type.
+pub type ConnectionStore = Arc<Mutex<Option<ActiveConnection>>>;
+
+// ── Source discriminant (IPC-visible) ────────────────────────────────────────
+
+/// Which ECU to connect to; deserialized from the frontend command payload.
+#[derive(serde::Deserialize, specta::Type, Debug, Clone)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ConnectSource {
+    /// Built-in simulator.
+    Simulator {
+        /// Override INI path; `None` → load bundled sample.
+        ini_path: Option<String>,
+    },
+    /// Real serial port.
+    Serial {
+        port_name: String,
+        /// INI path (required for serial).
+        ini_path: String,
+    },
+}
+
+// ── INI helpers ──────────────────────────────────────────────────────────────
+
+/// Parse `CommsSettings` from a file path.
+pub fn load_comms_from_path(path: &str) -> Result<CommsSettings, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("cannot read INI `{path}`: {e}"))?;
+    parse_comms(&text).map_err(|e| format!("cannot parse INI `{path}`: {e}"))
+}
+
+/// Parse `CommsSettings` from an in-memory string (bundled INI).
+pub fn load_comms_from_str(ini: &str) -> Result<CommsSettings, String> {
+    parse_comms(ini).map_err(|e| format!("cannot parse bundled INI: {e}"))
+}
+
+// ── Connect helpers ──────────────────────────────────────────────────────────
+
+/// Connect to the simulator. Emits `Connecting` then `Connected` (or returns
+/// an error string). The returned `ActiveConnection` owns the live manager.
+pub fn connect_simulator(
+    comms: CommsSettings,
+    emit: &dyn Fn(ConnectionState),
+) -> Result<ActiveConnection, String> {
+    let sim = Arc::new(EcuSimulator::new());
+    let sim_ref = Arc::clone(&sim);
+
+    let factory: SimFactory =
+        Box::new(move || Ok(sim_ref.client_transport() as EcuClientTransport));
+
+    let cfg = ReconnectConfig {
+        max_attempts: 10,
+        base_delay: std::time::Duration::from_millis(500),
+        max_delay: std::time::Duration::from_secs(30),
+    };
+    let mut mgr = ConnectionManager::new(comms, cfg, factory);
+
+    emit(ConnectionState::Connecting);
+    let state = mgr.connect().map_err(|e| e.to_string())?;
+    emit(state);
+
+    Ok(ActiveConnection::Sim {
+        manager: mgr,
+        simulator: sim,
+    })
+}
+
+/// Connect to a real serial port. Emits `Connecting` then `Connected` (or
+/// returns an error string).
+pub fn connect_serial(
+    port_name: String,
+    comms: CommsSettings,
+    emit: &dyn Fn(ConnectionState),
+) -> Result<ActiveConnection, String> {
+    let port = port_name.clone();
+    let serial_cfg = SerialConfig::default();
+
+    let factory: SerialFactory =
+        Box::new(move || Ok(SerialTransport::new(port.clone(), serial_cfg.clone())));
+
+    let cfg = ReconnectConfig {
+        max_attempts: 10,
+        base_delay: std::time::Duration::from_millis(500),
+        max_delay: std::time::Duration::from_secs(30),
+    };
+    let mut mgr = ConnectionManager::new(comms, cfg, factory);
+
+    emit(ConnectionState::Connecting);
+    let state = mgr.connect().map_err(|e| e.to_string())?;
+    emit(state);
+
+    Ok(ActiveConnection::Serial { manager: mgr })
+}
+
+/// Drop the simulator link, then drive `reconnect_collect_states` on a
+/// background thread. Each emitted state is forwarded to `emit`; the new
+/// `ActiveConnection` is stored back via `store` on completion.
+///
+/// Returns immediately — the reconnect runs in the background.
+pub fn simulate_link_drop_async(
+    active: ActiveConnection,
+    store: ConnectionStore,
+    emit: impl Fn(ConnectionState) + Send + 'static,
+) {
+    std::thread::spawn(move || match active {
+        ActiveConnection::Sim {
+            mut manager,
+            simulator,
+        } => {
+            // Drop the link; reconnect logic will restore it via the factory
+            // (each `client_transport()` call opens a fresh transport on the
+            // same shared Pipe, which is in the `dropped=true` state here).
+            // We restore the link just before the first reconnect attempt so
+            // the simulator actually answers.
+            simulator.set_link_dropped(true);
+            // Restore immediately so the first reconnect attempt succeeds.
+            simulator.set_link_dropped(false);
+
+            let states = manager.reconnect_collect_states();
+            for s in states {
+                emit(s);
+            }
+            if let Ok(mut guard) = store.lock() {
+                *guard = Some(ActiveConnection::Sim { manager, simulator });
+            }
+        }
+        ActiveConnection::Serial { .. } => {
+            emit(ConnectionState::Failed {
+                reason: "simulate_link_drop is only available in simulator mode".to_owned(),
+            });
+        }
+    });
+}
+
+// ── Unit tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opentune_ini::{Endianness, EnvelopeFormat};
+
+    fn plain_comms() -> CommsSettings {
+        CommsSettings {
+            signature: "speeduino 202504-dev".to_owned(),
+            query_command: "Q".to_owned(),
+            version_info: "S".to_owned(),
+            och_get_command: "A".to_owned(),
+            page_read_command: "p%2i%2o%2c".to_owned(),
+            page_value_write: "M%2i%2o%2c%v".to_owned(),
+            burn_command: "b%2i".to_owned(),
+            blocking_factor: 121,
+            page_activation_delay_ms: 10,
+            block_read_timeout_ms: 2_000,
+            inter_write_delay_ms: 10,
+            endianness: Endianness::Little,
+            envelope: EnvelopeFormat::Plain,
+        }
+    }
+
+    #[test]
+    fn connect_simulator_emits_connected_with_correct_signature() {
+        let emitted = std::sync::Mutex::new(Vec::new());
+        let active = connect_simulator(plain_comms(), &|s| emitted.lock().unwrap().push(s))
+            .expect("connect must succeed");
+        let emitted = emitted.into_inner().unwrap();
+
+        assert!(
+            emitted
+                .iter()
+                .any(|s| matches!(s, ConnectionState::Connected { .. })),
+            "must emit Connected; got: {emitted:?}"
+        );
+        let last = emitted.last().expect("at least one state emitted");
+        match last {
+            ConnectionState::Connected { identity } => {
+                assert_eq!(identity.signature, EcuSimulator::SIGNATURE);
+            }
+            other => panic!("expected Connected, got {other:?}"),
+        }
+        let _ = active;
+    }
+
+    #[test]
+    fn bundled_ini_parses_correctly() {
+        let ini = include_str!("../resources/speeduino.sample.ini");
+        let comms = load_comms_from_str(ini).expect("bundled INI must parse");
+        assert_eq!(comms.signature, EcuSimulator::SIGNATURE);
+        assert_eq!(comms.query_command, "Q");
+        assert_eq!(comms.envelope, EnvelopeFormat::Plain);
+    }
+}
