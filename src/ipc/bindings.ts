@@ -6,6 +6,8 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**  Enumerate available serial ports (does not connect). */
+	listPorts: () => typedError<PortInfoDto[], string>(__TAURI_INVOKE("list_ports")),
 };
 
 /** Events */
@@ -49,7 +51,24 @@ export type Heartbeat = {
 	seq: number,
 };
 
+/**  Port information for the frontend UI. */
+export type PortInfoDto = {
+	name: string,
+	vid: number | null,
+	pid: number | null,
+	product: string | null,
+};
+
 /* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
+
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;
 
 function makeEvent<T>(name: string, serialize?: (payload: T) => unknown, deserialize?: (payload: any) => T) {

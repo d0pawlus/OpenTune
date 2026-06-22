@@ -76,4 +76,57 @@ describe("connection store", () => {
       version: "v",
     });
   });
+
+  it("handles the full lifecycle: connecting → connected → reconnecting → connected", () => {
+    // Simulates a connection drop and recovery.
+    useConnectionStore
+      .getState()
+      .applyConnectionState({ type: "connecting" });
+    expect(useConnectionStore.getState().connectionState?.type).toBe(
+      "connecting",
+    );
+
+    useConnectionStore.getState().applyConnectionState({
+      type: "connected",
+      signature: "speeduino",
+      version: "2025.04",
+    });
+    expect(useConnectionStore.getState().connectionState?.type).toBe(
+      "connected",
+    );
+
+    // Link drops.
+    useConnectionStore
+      .getState()
+      .applyConnectionState({ type: "reconnecting", attempt: 1 });
+    expect(useConnectionStore.getState().connectionState?.type).toBe(
+      "reconnecting",
+    );
+
+    // Recover.
+    useConnectionStore.getState().applyConnectionState({
+      type: "connected",
+      signature: "speeduino",
+      version: "2025.04",
+    });
+    expect(useConnectionStore.getState().connectionState?.type).toBe(
+      "connected",
+    );
+  });
+
+  it("stores signature and version separately from connection type", () => {
+    const connectedEvent: ConnectionStateEvent = {
+      type: "connected",
+      signature: "speeduino 202504-dev",
+      version: "Speeduino 2025.04",
+    };
+    useConnectionStore.getState().applyConnectionState(connectedEvent);
+    const state = useConnectionStore.getState().connectionState;
+    if (state?.type === "connected") {
+      expect(state.signature).toBe("speeduino 202504-dev");
+      expect(state.version).toBe("Speeduino 2025.04");
+    } else {
+      throw new Error("Expected connected state");
+    }
+  });
 });

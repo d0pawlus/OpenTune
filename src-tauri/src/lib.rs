@@ -8,7 +8,7 @@ use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new()
-        .commands(collect_commands![commands::app_info])
+        .commands(collect_commands![commands::app_info, commands::list_ports])
         .events(collect_events![
             events::Heartbeat,
             events::ConnectionStateEvent
@@ -47,7 +47,7 @@ mod binding_gen {
 
     fn make_builder() -> Builder<tauri::Wry> {
         Builder::<tauri::Wry>::new()
-            .commands(collect_commands![commands::app_info])
+            .commands(collect_commands![commands::app_info, commands::list_ports])
             .events(collect_events![
                 events::Heartbeat,
                 events::ConnectionStateEvent
@@ -91,6 +91,24 @@ mod binding_gen {
         assert!(
             contents.contains("Reconnecting"),
             "bindings.ts should contain Reconnecting variant, got:\n{contents}"
+        );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_list_ports_command() {
+        make_builder()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+
+        let contents =
+            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        assert!(
+            contents.contains("listPorts"),
+            "bindings.ts should contain listPorts command, got:\n{contents}"
+        );
+        assert!(
+            contents.contains("PortInfoDto"),
+            "bindings.ts should contain PortInfoDto type, got:\n{contents}"
         );
     }
 }
