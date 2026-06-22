@@ -452,15 +452,16 @@ existing INIs, tunes, and logs, and take them elsewhere.
 │   ├── protocol.md
 │   ├── glossary.md
 │   └── adr/                     # Architecture Decision Records
-├── src/                         # frontend (React + TS)            [later]
-├── src-tauri/                   # backend (Rust workspace + Tauri) [later]
+├── src/                         # frontend (React + TS)
+├── src-tauri/                   # backend (Rust workspace + Tauri)
 │   ├── crates/                  # ini, model, protocol, transport, …
 │   └── src/                     # Tauri commands/events wiring
-└── .github/workflows/           # CI: build/test/release            [later]
+└── .github/workflows/           # CI: build/test/release
 ```
 
-(Only the docs exist today; code directories are added as milestones land — see
-the roadmap.)
+(Through M1 the app shell, typed IPC, CI, and the `ini`/`transport`/`protocol`/`simulator`
+crates are implemented; `model`/`realtime`/`datalog`/`project` remain placeholders filled
+as later milestones land — see the [roadmap](ROADMAP.md).)
 
 ## 15. Risks and open questions
 
