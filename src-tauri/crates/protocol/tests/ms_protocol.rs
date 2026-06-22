@@ -132,7 +132,7 @@ fn plain_signature_sends_q_and_returns_text() {
     // Ported from Speeduino comms.cpp (ADR-0006).
     assert_eq!(
         proto.transport_ref().sent,
-        &[b'Q'],
+        b"Q",
         "plain query must send exactly one byte: 'Q'"
     );
 }
@@ -147,7 +147,7 @@ fn plain_version_sends_s_byte() {
     proto.version().unwrap();
     assert_eq!(
         proto.transport_ref().sent,
-        &[b'S'],
+        b"S",
         "plain version query must send exactly one byte: 'S'"
     );
 }
