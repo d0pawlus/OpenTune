@@ -18,4 +18,8 @@ export const pl: Record<keyof typeof en, string> = {
   "connect.signature": "Sygnatura",
   "connect.version": "Wersja",
   "connect.connectionState": "Stan połączenia",
+  "connect.useSimulator": "Użyj symulatora",
+  "connect.connectSimulator": "Połącz z symulatorem",
+  "connect.simulateDrop": "Symuluj zerwanie połączenia",
+  "connect.iniPlaceholder": "Ścieżka do pliku INI (opcjonalnie dla symulatora)",
 };

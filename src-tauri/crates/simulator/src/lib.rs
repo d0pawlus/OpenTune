@@ -5,7 +5,7 @@
 //! semantics are ported from the Speeduino / rusEFI open firmware sources.
 
 pub mod ecu;
-pub use ecu::EcuSimulator;
+pub use ecu::{EcuClientTransport, EcuSimulator};
 
 #[cfg(test)]
 mod tests {

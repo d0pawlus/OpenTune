@@ -30,4 +30,6 @@ specta = "=2.0.0-rc.25"
 specta-typescript = "=0.0.12"
 opentune-protocol = { path = "crates/protocol" }
 opentune-transport = { path = "crates/transport" }
+opentune-simulator = { path = "crates/simulator" }
+opentune-ini = { path = "crates/ini" }
 

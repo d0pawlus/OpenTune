@@ -10,6 +10,9 @@ import type { PortInfoDto } from "../ipc/bindings";
 vi.mock("../ipc/bindings", () => ({
   commands: {
     listPorts: vi.fn(),
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    simulateLinkDrop: vi.fn(),
   },
   events: {
     connectionStateEvent: {

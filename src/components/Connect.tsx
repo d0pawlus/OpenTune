@@ -39,9 +39,17 @@ export function Connect({ locale }: ConnectProps) {
   const [ports, setPorts] = useState<PortInfoDto[]>([]);
   const [selectedPort, setSelectedPort] = useState<string>("");
   const [loadingPorts, setLoadingPorts] = useState(false);
+  const [useSimulator, setUseSimulator] = useState(false);
+  const [iniPath, setIniPath] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
 
   const connectionState = useConnectionStore((s) => s.connectionState);
-  const isConnected = connectionState?.type === "connected";
+  const isConnected =
+    connectionState?.type === "connected" ||
+    connectionState?.type === "connecting" ||
+    connectionState?.type === "reconnecting";
+  const isSimConnected =
+    isConnected && useSimulator;
 
   const refreshPorts = useCallback(async () => {
     setLoadingPorts(true);
@@ -66,20 +74,35 @@ export function Connect({ locale }: ConnectProps) {
   }, [refreshPorts]);
 
   const handleConnect = async () => {
-    if (!selectedPort) {
-      return;
+    setError(null);
+    const source = useSimulator
+      ? ({ type: "simulator", ini_path: iniPath || null } as const)
+      : ({
+          type: "serial",
+          port_name: selectedPort,
+          ini_path: iniPath,
+        } as const);
+
+    const result = await commands.connect(source);
+    if (result.status === "error") {
+      setError(result.error);
     }
-    // M1: placeholder. The actual connection logic will be wired through
-    // the backend protocol engine in a follow-up CL. For now, just
-    // demo the state transitions.
-    // TODO(m1-wiring): wire to backend connect command
-    console.log(`Connecting to ${selectedPort}`);
   };
 
   const handleDisconnect = async () => {
-    // M1: placeholder; wired in follow-up CL
-    // TODO(m1-wiring): wire to backend disconnect command
-    console.log("Disconnecting");
+    setError(null);
+    const result = await commands.disconnect();
+    if (result.status === "error") {
+      setError(result.error);
+    }
+  };
+
+  const handleSimulateLinkDrop = async () => {
+    setError(null);
+    const result = await commands.simulateLinkDrop();
+    if (result.status === "error") {
+      setError(result.error);
+    }
   };
 
   const stateText = getConnectionStateText(connectionState, locale);
@@ -88,46 +111,93 @@ export function Connect({ locale }: ConnectProps) {
   const version =
     connectionState?.type === "connected" ? connectionState.version : "—";
 
+  const canConnect = useSimulator
+    ? !isConnected
+    : !isConnected && !!selectedPort && !loadingPorts;
+
   return (
     <section>
       <h2>{t("connect.title", locale)}</h2>
 
       <div>
         <label>
-          {t("connect.selectPort", locale)}
-          <select
-            value={selectedPort}
-            onChange={(e) => setSelectedPort(e.target.value)}
+          <input
+            type="checkbox"
+            checked={useSimulator}
+            onChange={(e) => setUseSimulator(e.target.checked)}
+            disabled={isConnected}
+          />
+          {" "}
+          {t("connect.useSimulator", locale)}
+        </label>
+      </div>
+
+      {!useSimulator && (
+        <div>
+          <label>
+            {t("connect.selectPort", locale)}
+            <select
+              value={selectedPort}
+              onChange={(e) => setSelectedPort(e.target.value)}
+              disabled={isConnected || loadingPorts}
+            >
+              <option value="">{t("connect.portPlaceholder", locale)}</option>
+              {ports.length === 0 ? (
+                <option disabled>
+                  {t("connect.noPortsAvailable", locale)}
+                </option>
+              ) : (
+                ports.map((port) => (
+                  <option key={port.name} value={port.name}>
+                    {port.name} {port.product ? `(${port.product})` : ""}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
+          <button
+            onClick={refreshPorts}
             disabled={isConnected || loadingPorts}
           >
-            <option value="">{t("connect.portPlaceholder", locale)}</option>
-            {ports.length === 0 ? (
-              <option disabled>{t("connect.noPortsAvailable", locale)}</option>
-            ) : (
-              ports.map((port) => (
-                <option key={port.name} value={port.name}>
-                  {port.name} {port.product ? `(${port.product})` : ""}
-                </option>
-              ))
-            )}
-          </select>
+            {t("connect.refreshPorts", locale)}
+          </button>
+        </div>
+      )}
+
+      <div>
+        <label>
+          {t("connect.selectIni", locale)}
+          <input
+            type="text"
+            value={iniPath}
+            onChange={(e) => setIniPath(e.target.value)}
+            placeholder={t("connect.iniPlaceholder", locale)}
+            disabled={isConnected}
+          />
         </label>
-        <button onClick={refreshPorts} disabled={isConnected || loadingPorts}>
-          {t("connect.refreshPorts", locale)}
-        </button>
       </div>
 
       <div>
-        <button
-          onClick={handleConnect}
-          disabled={isConnected || !selectedPort || loadingPorts}
-        >
-          {t("connect.connect", locale)}
+        <button onClick={handleConnect} disabled={!canConnect}>
+          {useSimulator
+            ? t("connect.connectSimulator", locale)
+            : t("connect.connect", locale)}
         </button>
         <button onClick={handleDisconnect} disabled={!isConnected}>
           {t("connect.disconnect", locale)}
         </button>
+        {isSimConnected && (
+          <button onClick={handleSimulateLinkDrop}>
+            {t("connect.simulateDrop", locale)}
+          </button>
+        )}
       </div>
+
+      {error !== null && (
+        <p role="alert" style={{ color: "red" }}>
+          {error}
+        </p>
+      )}
 
       <div>
         <p>

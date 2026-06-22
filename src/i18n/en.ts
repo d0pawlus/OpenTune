@@ -17,4 +17,8 @@ export const en = {
   "connect.signature": "Signature",
   "connect.version": "Version",
   "connect.connectionState": "Connection state",
+  "connect.useSimulator": "Use simulator",
+  "connect.connectSimulator": "Connect to simulator",
+  "connect.simulateDrop": "Simulate connection drop",
+  "connect.iniPlaceholder": "Path to INI file (optional for simulator)",
 } as const;

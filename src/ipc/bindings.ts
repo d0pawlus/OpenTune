@@ -8,6 +8,22 @@ export const commands = {
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
 	/**  Enumerate available serial ports (does not connect). */
 	listPorts: () => typedError<PortInfoDto[], string>(__TAURI_INVOKE("list_ports")),
+	/**
+	 *  Connect to an ECU (simulator or serial).
+	 * 
+	 *  Emits `ConnectionStateEvent` transitions over IPC as the connection
+	 *  progresses. Returns `Ok(())` once the initial handshake succeeds.
+	 */
+	connect: (source: ConnectSource) => typedError<null, string>(__TAURI_INVOKE("connect", { source })),
+	/**  Disconnect from the ECU and emit `Disconnected`. */
+	disconnect: () => typedError<null, string>(__TAURI_INVOKE("disconnect")),
+	/**
+	 *  Simulator-only: drop the link and drive the reconnect loop.
+	 * 
+	 *  Returns immediately; the reconnect runs on a background thread, emitting
+	 *  `Reconnecting{attempt}` states until `Connected` or `Failed`.
+	 */
+	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 };
 
 /** Events */
@@ -21,6 +37,17 @@ export type AppInfo = {
 	name: string,
 	version: string,
 };
+
+/**  Which ECU to connect to; deserialized from the frontend command payload. */
+export type ConnectSource = 
+/**  Built-in simulator. */
+{ type: "simulator"; 
+/**  Override INI path; `None` → load bundled sample. */
+ini_path: string | null } | 
+/**  Real serial port. */
+{ type: "serial"; port_name: string; 
+/**  INI path (required for serial). */
+ini_path: string };
 
 /**
  *  IPC-serialisable mirror of [`opentune_protocol::ConnectionState`].

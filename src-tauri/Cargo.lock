@@ -2337,7 +2337,9 @@ dependencies = [
 name = "opentune"
 version = "0.1.0"
 dependencies = [
+ "opentune-ini",
  "opentune-protocol",
+ "opentune-simulator",
  "opentune-transport",
  "serde",
  "specta",
