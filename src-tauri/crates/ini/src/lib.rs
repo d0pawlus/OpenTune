@@ -26,9 +26,10 @@ mod parser;
 pub use parser::parse_comms;
 
 /// Byte/field order of multi-byte values, taken from the INI `endianness` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Endianness {
     /// `endianness = little` (Speeduino default).
+    #[default]
     Little,
     /// `endianness = big` (some MS-family firmwares).
     Big,
