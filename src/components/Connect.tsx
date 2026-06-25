@@ -48,8 +48,7 @@ export function Connect({ locale }: ConnectProps) {
     connectionState?.type === "connected" ||
     connectionState?.type === "connecting" ||
     connectionState?.type === "reconnecting";
-  const isSimConnected =
-    isConnected && useSimulator;
+  const isSimConnected = isConnected && useSimulator;
 
   const refreshPorts = useCallback(async () => {
     setLoadingPorts(true);
@@ -76,7 +75,7 @@ export function Connect({ locale }: ConnectProps) {
   const handleConnect = async () => {
     setError(null);
     const source = useSimulator
-      ? ({ type: "simulator", ini_path: iniPath || null } as const)
+      ? ({ type: "simulator", ini_path: null } as const)
       : ({
           type: "serial",
           port_name: selectedPort,
@@ -126,8 +125,7 @@ export function Connect({ locale }: ConnectProps) {
             checked={useSimulator}
             onChange={(e) => setUseSimulator(e.target.checked)}
             disabled={isConnected}
-          />
-          {" "}
+          />{" "}
           {t("connect.useSimulator", locale)}
         </label>
       </div>
@@ -155,27 +153,28 @@ export function Connect({ locale }: ConnectProps) {
               )}
             </select>
           </label>
-          <button
-            onClick={refreshPorts}
-            disabled={isConnected || loadingPorts}
-          >
+          <button onClick={refreshPorts} disabled={isConnected || loadingPorts}>
             {t("connect.refreshPorts", locale)}
           </button>
         </div>
       )}
 
-      <div>
-        <label>
-          {t("connect.selectIni", locale)}
-          <input
-            type="text"
-            value={iniPath}
-            onChange={(e) => setIniPath(e.target.value)}
-            placeholder={t("connect.iniPlaceholder", locale)}
-            disabled={isConnected}
-          />
-        </label>
-      </div>
+      {/* INI is serial-only: the simulator uses a bundled Speeduino INI that
+          matches it, so a custom (e.g. rusEFI) INI would only mismatch. */}
+      {!useSimulator && (
+        <div>
+          <label>
+            {t("connect.selectIni", locale)}
+            <input
+              type="text"
+              value={iniPath}
+              onChange={(e) => setIniPath(e.target.value)}
+              placeholder={t("connect.iniPlaceholder", locale)}
+              disabled={isConnected}
+            />
+          </label>
+        </div>
+      )}
 
       <div>
         <button onClick={handleConnect} disabled={!canConnect}>

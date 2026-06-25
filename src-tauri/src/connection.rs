@@ -59,11 +59,24 @@ pub enum ConnectSource {
 
 // ── INI helpers ──────────────────────────────────────────────────────────────
 
-/// Parse `CommsSettings` from a file path.
+/// Parse `CommsSettings` from a file path. Expands a leading `~` to the user's
+/// home dir (Rust's `fs` does not do shell tilde expansion).
 pub fn load_comms_from_path(path: &str) -> Result<CommsSettings, String> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| format!("cannot read INI `{path}`: {e}"))?;
-    parse_comms(&text).map_err(|e| format!("cannot parse INI `{path}`: {e}"))
+    let expanded = expand_tilde(path);
+    let text = std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
+    parse_comms(&text).map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
+}
+
+/// Expand a leading `~` / `~/` to `$HOME`. Other `~user` forms are left as-is.
+fn expand_tilde(path: &str) -> String {
+    match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match std::env::var("HOME") {
+            Ok(home) => format!("{home}{rest}"),
+            Err(_) => path.to_owned(),
+        },
+        _ => path.to_owned(),
+    }
 }
 
 /// Parse `CommsSettings` from an in-memory string (bundled INI).
@@ -215,6 +228,16 @@ mod tests {
             other => panic!("expected Connected, got {other:?}"),
         }
         let _ = active;
+    }
+
+    #[test]
+    fn expand_tilde_expands_leading_home_only() {
+        std::env::set_var("HOME", "/home/x");
+        assert_eq!(expand_tilde("~/a/b.ini"), "/home/x/a/b.ini");
+        assert_eq!(expand_tilde("~"), "/home/x");
+        // Not a leading `~/` — left untouched.
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("~user/x"), "~user/x");
     }
 
     #[test]

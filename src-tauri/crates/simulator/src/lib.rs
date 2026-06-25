@@ -58,7 +58,7 @@ mod tests {
         let comms = speeduino_plain_comms();
         let mut proto = MsProtocol::new(comms, client);
         let version = proto.version().expect("version query must succeed");
-        assert!(!version.is_empty(), "version string must not be empty");
+        assert_eq!(version, crate::EcuSimulator::VERSION);
         sim.flush();
     }
 
@@ -71,6 +71,7 @@ mod tests {
         let mut proto = MsProtocol::new(comms.clone(), client);
         let identity = proto.identify().expect("identify must succeed");
         assert_eq!(identity.signature, crate::EcuSimulator::SIGNATURE);
+        assert_eq!(identity.version, crate::EcuSimulator::VERSION);
         assert!(identity.matches(&comms));
         sim.flush();
     }
@@ -96,6 +97,7 @@ mod tests {
         let mut proto = MsProtocol::new(comms.clone(), client);
         let identity = proto.identify().expect("CRC identify must succeed");
         assert_eq!(identity.signature, crate::EcuSimulator::SIGNATURE);
+        assert_eq!(identity.version, crate::EcuSimulator::VERSION);
         assert!(identity.matches(&comms));
         sim.flush();
     }
