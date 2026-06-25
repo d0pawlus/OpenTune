@@ -48,8 +48,7 @@ export function Connect({ locale }: ConnectProps) {
     connectionState?.type === "connected" ||
     connectionState?.type === "connecting" ||
     connectionState?.type === "reconnecting";
-  const isSimConnected =
-    isConnected && useSimulator;
+  const isSimConnected = isConnected && useSimulator;
 
   const refreshPorts = useCallback(async () => {
     setLoadingPorts(true);
@@ -126,8 +125,7 @@ export function Connect({ locale }: ConnectProps) {
             checked={useSimulator}
             onChange={(e) => setUseSimulator(e.target.checked)}
             disabled={isConnected}
-          />
-          {" "}
+          />{" "}
           {t("connect.useSimulator", locale)}
         </label>
       </div>
@@ -155,10 +153,7 @@ export function Connect({ locale }: ConnectProps) {
               )}
             </select>
           </label>
-          <button
-            onClick={refreshPorts}
-            disabled={isConnected || loadingPorts}
-          >
+          <button onClick={refreshPorts} disabled={isConnected || loadingPorts}>
             {t("connect.refreshPorts", locale)}
           </button>
         </div>

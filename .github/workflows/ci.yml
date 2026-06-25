@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy, rustfmt }
+        with: { components: "clippy, rustfmt" }
       - name: Install Linux Tauri deps
         if: matrix.os == 'ubuntu-latest'
         run: |
