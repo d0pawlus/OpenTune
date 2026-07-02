@@ -61,8 +61,15 @@ export const commands = {
 	diffTune: () => typedError<FieldDiffDto[], string>(__TAURI_INVOKE("diff_tune")),
 	/**
 	 *  Merge the picked constants from the snapshot baseline into the current
-	 *  tune, writing each accepted pick live to the ECU. Emits the new dirty
-	 *  state on success.
+	 *  tune, writing each accepted pick live to the ECU.
+	 * 
+	 *  `merge_tune` applies picks one at a time (see `session_diff.rs`) and can
+	 *  abort mid-batch when a later pick's write fails, after earlier picks
+	 *  already committed and dirtied the tune. The dirty event is emitted from
+	 *  `Session::current_dirty_event` — read *after* the merge attempt,
+	 *  regardless of its `Ok`/`Err` result — so the badge always reflects the
+	 *  tune's actual state at the end of the command instead of silently
+	 *  under-reporting a partial merge as still clean.
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 };
