@@ -2358,12 +2358,19 @@ version = "0.0.0"
 name = "opentune-ini"
 version = "0.0.0"
 dependencies = [
+ "serde",
+ "specta",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "opentune-model"
 version = "0.0.0"
+dependencies = [
+ "opentune-ini",
+ "serde",
+ "specta",
+]
 
 [[package]]
 name = "opentune-project"
