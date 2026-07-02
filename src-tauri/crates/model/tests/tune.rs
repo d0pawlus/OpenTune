@@ -176,6 +176,53 @@ fn expr_scale_resolves_via_other_constant() {
 }
 
 #[test]
+fn expr_scale_uses_referenced_constants_physical_value_not_raw_byte() {
+    // Speeduino's `scale = { 0.1 / stoich }` pattern: `stoich` is itself
+    // scaled (U08, scale=0.1), so its *physical* value (~14.7, the
+    // stoichiometric ratio) must feed the expression -- not its raw storage
+    // byte (147). With non-unity scale on the referenced constant, physical
+    // and raw give a 10x-different (and here range-discriminating) result,
+    // pinning the physical-value contract documented on
+    // `Tune::lookup_expr_var`.
+    let stoich = scalar("stoich", ScalarType::U08, 0, 0.1, 0.0, 25.5);
+    let mut afr = scalar("afr", ScalarType::U08, 1, 1.0, 0.0, 100.0);
+    afr.scale = Number::Expr("0.1 / stoich".to_string());
+    let mut t = tune(Endianness::Little, vec![stoich, afr]);
+
+    // ---- read path ----
+    load1(&mut t, &[147, 100]); // stoich raw 147 -> physical 14.7; afr raw 100
+    let Value::Scalar(actual) = t.get("afr").unwrap() else {
+        panic!("expected a scalar value");
+    };
+
+    // Physical-based expectation: afr's scale resolves to `0.1 / 14.7`
+    // (stoich's physical value), so afr's physical value is
+    // `100 * (0.1 / 14.7)`. Floats: compare with an epsilon rather than `==`.
+    let physical_based = 100.0 * (0.1 / 14.7);
+    assert!(
+        (actual - physical_based).abs() < 1e-9,
+        "expected physical-based value {physical_based}, got {actual}"
+    );
+
+    // If `stoich`'s *raw* byte (147) were used instead of its physical
+    // value, the scale would be `0.1 / 147` -- a full order of magnitude
+    // smaller -- giving a clearly different (wrong) result.
+    let raw_based = 100.0 * (0.1 / 147.0);
+    assert!(
+        (actual - raw_based).abs() > 0.1,
+        "value {actual} should discriminate from the raw-based (buggy) {raw_based}"
+    );
+
+    // ---- write path ----
+    // With the physical-based scale (0.1 / 14.7 ~= 0.0068027), a physical
+    // value of 0.5 inverse-scales to raw 73.5 -> rounds to 74 (fits U08).
+    // The raw-based (buggy) scale (0.1 / 147 ~= 0.00068027) would instead
+    // require raw 735, which does not fit a U08 byte at all.
+    t.set("afr", Value::Scalar(0.5)).unwrap();
+    assert_eq!(t.page_bytes(1)[1], 74);
+}
+
+#[test]
 fn unresolvable_expr_is_error_not_panic() {
     let mut c = scalar("c", ScalarType::U08, 0, 1.0, 0.0, 255.0);
     c.scale = Number::Expr("bogusVar * 2".to_string());
