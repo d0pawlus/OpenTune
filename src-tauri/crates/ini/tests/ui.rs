@@ -232,3 +232,55 @@ page = 1
         def.diagnostics
     );
 }
+
+/// A genuinely-unknown dialog keyword inside `[UserDefined]` (not one of the
+/// recognised `dialog`/`panel`/`field`/`commandButton`/`settingSelector`/
+/// `slider`/`displayOnlyField`/`topicHelp` keywords) must still let the parse
+/// succeed, must NOT produce a dialog field, and must be recorded as a
+/// `Diagnostic` naming the unrecognised keyword — the graceful-degradation
+/// contract documented on `ui_dialog_parser.rs`, not a silent drop.
+#[test]
+fn unknown_dialog_keyword_records_diagnostic_not_dropped_silently() {
+    let ini = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   pageActivationDelay  = 10
+   blockReadTimeout     = 2000
+   interWriteDelay      = 10
+   blockingFactor       = 251
+   endianness           = little
+   messageEnvelopeFormat = msEnvelope_1.0
+   ochGetCommand        = "r"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+
+[Constants]
+    pageSize = 4
+page = 1
+
+[UserDefined]
+   dialog = engine_constants_southwest, "Speeduino Board"
+      frobnicator = "X", someVar
+"#;
+
+    let def = parse_definition(ini).expect("parse must not fail on an unknown dialog keyword");
+
+    assert_eq!(def.dialogs.len(), 1);
+    let dialog = &def.dialogs[0];
+    assert_eq!(
+        dialog.fields.len(),
+        0,
+        "unknown dialog keyword must not produce a dialog field"
+    );
+
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "UserDefined" && d.detail.contains("frobnicator")),
+        "expected a Diagnostic naming the unknown dialog keyword `frobnicator`, got: {:?}",
+        def.diagnostics
+    );
+}

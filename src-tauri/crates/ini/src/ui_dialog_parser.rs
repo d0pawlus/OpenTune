@@ -22,7 +22,9 @@
 //!   neither has a faithful frozen `FieldKind`, so both are dropped with a
 //!   [`Diagnostic`] rather than inventing a new field kind.
 //! - Any other unrecognised leading keyword inside `[UserDefined]` (besides
-//!   `dialog`/`panel`/`field`/`topicHelp`) degrades the same way.
+//!   `dialog`/`panel`/`field`/`topicHelp`) degrades the same way: it produces
+//!   no dialog field and is recorded as a [`Diagnostic`] naming the unknown
+//!   keyword, rather than being silently dropped.
 
 use crate::ui::{Diagnostic, DialogDef, DialogField, FieldKind};
 use crate::ui_tokens::{brace_expr, is_brace_token, split_tokens, unquote};
@@ -61,7 +63,7 @@ pub(crate) fn parse_dialog_line(
             parse_constant_backed_field(value, dialogs, diagnostics, "displayOnlyField");
         }
         "topicHelp" => {} // Informational only; no representable target.
-        _ => {}
+        _ => record_unknown_keyword(key, value, diagnostics),
     }
 }
 
@@ -179,5 +181,17 @@ fn record_unrepresentable_field(value: &str, keyword: &str, diagnostics: &mut Ve
     diagnostics.push(Diagnostic {
         section: "UserDefined".to_string(),
         detail,
+    });
+}
+
+/// Any leading keyword inside `[UserDefined]` that isn't one of the
+/// recognised dialog keywords (`dialog`/`panel`/`field`/`commandButton`/
+/// `settingSelector`/`slider`/`displayOnlyField`/`topicHelp`) — record a
+/// `Diagnostic` naming the keyword and its raw value rather than silently
+/// dropping the line.
+fn record_unknown_keyword(keyword: &str, value: &str, diagnostics: &mut Vec<Diagnostic>) {
+    diagnostics.push(Diagnostic {
+        section: "UserDefined".to_string(),
+        detail: format!("unknown dialog keyword `{keyword}`: `{value}`"),
     });
 }
