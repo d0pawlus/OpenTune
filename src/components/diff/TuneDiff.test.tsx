@@ -1,7 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { buildMergePayload, TuneDiff } from "./TuneDiff";
+import * as ipc from "../../ipc/bindings";
+import type { FieldDiffDto } from "../../ipc/bindings";
+
+vi.mock("../../ipc/bindings", () => ({
+  commands: {
+    snapshotTune: vi.fn(),
+    diffTune: vi.fn(),
+    mergeTune: vi.fn(),
+  },
+}));
+
+const reqFuelDiff: FieldDiffDto = {
+  name: "reqFuel",
+  a: { Scalar: 12.5 },
+  b: { Scalar: 0 },
+  cells: [],
+};
 
 describe("buildMergePayload", () => {
   it("returns the names whose selection is true", () => {
@@ -29,7 +46,8 @@ describe("TuneDiff", () => {
     expect(
       screen.getByText("Snapshot the current tune to start comparing"),
     ).toBeTruthy();
-    // No diff yet, so no merge action and no table.
+    // No baseline yet, so no compare/merge actions and no table.
+    expect(screen.queryByText("Compare")).toBeNull();
     expect(screen.queryByText("Merge selected")).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
   });
@@ -37,5 +55,35 @@ describe("TuneDiff", () => {
   it("renders the Polish title when locale is pl", () => {
     render(<TuneDiff locale="pl" />);
     expect(screen.getByText("Różnice")).toBeTruthy();
+  });
+
+  it("populates the diff table after snapshotting, and merges the picked row", async () => {
+    const snapshotTune = vi.mocked(ipc.commands.snapshotTune);
+    const diffTune = vi.mocked(ipc.commands.diffTune);
+    const mergeTune = vi.mocked(ipc.commands.mergeTune);
+
+    snapshotTune.mockResolvedValue({ status: "ok", data: null });
+    diffTune.mockResolvedValue({ status: "ok", data: [reqFuelDiff] });
+    mergeTune.mockResolvedValue({ status: "ok", data: null });
+
+    render(<TuneDiff locale="en" />);
+
+    // Snapshotting captures the baseline and immediately compares against it.
+    fireEvent.click(screen.getByText("Snapshot baseline"));
+    await waitFor(() => expect(screen.getByRole("table")).toBeTruthy());
+    expect(screen.getByLabelText("reqFuel")).toBeTruthy();
+
+    // A later, independent "Compare" re-diffs without re-snapshotting — the
+    // real usage is snapshot once, edit elsewhere, compare repeatedly.
+    expect(screen.getByText("Compare")).toBeTruthy();
+
+    // Pick the row and merge — the checkbox -> payload -> command wiring.
+    fireEvent.click(screen.getByLabelText("reqFuel"));
+    fireEvent.click(screen.getByText("Merge selected"));
+
+    await waitFor(() => expect(mergeTune).toHaveBeenCalledWith(["reqFuel"]));
+    // merge re-compares; diffTune was called for the initial compare and
+    // again after the merge.
+    expect(diffTune).toHaveBeenCalledTimes(2);
   });
 });

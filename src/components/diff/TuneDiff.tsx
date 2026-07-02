@@ -34,25 +34,32 @@ interface TuneDiffProps {
 }
 
 /**
- * Task 8 diff/merge panel: snapshot the current tune as a baseline, list the
- * constants that differ from it with a per-row "take" checkbox, and merge
- * the picked constants back — live to the ECU via `merge_tune`. Re-diffs
- * after a successful merge so the table always reflects what's left.
+ * Task 8 diff/merge panel. "Snapshot baseline" captures the current tune as
+ * the comparison baseline (a one-time capture, not live-updating); "Compare"
+ * re-runs the diff against that baseline — separate actions, because the
+ * useful flow is snapshot once, edit values elsewhere in the dialog panel
+ * above, then compare (possibly repeatedly) before merging. The diff table
+ * lists differing constants with a per-row "take" checkbox; "merge
+ * selected" writes the picks live to the ECU and re-compares.
  */
 export function TuneDiff({ locale }: TuneDiffProps) {
+  const [hasSnapshot, setHasSnapshot] = useState(false);
   const [diffs, setDiffs] = useState<FieldDiffDto[] | null>(null);
   const [selection, setSelection] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const refreshDiff = useCallback(async () => {
+  const compare = useCallback(async () => {
+    setBusy(true);
+    setError(null);
     const res = await commands.diffTune();
     if (res.status === "error") {
       setError(res.error);
-      return;
+    } else {
+      setDiffs(res.data);
+      setSelection({});
     }
-    setDiffs(res.data);
-    setSelection({});
+    setBusy(false);
   }, []);
 
   const snapshot = useCallback(async () => {
@@ -64,9 +71,10 @@ export function TuneDiff({ locale }: TuneDiffProps) {
       setBusy(false);
       return;
     }
-    await refreshDiff();
+    setHasSnapshot(true);
     setBusy(false);
-  }, [refreshDiff]);
+    await compare();
+  }, [compare]);
 
   const toggle = (name: string) =>
     setSelection((s) => ({ ...s, [name]: !s[name] }));
@@ -78,9 +86,9 @@ export function TuneDiff({ locale }: TuneDiffProps) {
     setError(null);
     const res = await commands.mergeTune(picks);
     if (res.status === "error") setError(res.error);
-    await refreshDiff();
     setBusy(false);
-  }, [selection, refreshDiff]);
+    await compare();
+  }, [selection, compare]);
 
   const picked = buildMergePayload(selection).length;
 
@@ -92,6 +100,11 @@ export function TuneDiff({ locale }: TuneDiffProps) {
           <button type="button" onClick={snapshot} disabled={busy}>
             {t("diff.snapshot", locale)}
           </button>
+          {hasSnapshot && (
+            <button type="button" onClick={compare} disabled={busy}>
+              {t("diff.compare", locale)}
+            </button>
+          )}
           {diffs && diffs.length > 0 && (
             <button
               type="button"
@@ -106,7 +119,7 @@ export function TuneDiff({ locale }: TuneDiffProps) {
 
       {error && <p className="tune-error">{error}</p>}
 
-      {!diffs && (
+      {!hasSnapshot && (
         <p className="tune-diff-empty">{t("diff.noSnapshot", locale)}</p>
       )}
       {diffs && diffs.length === 0 && (

@@ -30,6 +30,7 @@ export const en = {
   "tune.noDialog": "Select a menu item to edit",
   "diff.title": "Diff",
   "diff.snapshot": "Snapshot baseline",
+  "diff.compare": "Compare",
   "diff.mergeSelected": "Merge selected",
   "diff.take": "Take",
   "diff.constant": "Constant",
