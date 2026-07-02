@@ -28,7 +28,7 @@ use crate::connection::{ActiveConnection, Session};
 use crate::dto::DefinitionDto;
 use crate::events::TuneDirtyEvent;
 
-const NO_TUNE: &str = "no tune loaded — call load_tune first";
+pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
 const SERIAL_UNSUPPORTED: &str = "live page operations are not yet wired for serial \
     connections (M3: persist MsProtocol in ConnectionManager); use the simulator for M2";
 
@@ -42,7 +42,9 @@ impl Session {
     /// Read every declared page from the ECU into a fresh [`Tune`]. Loading is
     /// not an edit, so the resulting tune is clean (`dirty == false`).
     pub fn load_tune(&mut self) -> Result<TuneDirtyEvent, String> {
-        let Session { conn, def, tune } = self;
+        let Session {
+            conn, def, tune, ..
+        } = self;
         let mut fresh = Tune::new(Arc::clone(def));
         let mut proto = protocol_for(conn, &def.comms)?;
         for page in &def.pages {
@@ -66,7 +68,9 @@ impl Session {
     /// Set a constant, writing the changed bytes live to the ECU. Validated on
     /// a clone first; the model is committed only after the wire confirms.
     pub fn set_value(&mut self, name: &str, value: Value) -> Result<TuneDirtyEvent, String> {
-        let Session { conn, def, tune } = self;
+        let Session {
+            conn, def, tune, ..
+        } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
 
         // Validate + compute target bytes without touching the real tune.
@@ -86,7 +90,9 @@ impl Session {
     /// undo that does not reach the wire would be a lie, so on write failure we
     /// `redo` to keep the tune consistent with the ECU.
     pub fn undo(&mut self) -> Result<TuneDirtyEvent, String> {
-        let Session { conn, def, tune } = self;
+        let Session {
+            conn, def, tune, ..
+        } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
         let before = tune.clone();
         if !tune.undo() {
@@ -103,7 +109,9 @@ impl Session {
     /// Redo the most recently undone edit, writing the re-applied bytes to the
     /// ECU. On write failure, `undo` to stay consistent with the ECU.
     pub fn redo(&mut self) -> Result<TuneDirtyEvent, String> {
-        let Session { conn, def, tune } = self;
+        let Session {
+            conn, def, tune, ..
+        } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
         let before = tune.clone();
         if !tune.redo() {
@@ -122,7 +130,9 @@ impl Session {
     /// burned pages stay marked dirty and are simply re-burned on retry (burn
     /// is idempotent), so no page is ever falsely reported as persisted.
     pub fn burn(&mut self) -> Result<TuneDirtyEvent, String> {
-        let Session { conn, def, tune } = self;
+        let Session {
+            conn, def, tune, ..
+        } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
         let dirty = tune.dirty_pages();
         let mut proto = protocol_for(conn, &def.comms)?;
@@ -166,7 +176,11 @@ fn protocol_for(
 
 /// The contiguous changed byte span per page between two tunes: `(page number,
 /// start offset, changed bytes from `after`)`. Uniform for set/undo/redo.
-fn page_deltas(before: &Tune, after: &Tune, pages: &[PageDef]) -> Vec<(u16, usize, Vec<u8>)> {
+pub(crate) fn page_deltas(
+    before: &Tune,
+    after: &Tune,
+    pages: &[PageDef],
+) -> Vec<(u16, usize, Vec<u8>)> {
     pages
         .iter()
         .filter_map(|p| {
@@ -183,7 +197,7 @@ fn page_deltas(before: &Tune, after: &Tune, pages: &[PageDef]) -> Vec<(u16, usiz
 }
 
 /// Write each page delta to the ECU via a fresh protocol handle.
-fn write_deltas(
+pub(crate) fn write_deltas(
     conn: &ActiveConnection,
     comms: &CommsSettings,
     deltas: &[(u16, usize, Vec<u8>)],
@@ -202,7 +216,7 @@ fn write_deltas(
 }
 
 /// Snapshot the tune's dirty state into an IPC event.
-fn dirty_event(tune: &Tune) -> TuneDirtyEvent {
+pub(crate) fn dirty_event(tune: &Tune) -> TuneDirtyEvent {
     TuneDirtyEvent {
         dirty: tune.is_dirty(),
         dirty_pages: tune.dirty_pages(),
@@ -211,7 +225,7 @@ fn dirty_event(tune: &Tune) -> TuneDirtyEvent {
 
 /// Render a [`ModelError`] as a user-facing string (the IPC error channel is
 /// `String`, matching the M1 command convention).
-fn fmt_model_err(e: ModelError) -> String {
+pub(crate) fn fmt_model_err(e: ModelError) -> String {
     match e {
         ModelError::UnknownConstant(n) => format!("unknown constant `{n}`"),
         ModelError::OutOfRange { name, value } => {
@@ -238,6 +252,7 @@ mod tests {
             conn,
             def,
             tune: None,
+            snapshot: None,
         }
     }
 

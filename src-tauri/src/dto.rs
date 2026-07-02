@@ -12,6 +12,7 @@
 use opentune_ini::{
     ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, MenuDef, Number, TableDef,
 };
+use opentune_model::{CellDiff, FieldDiff, Value};
 
 /// The UI-facing projection of a [`Definition`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
@@ -216,6 +217,48 @@ fn lit(n: &Number) -> Option<f64> {
     }
 }
 
+// ── Task 8: tune diff / merge ───────────────────────────────────────────────
+
+/// IPC projection of [`opentune_model::FieldDiff`] — identical shape, but
+/// (transitively, via [`CellDiffDto`]) narrows the `usize` cell index to
+/// `u32`, since the pinned `specta-typescript` forbids exporting `usize`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct FieldDiffDto {
+    pub name: String,
+    pub a: Value,
+    pub b: Value,
+    pub cells: Vec<CellDiffDto>,
+}
+
+/// IPC projection of [`opentune_model::CellDiff`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CellDiffDto {
+    pub index: u32,
+    pub a: f64,
+    pub b: f64,
+}
+
+impl From<FieldDiff> for FieldDiffDto {
+    fn from(d: FieldDiff) -> Self {
+        Self {
+            name: d.name,
+            a: d.a,
+            b: d.b,
+            cells: d.cells.into_iter().map(CellDiffDto::from).collect(),
+        }
+    }
+}
+
+impl From<CellDiff> for CellDiffDto {
+    fn from(c: CellDiff) -> Self {
+        Self {
+            index: c.index as u32,
+            a: c.a,
+            b: c.b,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +296,30 @@ mod tests {
         let req = dto.constants.iter().find(|c| c.name == "reqFuel").unwrap();
         assert_eq!(req.kind, ConstantKindDto::Scalar);
         assert_eq!(req.high, Some(6553.5));
+    }
+
+    #[test]
+    fn field_diff_dto_narrows_cell_index_to_u32() {
+        let diff = FieldDiff {
+            name: "map".to_string(),
+            a: Value::Array(vec![1.0, 2.0]),
+            b: Value::Array(vec![1.0, 9.0]),
+            cells: vec![CellDiff {
+                index: 1,
+                a: 2.0,
+                b: 9.0,
+            }],
+        };
+        let dto = FieldDiffDto::from(diff);
+        assert_eq!(dto.name, "map");
+        assert_eq!(dto.a, Value::Array(vec![1.0, 2.0]));
+        assert_eq!(
+            dto.cells,
+            vec![CellDiffDto {
+                index: 1,
+                a: 2.0,
+                b: 9.0
+            }]
+        );
     }
 }

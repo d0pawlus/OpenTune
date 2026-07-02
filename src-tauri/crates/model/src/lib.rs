@@ -7,9 +7,11 @@
 //! describing what the bytes mean.
 
 mod codec;
+mod diff;
 mod edit;
 mod tune;
 mod value;
 
+pub use diff::{diff, merge, CellDiff, FieldDiff};
 pub use tune::{ModelError, Tune};
 pub use value::Value;

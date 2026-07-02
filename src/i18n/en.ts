@@ -28,4 +28,13 @@ export const en = {
   "tune.undo": "Undo",
   "tune.redo": "Redo",
   "tune.noDialog": "Select a menu item to edit",
+  "diff.title": "Diff",
+  "diff.snapshot": "Snapshot baseline",
+  "diff.mergeSelected": "Merge selected",
+  "diff.take": "Take",
+  "diff.constant": "Constant",
+  "diff.current": "Current",
+  "diff.other": "Other",
+  "diff.noSnapshot": "Snapshot the current tune to start comparing",
+  "diff.noDifferences": "No differences from the snapshot",
 } as const;

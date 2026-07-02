@@ -29,4 +29,13 @@ export const pl: Record<keyof typeof en, string> = {
   "tune.undo": "Cofnij",
   "tune.redo": "Ponów",
   "tune.noDialog": "Wybierz pozycję menu do edycji",
+  "diff.title": "Różnice",
+  "diff.snapshot": "Zapisz stan odniesienia",
+  "diff.mergeSelected": "Scal zaznaczone",
+  "diff.take": "Weź",
+  "diff.constant": "Stała",
+  "diff.current": "Bieżąca",
+  "diff.other": "Inna",
+  "diff.noSnapshot": "Zapisz stan bieżącego strojenia, aby zacząć porównywanie",
+  "diff.noDifferences": "Brak różnic względem zapisanego stanu",
 };

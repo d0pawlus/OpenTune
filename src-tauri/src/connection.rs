@@ -51,6 +51,10 @@ pub struct Session {
     pub def: Arc<Definition>,
     /// The in-memory editable tune, once loaded from the ECU.
     pub tune: Option<Tune>,
+    /// The diff/merge baseline (Task 8) — an in-memory snapshot of `tune`
+    /// taken by `Session::snapshot_tune`. `None` until a snapshot is taken;
+    /// file-based `.msq` snapshots are M6.
+    pub snapshot: Option<Tune>,
 }
 
 /// Tauri managed state type — the whole session behind one mutex.
@@ -195,7 +199,12 @@ pub fn simulate_link_drop_async(
     emit: impl Fn(ConnectionState) + Send + 'static,
 ) {
     std::thread::spawn(move || {
-        let Session { conn, def, tune } = session;
+        let Session {
+            conn,
+            def,
+            tune,
+            snapshot,
+        } = session;
         match conn {
             ActiveConnection::Sim {
                 mut manager,
@@ -219,6 +228,7 @@ pub fn simulate_link_drop_async(
                         conn: ActiveConnection::Sim { manager, simulator },
                         def,
                         tune,
+                        snapshot,
                     });
                 }
             }

@@ -44,7 +44,8 @@ pub enum ModelError {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tune {
     /// The definition this tune's pages/constants are shaped by.
-    def: Arc<Definition>,
+    /// `pub(crate)` so `diff` (a sibling module) can walk its constants.
+    pub(crate) def: Arc<Definition>,
     /// One byte buffer per page, indexed in the same order as `def.pages`.
     pages: Vec<Vec<u8>>,
     /// Pages with at least one edit since the last [`Tune::mark_burned`].

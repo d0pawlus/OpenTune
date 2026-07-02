@@ -11,7 +11,7 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event as _;
 
 use crate::connection::SessionStore;
-use crate::dto::DefinitionDto;
+use crate::dto::{DefinitionDto, FieldDiffDto};
 
 const NOT_CONNECTED: &str = "not connected";
 
@@ -120,4 +120,42 @@ pub fn eval_conditions(
     let guard = state.lock().map_err(|e| e.to_string())?;
     let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
     session.eval_conditions(&exprs)
+}
+
+/// Snapshot the current tune as the diff/merge baseline (the "other" side).
+#[tauri::command]
+#[specta::specta]
+pub fn snapshot_tune(state: State<'_, SessionStore>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
+    session.snapshot_tune()
+}
+
+/// Diff the current tune against the snapshot baseline taken by
+/// `snapshot_tune`.
+#[tauri::command]
+#[specta::specta]
+pub fn diff_tune(state: State<'_, SessionStore>) -> Result<Vec<FieldDiffDto>, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
+    session.diff_tune()
+}
+
+/// Merge the picked constants from the snapshot baseline into the current
+/// tune, writing each accepted pick live to the ECU. Emits the new dirty
+/// state on success.
+#[tauri::command]
+#[specta::specta]
+pub fn merge_tune(
+    picks: Vec<String>,
+    state: State<'_, SessionStore>,
+    app: AppHandle,
+) -> Result<(), String> {
+    let event = {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
+        session.merge_tune(&picks)?
+    };
+    let _ = event.emit(&app);
+    Ok(())
 }

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Shared test fixtures for the Task 4 `Tune` test binaries
-//! (`tune.rs` and `tune_state.rs`).
+//! Shared test fixtures for the `Tune` test binaries (`tune.rs`,
+//! `tune_state.rs`, and Task 8's `diff.rs`).
+//!
+//! Each `tests/*.rs` file compiles this module into its own separate test
+//! binary, so a helper unused by one binary (e.g. `load1` in `diff.rs`) is
+//! flagged as dead code there even though other binaries use it; allowed
+//! crate-wide here rather than per-binary.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 

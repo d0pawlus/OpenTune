@@ -52,6 +52,19 @@ export const commands = {
 	 *  Fails open (a broken expression yields `true`).
 	 */
 	evalConditions: (exprs: string[]) => typedError<boolean[], string>(__TAURI_INVOKE("eval_conditions", { exprs })),
+	/**  Snapshot the current tune as the diff/merge baseline (the "other" side). */
+	snapshotTune: () => typedError<null, string>(__TAURI_INVOKE("snapshot_tune")),
+	/**
+	 *  Diff the current tune against the snapshot baseline taken by
+	 *  `snapshot_tune`.
+	 */
+	diffTune: () => typedError<FieldDiffDto[], string>(__TAURI_INVOKE("diff_tune")),
+	/**
+	 *  Merge the picked constants from the snapshot baseline into the current
+	 *  tune, writing each accepted pick live to the ECU. Emits the new dirty
+	 *  state on success.
+	 */
+	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 };
 
 /** Events */
@@ -65,6 +78,13 @@ export const events = {
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**  IPC projection of [`opentune_model::CellDiff`]. */
+export type CellDiffDto = {
+	index: number,
+	a: number | null,
+	b: number | null,
 };
 
 /**  Which ECU to connect to; deserialized from the frontend command payload. */
@@ -154,6 +174,18 @@ export type DialogDto = {
 	name: string,
 	title: string,
 	fields: FieldDto[],
+};
+
+/**
+ *  IPC projection of [`opentune_model::FieldDiff`] — identical shape, but
+ *  (transitively, via [`CellDiffDto`]) narrows the `usize` cell index to
+ *  `u32`, since the pinned `specta-typescript` forbids exporting `usize`.
+ */
+export type FieldDiffDto = {
+	name: string,
+	a: Value,
+	b: Value,
+	cells: CellDiffDto[],
 };
 
 /**

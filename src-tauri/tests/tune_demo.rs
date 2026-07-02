@@ -33,6 +33,7 @@ fn open_session() -> Session {
         conn,
         def,
         tune: None,
+        snapshot: None,
     }
 }
 

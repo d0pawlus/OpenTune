@@ -117,6 +117,7 @@ pub fn connect(
         conn,
         def,
         tune: None,
+        snapshot: None,
     });
     Ok(())
 }

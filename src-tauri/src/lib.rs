@@ -4,6 +4,7 @@ pub mod connection;
 pub mod dto;
 pub mod events;
 pub mod session;
+mod session_diff;
 mod tune_commands;
 
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,9 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::undo_tune,
             tune_commands::redo_tune,
             tune_commands::eval_conditions,
+            tune_commands::snapshot_tune,
+            tune_commands::diff_tune,
+            tune_commands::merge_tune,
         ])
         .events(collect_events![
             events::Heartbeat,
@@ -165,6 +169,23 @@ mod binding_gen {
             "DefinitionDto",
             "DialogDto",
             "ConstantKindDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_diff_merge_commands() {
+        let contents = export_and_read();
+        for needle in [
+            "snapshotTune",
+            "diffTune",
+            "mergeTune",
+            "FieldDiffDto",
+            "CellDiffDto",
         ] {
             assert!(
                 contents.contains(needle),

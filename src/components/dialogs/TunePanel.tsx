@@ -7,6 +7,7 @@ import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
 import { TableField } from "./TableField";
+import { TuneDiff } from "../diff/TuneDiff";
 import "./dialogs.css";
 
 /** Distinct `visible`/`enable` expressions across every dialog. */
@@ -214,6 +215,8 @@ export function TunePanel({ locale }: { locale: Locale }) {
           ))}
         </div>
       </div>
+
+      <TuneDiff locale={locale} />
     </section>
   );
 }
