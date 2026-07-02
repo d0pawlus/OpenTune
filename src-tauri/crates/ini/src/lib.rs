@@ -25,12 +25,15 @@ mod constants;
 mod constants_fields;
 mod constants_parser;
 mod definition;
+mod expr;
+mod expr_parser;
 mod parser;
 mod preprocessor;
 mod ui;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};
+pub use expr::{eval, eval_bool, ExprError};
 pub use parser::parse_comms;
 pub use preprocessor::preprocess;
 pub use ui::{
