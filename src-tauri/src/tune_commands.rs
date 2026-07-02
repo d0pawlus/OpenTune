@@ -142,8 +142,15 @@ pub fn diff_tune(state: State<'_, SessionStore>) -> Result<Vec<FieldDiffDto>, St
 }
 
 /// Merge the picked constants from the snapshot baseline into the current
-/// tune, writing each accepted pick live to the ECU. Emits the new dirty
-/// state on success.
+/// tune, writing each accepted pick live to the ECU.
+///
+/// `merge_tune` applies picks one at a time (see `session_diff.rs`) and can
+/// abort mid-batch when a later pick's write fails, after earlier picks
+/// already committed and dirtied the tune. The dirty event is emitted from
+/// `Session::current_dirty_event` — read *after* the merge attempt,
+/// regardless of its `Ok`/`Err` result — so the badge always reflects the
+/// tune's actual state at the end of the command instead of silently
+/// under-reporting a partial merge as still clean.
 #[tauri::command]
 #[specta::specta]
 pub fn merge_tune(
@@ -151,11 +158,15 @@ pub fn merge_tune(
     state: State<'_, SessionStore>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let event = {
+    let (result, event) = {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.merge_tune(&picks)?
+        let result = session.merge_tune(&picks);
+        let event = session.current_dirty_event();
+        (result, event)
     };
-    let _ = event.emit(&app);
-    Ok(())
+    if let Some(event) = event {
+        let _ = event.emit(&app);
+    }
+    result.map(|_| ())
 }

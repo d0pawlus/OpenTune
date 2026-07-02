@@ -153,6 +153,18 @@ impl Session {
             .map(|e| tune.eval_condition(e).unwrap_or(true))
             .collect())
     }
+
+    /// The tune's current dirty-state event, if a tune is loaded.
+    ///
+    /// Used by IPC commands to emit a truthful badge state regardless of
+    /// whether the triggering operation returned `Ok` or `Err` — e.g.
+    /// `merge_tune` applies picks one at a time and can abort mid-batch
+    /// (a later pick's write fails) after earlier picks already committed
+    /// and dirtied the tune; recomputing the event from `tune` here (rather
+    /// than only returning it on the `Ok` path) reflects that actual state.
+    pub fn current_dirty_event(&self) -> Option<TuneDirtyEvent> {
+        self.tune.as_ref().map(dirty_event)
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -390,5 +402,26 @@ mod tests {
         assert!(s.set_value("reqFuel", Value::Scalar(1.0)).is_err());
         assert!(s.burn().is_err());
         assert!(s.read_values(&["reqFuel".into()]).is_err());
+    }
+
+    #[test]
+    fn current_dirty_event_reflects_tune_state_regardless_of_the_last_ops_result() {
+        let mut s = session();
+        assert!(
+            s.current_dirty_event().is_none(),
+            "no tune loaded yet -- nothing to report"
+        );
+
+        s.load_tune().unwrap();
+        let ev = s.current_dirty_event().expect("tune now loaded");
+        assert!(!ev.dirty, "freshly loaded tune is clean");
+
+        s.set_value("reqFuel", Value::Scalar(12.5)).unwrap();
+        let ev = s.current_dirty_event().expect("tune still loaded");
+        assert!(
+            ev.dirty,
+            "must reflect the edit even read independently of set_value's own Ok"
+        );
+        assert_eq!(ev.dirty_pages, vec![1]);
     }
 }
