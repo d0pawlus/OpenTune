@@ -23,6 +23,47 @@
 
 use crate::{ConstantDef, ConstantKind, IniError, Number, ScalarType, Shape};
 
+/// Per-page running `lastOffset` state.
+///
+/// An unrecognised constant `class` cannot be sized, so the caller
+/// (`constants_parser.rs`) cannot know how many bytes it occupies and must
+/// stop trusting the running counter for that page — [`Self::Poisoned`]
+/// records that. Resolving `lastOffset` while poisoned is refused (see
+/// [`resolve_offset`]) rather than silently returning the stale
+/// pre-poison value, which would desync every later `lastOffset` constant
+/// onto a wrong-but-plausible offset. An explicit numeric offset is
+/// unaffected by the poison and, on success, re-anchors the page back to
+/// [`Self::Known`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum OffsetCounter {
+    Known(usize),
+    Poisoned,
+}
+
+impl OffsetCounter {
+    pub(crate) fn zero() -> Self {
+        OffsetCounter::Known(0)
+    }
+}
+
+/// The result of resolving one constant's offset field.
+enum OffsetResolution {
+    Value(usize),
+    /// The field was `lastOffset`, but the page's running counter is
+    /// [`OffsetCounter::Poisoned`] — refuse to resolve rather than return a
+    /// desynced value.
+    Poisoned,
+}
+
+/// The outcome of parsing one recognised-class constant line.
+pub(crate) enum FieldOutcome {
+    Def(ConstantDef),
+    /// The class was recognised but its offset field was `lastOffset` on a
+    /// poisoned page; the caller records a diagnostic and skips the
+    /// constant instead of adding it.
+    PoisonedOffset,
+}
+
 /// Split a constant's value tail into comma-separated fields, respecting
 /// double-quoted strings and `{ ... }` expressions (both of which may
 /// themselves contain commas, e.g. `{ a, b }` is not valid here but a
@@ -135,12 +176,22 @@ fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
 }
 
 /// Resolve an offset field: either a literal integer, or the `lastOffset`
-/// keyword, which resolves to the running per-page byte counter.
-fn resolve_offset(field: &str, running: &usize) -> Option<usize> {
+/// keyword, which resolves to the running per-page byte counter — unless
+/// that counter is [`OffsetCounter::Poisoned`], in which case resolution is
+/// refused (see [`OffsetCounter`]'s doc comment). A literal integer is
+/// always honored regardless of poison.
+fn resolve_offset(field: &str, running: &OffsetCounter) -> Option<OffsetResolution> {
     if field.trim() == "lastOffset" {
-        Some(*running)
+        match running {
+            OffsetCounter::Known(v) => Some(OffsetResolution::Value(*v)),
+            OffsetCounter::Poisoned => Some(OffsetResolution::Poisoned),
+        }
     } else {
-        field.trim().parse::<usize>().ok()
+        field
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .map(OffsetResolution::Value)
     }
 }
 
@@ -151,34 +202,52 @@ fn invalid(name: &str, detail: &str) -> IniError {
     }
 }
 
+/// The result of parsing one `[Constants]`/`[PcVariables]` line, for the
+/// caller (`constants_parser.rs`) to turn into either a stored
+/// [`ConstantDef`] or a `Diagnostic`.
+pub(crate) enum ConstantLineResult {
+    Def(ConstantDef),
+    /// The `class` token wasn't recognised.
+    UnknownClass,
+    /// The class was recognised, but its `lastOffset` field couldn't be
+    /// trusted because an earlier unrecognised constant poisoned the
+    /// page's running offset (see [`OffsetCounter`]).
+    PoisonedOffset,
+}
+
 /// Parse one `name = class, ...` constant line.
 ///
 /// `page` is `None` for `[PcVariables]` entries (no offset field in that
 /// section's grammar). `running_offset` is the per-page `lastOffset`
 /// counter; it is advanced past the field's byte width on success.
 ///
-/// Returns `Ok(None)` for an unrecognised `class` so the caller can
-/// degrade gracefully with a `Diagnostic` instead of failing the whole
-/// parse.
+/// Returns [`ConstantLineResult::UnknownClass`] for an unrecognised `class`
+/// so the caller can degrade gracefully with a `Diagnostic` instead of
+/// failing the whole parse.
 pub(crate) fn parse_constant_line(
     name: &str,
     value: &str,
     page: Option<u16>,
-    running_offset: &mut usize,
-) -> crate::Result<Option<ConstantDef>> {
+    running_offset: &mut OffsetCounter,
+) -> crate::Result<ConstantLineResult> {
     let fields = split_fields(value);
     let Some(class) = fields.first().map(String::as_str) else {
-        return Ok(None);
+        return Ok(ConstantLineResult::UnknownClass);
     };
 
-    match (class, page) {
-        ("scalar", Some(p)) => parse_scalar(name, &fields, p, running_offset).map(Some),
-        ("scalar", None) => parse_scalar_no_offset(name, &fields).map(Some),
-        ("array", Some(p)) => parse_array(name, &fields, p, running_offset).map(Some),
-        ("bits", Some(p)) => parse_bits(name, &fields, p, running_offset).map(Some),
-        ("string", Some(p)) => parse_string(name, &fields, p, running_offset).map(Some),
-        _ => Ok(None),
-    }
+    let outcome = match (class, page) {
+        ("scalar", Some(p)) => parse_scalar(name, &fields, p, running_offset)?,
+        ("scalar", None) => FieldOutcome::Def(parse_scalar_no_offset(name, &fields)?),
+        ("array", Some(p)) => parse_array(name, &fields, p, running_offset)?,
+        ("bits", Some(p)) => parse_bits(name, &fields, p, running_offset)?,
+        ("string", Some(p)) => parse_string(name, &fields, p, running_offset)?,
+        _ => return Ok(ConstantLineResult::UnknownClass),
+    };
+
+    Ok(match outcome {
+        FieldOutcome::Def(def) => ConstantLineResult::Def(def),
+        FieldOutcome::PoisonedOffset => ConstantLineResult::PoisonedOffset,
+    })
 }
 
 /// `name = scalar, TYPE, offset, units, scale, translate, low, high, digits`
@@ -186,16 +255,20 @@ fn parse_scalar(
     name: &str,
     fields: &[String],
     page: u16,
-    running_offset: &mut usize,
-) -> crate::Result<ConstantDef> {
+    running_offset: &mut OffsetCounter,
+) -> crate::Result<FieldOutcome> {
     let scalar_type = fields
         .get(1)
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised scalar type"))?;
-    let offset = fields
+    let offset = match fields
         .get(2)
         .and_then(|s| resolve_offset(s, running_offset))
-        .ok_or_else(|| invalid(name, "unparseable offset"))?;
+    {
+        Some(OffsetResolution::Value(v)) => v,
+        Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
+        None => return Err(invalid(name, "unparseable offset")),
+    };
     let units = fields.get(3).map(|s| unquote(s)).unwrap_or_default();
     let scale = fields
         .get(4)
@@ -218,9 +291,9 @@ fn parse_scalar(
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = offset + scalar_width(scalar_type);
+    *running_offset = OffsetCounter::Known(offset + scalar_width(scalar_type));
 
-    Ok(ConstantDef {
+    Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
         page,
         offset,
@@ -231,7 +304,7 @@ fn parse_scalar(
         low,
         high,
         digits,
-    })
+    }))
 }
 
 /// `[PcVariables]` scalar: `name = scalar, TYPE, units, scale, translate, low, high, digits`
@@ -282,16 +355,20 @@ fn parse_array(
     name: &str,
     fields: &[String],
     page: u16,
-    running_offset: &mut usize,
-) -> crate::Result<ConstantDef> {
+    running_offset: &mut OffsetCounter,
+) -> crate::Result<FieldOutcome> {
     let elem = fields
         .get(1)
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised array element type"))?;
-    let offset = fields
+    let offset = match fields
         .get(2)
         .and_then(|s| resolve_offset(s, running_offset))
-        .ok_or_else(|| invalid(name, "unparseable offset"))?;
+    {
+        Some(OffsetResolution::Value(v)) => v,
+        Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
+        None => return Err(invalid(name, "unparseable offset")),
+    };
     let shape = fields
         .get(3)
         .and_then(|s| parse_shape(s))
@@ -318,9 +395,9 @@ fn parse_array(
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = offset + scalar_width(elem) * shape.rows * shape.cols;
+    *running_offset = OffsetCounter::Known(offset + scalar_width(elem) * shape.rows * shape.cols);
 
-    Ok(ConstantDef {
+    Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
         page,
         offset,
@@ -331,7 +408,7 @@ fn parse_array(
         low,
         high,
         digits,
-    })
+    }))
 }
 
 /// `name = bits, TYPE, offset, [lo:hi], "option0", "option1", ...`
@@ -344,25 +421,29 @@ fn parse_bits(
     name: &str,
     fields: &[String],
     page: u16,
-    running_offset: &mut usize,
-) -> crate::Result<ConstantDef> {
+    running_offset: &mut OffsetCounter,
+) -> crate::Result<FieldOutcome> {
     let storage = fields
         .get(1)
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised bits storage type"))?;
-    let offset = fields
+    let offset = match fields
         .get(2)
         .and_then(|s| resolve_offset(s, running_offset))
-        .ok_or_else(|| invalid(name, "unparseable offset"))?;
+    {
+        Some(OffsetResolution::Value(v)) => v,
+        Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
+        None => return Err(invalid(name, "unparseable offset")),
+    };
     let (bit_lo, bit_hi) = fields
         .get(3)
         .and_then(|s| parse_bit_range(s))
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let options: Vec<String> = fields.iter().skip(4).map(|s| unquote(s)).collect();
 
-    *running_offset = offset + scalar_width(storage);
+    *running_offset = OffsetCounter::Known(offset + scalar_width(storage));
 
-    Ok(ConstantDef {
+    Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
         page,
         offset,
@@ -378,7 +459,7 @@ fn parse_bits(
         low: Number::Lit(0.0),
         high: Number::Lit(0.0),
         digits: 0,
-    })
+    }))
 }
 
 /// `name = string, ENCODING, offset, LENGTH`
@@ -391,20 +472,24 @@ fn parse_string(
     name: &str,
     fields: &[String],
     page: u16,
-    running_offset: &mut usize,
-) -> crate::Result<ConstantDef> {
-    let offset = fields
+    running_offset: &mut OffsetCounter,
+) -> crate::Result<FieldOutcome> {
+    let offset = match fields
         .get(2)
         .and_then(|s| resolve_offset(s, running_offset))
-        .ok_or_else(|| invalid(name, "unparseable offset"))?;
+    {
+        Some(OffsetResolution::Value(v)) => v,
+        Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
+        None => return Err(invalid(name, "unparseable offset")),
+    };
     let len = fields
         .get(3)
         .and_then(|s| s.trim().parse::<usize>().ok())
         .ok_or_else(|| invalid(name, "unparseable string length"))?;
 
-    *running_offset = offset + len;
+    *running_offset = OffsetCounter::Known(offset + len);
 
-    Ok(ConstantDef {
+    Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
         page,
         offset,
@@ -415,5 +500,5 @@ fn parse_string(
         low: Number::Lit(0.0),
         high: Number::Lit(0.0),
         digits: 0,
-    })
+    }))
 }

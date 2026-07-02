@@ -178,6 +178,63 @@ page = 1
 }
 
 #[test]
+fn unknown_constant_class_poisons_later_lastoffset_on_the_same_page() {
+    // knownScalar (U08 @ 0) advances the page-1 running offset to 1.
+    // weirdThing (unrecognised class) cannot be sized, so the running
+    // offset can no longer be trusted; the next `lastOffset` constant
+    // (staleOffset) must NOT silently resolve to the pre-unknown-line
+    // value (1) -- it must be skipped with its own diagnostic instead of
+    // desyncing onto the wrong-but-plausible offset.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 10
+
+page = 1
+      knownScalar  = scalar, U08, 0, \"units\", 1.0, 0.0, 0.0, 255, 0
+      weirdThing   = frobnicate, U08, 1, \"units\", 1.0, 0.0, 0.0, 255, 0
+      staleOffset  = scalar, U08, lastOffset, \"units\", 1.0, 0.0, 0.0, 255, 0
+      recovered    = scalar, U08, 5, \"units\", 1.0, 0.0, 0.0, 255, 0
+      resumed      = scalar, U08, lastOffset, \"units\", 1.0, 0.0, 0.0, 255, 0
+";
+    let def = parse_definition(ini).expect("parse should continue past unknown class");
+
+    assert!(def.constant("knownScalar").is_some());
+    assert!(
+        def.constant("staleOffset").is_none(),
+        "a lastOffset constant after an unknown class must be skipped, not desynced"
+    );
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "Constants" && d.detail.contains("staleOffset")),
+        "expected a diagnostic naming the poisoned-offset constant; got {:?}",
+        def.diagnostics
+    );
+
+    // An explicit numeric offset on the same page is unaffected by the
+    // poison and re-anchors the running counter for constants after it.
+    let recovered = def.constant("recovered").expect("recovered");
+    assert_eq!(recovered.offset, 5);
+    let resumed = def.constant("resumed").expect("resumed");
+    assert_eq!(
+        resumed.offset, 6,
+        "lastOffset resolves correctly again once re-anchored by an explicit offset"
+    );
+}
+
+#[test]
 fn offset_beyond_declared_page_size_is_a_hard_error() {
     let ini = "\
 [MegaTune]

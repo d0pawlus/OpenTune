@@ -16,7 +16,7 @@
 //! unknown constructs and to hard-fail only on the specific overflow case
 //! (see `IniError`/`Diagnostic` conventions in `parser.rs`).
 
-use crate::constants_fields::parse_constant_line;
+use crate::constants_fields::{parse_constant_line, ConstantLineResult, OffsetCounter};
 use crate::{ConstantDef, ConstantKind, Diagnostic, Endianness, IniError, PageDef};
 use std::collections::HashMap;
 
@@ -51,7 +51,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
 
     let mut section = Section::Other;
     let mut current_page: u16 = 0;
-    let mut last_offset_by_page: HashMap<u16, usize> = HashMap::new();
+    let mut last_offset_by_page: HashMap<u16, OffsetCounter> = HashMap::new();
 
     for raw_line in ini_text.lines() {
         let line = raw_line.trim();
@@ -105,22 +105,43 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
         }
 
         if section == Section::PcVariables {
-            match parse_constant_line(key, value, None, &mut 0) {
-                Ok(Some(def)) => pc_variables.push(def),
-                Ok(None) => diagnostics.push(unrecognised("PcVariables", key)),
+            // [PcVariables] has no offset field in its grammar, so a fresh
+            // Known(0) counter is a throwaway — `lastOffset`/poisoning never
+            // apply here (see `parse_scalar_no_offset`).
+            match parse_constant_line(key, value, None, &mut OffsetCounter::zero()) {
+                Ok(ConstantLineResult::Def(def)) => pc_variables.push(def),
+                Ok(ConstantLineResult::UnknownClass) => {
+                    diagnostics.push(unrecognised("PcVariables", key));
+                }
+                Ok(ConstantLineResult::PoisonedOffset) => {
+                    diagnostics.push(unrecognised("PcVariables", key));
+                }
                 Err(e) => return Err(e),
             }
             continue;
         }
 
         // section == Section::Constants
-        let running = last_offset_by_page.entry(current_page).or_insert(0);
-        match parse_constant_line(key, value, Some(current_page), running) {
-            Ok(Some(def)) => {
+        let running = last_offset_by_page
+            .entry(current_page)
+            .or_insert_with(OffsetCounter::zero);
+        let result = parse_constant_line(key, value, Some(current_page), running);
+        match result {
+            Ok(ConstantLineResult::Def(def)) => {
                 validate_offset_within_page(&def, &pages)?;
                 constants.push(def);
             }
-            Ok(None) => diagnostics.push(unrecognised("Constants", key)),
+            Ok(ConstantLineResult::UnknownClass) => {
+                diagnostics.push(unrecognised("Constants", key));
+                // The unknown constant's size is unknowable, so the running
+                // offset can no longer be trusted for this page: poison it
+                // rather than silently desyncing every later `lastOffset`
+                // constant onto a wrong-but-plausible offset.
+                last_offset_by_page.insert(current_page, OffsetCounter::Poisoned);
+            }
+            Ok(ConstantLineResult::PoisonedOffset) => {
+                diagnostics.push(poisoned_offset("Constants", key));
+            }
             Err(e) => return Err(e),
         }
     }
@@ -138,6 +159,19 @@ fn unrecognised(section: &str, name: &str) -> Diagnostic {
     Diagnostic {
         section: section.to_string(),
         detail: format!("unrecognised constant class for `{name}`"),
+    }
+}
+
+/// A `lastOffset` constant whose page-running offset was poisoned by an
+/// earlier unrecognised constant on the same page (see [`OffsetCounter`]).
+/// The constant is skipped — never added with a desynced offset.
+fn poisoned_offset(section: &str, name: &str) -> Diagnostic {
+    Diagnostic {
+        section: section.to_string(),
+        detail: format!(
+            "`{name}`'s lastOffset is unreliable: an earlier unrecognised constant \
+             on this page prevented tracking the running offset"
+        ),
     }
 }
 
