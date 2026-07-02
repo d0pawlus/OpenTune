@@ -30,6 +30,10 @@ mod expr_parser;
 mod parser;
 mod preprocessor;
 mod ui;
+mod ui_dialog_parser;
+mod ui_parser;
+mod ui_table_curve_parser;
+mod ui_tokens;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};

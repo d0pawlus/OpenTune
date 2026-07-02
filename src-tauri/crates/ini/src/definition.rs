@@ -8,6 +8,7 @@
 
 use crate::constants_parser::parse_constants;
 use crate::preprocessor::preprocess;
+use crate::ui_parser::parse_ui;
 use crate::{
     CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, IniError, MenuDef, TableDef,
 };
@@ -72,16 +73,17 @@ impl Definition {
 /// matches the "graceful degradation" contract: parsing still succeeds
 /// and produces a usable `Definition`, just using the else-branch values.
 ///
-/// UI sections (`menus`, `dialogs`, `tables`, `curves`) are left empty —
-/// that is Task 3's scope. Expression *evaluation* (resolving
-/// `Number::Expr` against other constants) is Task 2's scope; this
-/// function only captures expressions as raw strings.
+/// UI sections (`menus`, `dialogs`, `tables`, `curves`) are parsed by
+/// [`crate::ui_parser::parse_ui`] (Task 3). Expression *evaluation*
+/// (resolving `Number::Expr` against other constants) is Task 2's scope;
+/// this function only captures expressions as raw strings.
 pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let active_symbols = HashSet::new();
     let preprocessed = preprocess(ini_text, &active_symbols);
 
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
+    let ui = parse_ui(&preprocessed, &parsed.constants);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
     let comms = CommsSettings {
@@ -89,15 +91,18 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         ..comms
     };
 
+    let mut diagnostics = parsed.diagnostics;
+    diagnostics.extend(ui.diagnostics);
+
     Ok(Definition {
         comms,
         pages: parsed.pages,
         constants: parsed.constants,
         pc_variables: parsed.pc_variables,
-        menus: Vec::new(),
-        dialogs: Vec::new(),
-        tables: Vec::new(),
-        curves: Vec::new(),
-        diagnostics: parsed.diagnostics,
+        menus: ui.menus,
+        dialogs: ui.dialogs,
+        tables: ui.tables,
+        curves: ui.curves,
+        diagnostics,
     })
 }
