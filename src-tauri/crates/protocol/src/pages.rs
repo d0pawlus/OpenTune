@@ -66,31 +66,45 @@ pub struct TemplateParams<'a> {
 ///   be ignored. It's always 0" — confirms the high byte of `%2i` is `0x00`.
 /// - `case 'r'` (comms_legacy.cpp): `targetPort.read(); //Read the $tsCanId`
 ///   — a single raw byte, unconditionally discarded by this firmware build.
+///
+/// Scans `template.as_bytes()` end-to-end — never re-slices the source `&str`
+/// at an arbitrary byte offset. Command templates are ASCII wire-protocol
+/// strings (see the placeholder list above); a byte `>= 0x80` can only occur
+/// as part of a stray multi-byte UTF-8 character (e.g. a mis-pasted INI), so
+/// it is rejected as [`ProtocolError::MalformedTemplate`] rather than passed
+/// through or silently re-encoded. The old implementation sliced `&str`
+/// bytewise (`&template[i..]`), which panicked whenever a scan offset landed
+/// mid-char — a poisoned-mutex risk since this runs under the session lock.
 pub fn expand_template(template: &str, params: &TemplateParams<'_>) -> Result<Vec<u8>> {
     let bytes = template.as_bytes();
     let mut out = Vec::with_capacity(bytes.len() + params.value.len());
     let mut i = 0;
     while i < bytes.len() {
-        let rest = &template[i..];
-        if rest.starts_with("%2i") {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"%2i") {
             out.extend_from_slice(&params.page.to_be_bytes());
             i += 3;
-        } else if rest.starts_with("%2o") {
+        } else if rest.starts_with(b"%2o") {
             out.extend_from_slice(&params.offset.to_le_bytes());
             i += 3;
-        } else if rest.starts_with("%2c") {
+        } else if rest.starts_with(b"%2c") {
             out.extend_from_slice(&params.count.to_le_bytes());
             i += 3;
-        } else if rest.starts_with("%v") {
+        } else if rest.starts_with(b"%v") {
             out.extend_from_slice(params.value);
             i += 2;
-        } else if rest.starts_with("$tsCanId") {
+        } else if rest.starts_with(b"$tsCanId") {
             out.push(params.can_id);
             i += "$tsCanId".len();
-        } else if rest.starts_with("\\x") {
-            let hex = rest.get(2..4).ok_or_else(|| {
-                ProtocolError::MalformedTemplate(format!(
+        } else if rest.starts_with(b"\\x") {
+            if rest.len() < 4 {
+                return Err(ProtocolError::MalformedTemplate(format!(
                     "truncated \\x escape in template `{template}`"
+                )));
+            }
+            let hex = std::str::from_utf8(&rest[2..4]).map_err(|_| {
+                ProtocolError::MalformedTemplate(format!(
+                    "invalid hex escape in template `{template}`"
                 ))
             })?;
             let byte = u8::from_str_radix(hex, 16).map_err(|_| {
@@ -100,9 +114,14 @@ pub fn expand_template(template: &str, params: &TemplateParams<'_>) -> Result<Ve
             })?;
             out.push(byte);
             i += 4;
-        } else {
+        } else if bytes[i] < 0x80 {
             out.push(bytes[i]);
             i += 1;
+        } else {
+            return Err(ProtocolError::MalformedTemplate(format!(
+                "non-ASCII byte 0x{:02X} at offset {i} in template `{template}`",
+                bytes[i]
+            )));
         }
     }
     Ok(out)
@@ -317,6 +336,24 @@ mod tests {
             can_id: 0,
         };
         let err = expand_template("\\xZZ", &params).unwrap_err();
+        assert!(matches!(err, ProtocolError::MalformedTemplate(_)));
+    }
+
+    #[test]
+    fn rejects_non_ascii_template_bytes_instead_of_panicking() {
+        // A user-supplied INI's command template is meant to be an ASCII wire
+        // protocol string; a stray multi-byte UTF-8 char (e.g. a mis-pasted
+        // "±") used to make the old &str-slicing scanner panic mid-char
+        // while the SessionStore mutex was held. It must now surface as a
+        // normal `Err`, never a panic.
+        let params = TemplateParams {
+            page: 1,
+            offset: 0,
+            count: 0,
+            value: &[],
+            can_id: 0,
+        };
+        let err = expand_template("p±%2i", &params).unwrap_err();
         assert!(matches!(err, ProtocolError::MalformedTemplate(_)));
     }
 }
