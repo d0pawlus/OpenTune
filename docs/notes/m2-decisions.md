@@ -61,6 +61,19 @@ Kryterium: ścieżka optymalna, nieblokująca przyszłego rozwoju.
   Option<Tune>` to klon bieżącego tune w danym momencie; brak importu z
   pliku `.msq` (M6). Diff/merge działają wyłącznie względem tego zapisanego
   stanu, nie względem dowolnego pliku.
+- **Odstępstwo od ARCHITECTURE §9 (owner task + kanał poleceń) — świadome,
+  do rewizji w M3:** §9 nakazuje async runtime (Tokio) z jednym
+  owner-taskiem trzymającym transport i serializacją dostępu przez kanał
+  poleceń. M2 implementuje ten sam niezmiennik ("jedna konwersacja naraz",
+  bo serial jest z natury single-conversation) synchronicznym
+  `Mutex<Option<Session>>` i synchronicznymi komendami Tauri
+  (`std::thread::sleep` na `interWriteDelay`/`pageActivationDelay` wewnątrz
+  blokady) — bez Tokio i bez kanału. Niezmiennik jest zachowany (każdy
+  dotyk drutu przechodzi przez jedną blokadę `Session`), a odstępstwo jest
+  celowe: skala M2 (jedna sesja, brak strumieniowania w czasie
+  rzeczywistym) nie uzasadnia kosztu kanału. M3 (strumieniowanie realtime,
+  ARCHITECTURE §5.5/§9) wymusi przebudowę na model owner-task + kanał
+  poleceń — wtedy do zrewidowania, nie wcześniej.
 
 ## Uwagi do dyskusji (nieblokujące)
 

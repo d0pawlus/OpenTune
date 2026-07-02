@@ -153,7 +153,7 @@ fn logical_and_true_true() {
 }
 
 #[test]
-fn logical_and_short_circuits_to_false() {
+fn logical_and_false_when_rhs_falsy() {
     assert_eq!(eval("1 && 0", &no_vars).unwrap(), 0.0);
 }
 
@@ -181,11 +181,6 @@ fn not_binds_tighter_than_and() {
 
 #[test]
 fn and_binds_tighter_than_or() {
-    // If `||` bound tighter, this would parse as `1 || (0 && 0)` still = 1
-    // either way for this case's *result*, so use a case that discriminates:
-    // `0 || 1 && 0` -> `0 || (1 && 0)` = `0 || 0` = 0.
-    // Whereas `(0 || 1) && 0` = `1 && 0` = 0 too — pick a genuinely
-    // discriminating case instead:
     assert_eq!(eval("1 || 0 && 0", &no_vars).unwrap(), 1.0);
     // `1 || (0 && 0)` = `1 || 0` = 1 (correct precedence).
     // `(1 || 0) && 0` = `1 && 0` = 0 (wrong precedence would give this).
