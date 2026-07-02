@@ -6,9 +6,12 @@
 //! in [`parse_definition`]) is a separate task; this module only freezes the
 //! shape.
 
+use crate::constants_parser::parse_constants;
+use crate::preprocessor::preprocess;
 use crate::{
     CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, IniError, MenuDef, TableDef,
 };
+use std::collections::HashSet;
 
 /// A single memory page (a contiguous block read from / written to the ECU).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -61,9 +64,40 @@ impl Definition {
 
 /// Parse a complete firmware INI into a [`Definition`].
 ///
-/// Not yet implemented — the M2 parsing task fills this in. The shape of
-/// `Definition` is frozen now so downstream tasks can build in parallel.
+/// Runs the symbol-based preprocessor first (see [`crate::preprocess`])
+/// with an empty active-symbol set — real Speeduino `#if`/`#else` gates
+/// reference build-profile symbols (`CELSIUS`, `mcu_stm32`, ...) that this
+/// crate has no way to know without a target profile, so the `#else`
+/// branch is taken wherever a plain `#if SYMBOL` gate appears. This
+/// matches the "graceful degradation" contract: parsing still succeeds
+/// and produces a usable `Definition`, just using the else-branch values.
+///
+/// UI sections (`menus`, `dialogs`, `tables`, `curves`) are left empty —
+/// that is Task 3's scope. Expression *evaluation* (resolving
+/// `Number::Expr` against other constants) is Task 2's scope; this
+/// function only captures expressions as raw strings.
 pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
-    let _ = ini_text;
-    todo!("M2 parsing task: parse_definition")
+    let active_symbols = HashSet::new();
+    let preprocessed = preprocess(ini_text, &active_symbols);
+
+    let comms = crate::parse_comms(&preprocessed)?;
+    let parsed = parse_constants(&preprocessed)?;
+
+    let endianness = parsed.endianness.unwrap_or(comms.endianness);
+    let comms = CommsSettings {
+        endianness,
+        ..comms
+    };
+
+    Ok(Definition {
+        comms,
+        pages: parsed.pages,
+        constants: parsed.constants,
+        pc_variables: parsed.pc_variables,
+        menus: Vec::new(),
+        dialogs: Vec::new(),
+        tables: Vec::new(),
+        curves: Vec::new(),
+        diagnostics: parsed.diagnostics,
+    })
 }

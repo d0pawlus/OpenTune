@@ -22,13 +22,17 @@
 //! frozen here so downstream work can begin in parallel.
 
 mod constants;
+mod constants_fields;
+mod constants_parser;
 mod definition;
 mod parser;
+mod preprocessor;
 mod ui;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};
 pub use parser::parse_comms;
+pub use preprocessor::preprocess;
 pub use ui::{
     CurveDef, Diagnostic, DialogDef, DialogField, FieldKind, MenuDef, MenuItem, TableDef,
 };
