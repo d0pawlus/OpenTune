@@ -6,6 +6,7 @@
 //! constant values, dirty tracking, and undo/redo; the `ini` crate owns
 //! describing what the bytes mean.
 
+mod codec;
 mod edit;
 mod tune;
 mod value;
