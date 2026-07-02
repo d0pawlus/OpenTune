@@ -22,4 +22,11 @@ export const pl: Record<keyof typeof en, string> = {
   "connect.connectSimulator": "Połącz z symulatorem",
   "connect.simulateDrop": "Symuluj zerwanie połączenia",
   "connect.iniPlaceholder": "Ścieżka do pliku INI (opcjonalnie dla symulatora)",
+  "tune.title": "Strojenie",
+  "tune.menu": "Menu",
+  "tune.badge.modified": "Zmodyfikowano — niezapisane",
+  "tune.burn": "Zapisz do flash",
+  "tune.undo": "Cofnij",
+  "tune.redo": "Ponów",
+  "tune.noDialog": "Wybierz pozycję menu do edycji",
 };

@@ -21,4 +21,11 @@ export const en = {
   "connect.connectSimulator": "Connect to simulator",
   "connect.simulateDrop": "Simulate connection drop",
   "connect.iniPlaceholder": "Path to INI file (optional for simulator)",
+  "tune.title": "Tune",
+  "tune.menu": "Menu",
+  "tune.badge.modified": "Modified — not burned",
+  "tune.burn": "Burn to flash",
+  "tune.undo": "Undo",
+  "tune.redo": "Redo",
+  "tune.noDialog": "Select a menu item to edit",
 } as const;

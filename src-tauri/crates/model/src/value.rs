@@ -7,9 +7,12 @@
 
 /// A decoded constant value, in its physical (already scaled) representation.
 ///
-/// Derives `serde::Serialize` + `specta::Type` because the frontend receives
-/// values read from a [`Tune`](crate::Tune) over IPC.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+/// Derives `serde::Serialize` + `serde::Deserialize` + `specta::Type`: the
+/// frontend both receives values read from a [`Tune`](crate::Tune) and sends
+/// them back over IPC (the `set_value` command), so `Value` crosses the seam
+/// in both directions. It stays externally tagged (`{ "Scalar": 12.5 }`),
+/// which is the shape `specta` generates for the TS union.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum Value {
     /// A single physical scalar (already `raw * scale + translate`).
     Scalar(f64),

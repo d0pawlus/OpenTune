@@ -3,9 +3,11 @@ use serde::Serialize;
 use specta::Type;
 use tauri_specta::Event as _;
 
+use std::sync::Arc;
+
 use crate::connection::{
-    connect_serial, connect_simulator, load_comms_from_path, load_comms_from_str,
-    simulate_link_drop_async, ActiveConnection, ConnectSource, ConnectionStore,
+    connect_serial, connect_simulator, load_definition_from_path, load_definition_from_str,
+    simulate_link_drop_async, ActiveConnection, ConnectSource, Session, SessionStore,
 };
 use crate::events::ConnectionStateEvent;
 
@@ -72,10 +74,10 @@ pub fn list_ports() -> Result<Vec<PortInfoDto>, String> {
 #[specta::specta]
 pub fn connect(
     source: ConnectSource,
-    state: tauri::State<'_, ConnectionStore>,
+    state: tauri::State<'_, SessionStore>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    // Drop any existing connection before opening a new one.
+    // Drop any existing session before opening a new one.
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         *guard = None;
@@ -86,25 +88,36 @@ pub fn connect(
         let _ = ConnectionStateEvent::from(cs).emit(&emit_app);
     };
 
-    let active = match source {
+    // Parse the full definition first: it sizes the simulator's page image,
+    // shapes the tune, and drives the UI. The connection layer then becomes
+    // the sole owner of the transport, with the definition + (not-yet-loaded)
+    // tune co-located behind the same mutex.
+    let (conn, def) = match source {
         ConnectSource::Simulator { ini_path } => {
-            let comms = match ini_path {
-                Some(ref path) => load_comms_from_path(path)?,
-                None => load_comms_from_str(BUNDLED_INI)?,
+            let def = match ini_path {
+                Some(ref path) => load_definition_from_path(path)?,
+                None => load_definition_from_str(BUNDLED_INI)?,
             };
-            connect_simulator(comms, &emit)?
+            let def = Arc::new(def);
+            let conn = connect_simulator(def.as_ref(), &emit)?;
+            (conn, def)
         }
         ConnectSource::Serial {
             ref port_name,
             ref ini_path,
         } => {
-            let comms = load_comms_from_path(ini_path)?;
-            connect_serial(port_name.clone(), comms, &emit)?
+            let def = Arc::new(load_definition_from_path(ini_path)?);
+            let conn = connect_serial(port_name.clone(), def.comms.clone(), &emit)?;
+            (conn, def)
         }
     };
 
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    *guard = Some(active);
+    *guard = Some(Session {
+        conn,
+        def,
+        tune: None,
+    });
     Ok(())
 }
 
@@ -112,7 +125,7 @@ pub fn connect(
 #[tauri::command]
 #[specta::specta]
 pub fn disconnect(
-    state: tauri::State<'_, ConnectionStore>,
+    state: tauri::State<'_, SessionStore>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
@@ -128,27 +141,30 @@ pub fn disconnect(
 #[tauri::command]
 #[specta::specta]
 pub fn simulate_link_drop(
-    state: tauri::State<'_, ConnectionStore>,
+    state: tauri::State<'_, SessionStore>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let active = {
+    let session = {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         guard.take()
     };
-    let active = active.ok_or_else(|| "not connected".to_string())?;
+    let session = session.ok_or_else(|| "not connected".to_string())?;
 
-    match &active {
+    match &session.conn {
         ActiveConnection::Serial { .. } => {
+            // Put the session back — link drop is simulator-only.
+            let mut guard = state.lock().map_err(|e| e.to_string())?;
+            *guard = Some(session);
             return Err("simulate_link_drop is only available in simulator mode".to_string());
         }
         ActiveConnection::Sim { .. } => {}
     }
 
-    let store = std::sync::Arc::clone(&state);
+    let store = Arc::clone(&state);
     let emit = move |cs: opentune_protocol::ConnectionState| {
         let _ = ConnectionStateEvent::from(cs).emit(&app);
     };
-    simulate_link_drop_async(active, store, emit);
+    simulate_link_drop_async(session, store, emit);
     Ok(())
 }
 

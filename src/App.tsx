@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { commands, events, type AppInfo } from "./ipc/bindings";
 import { useConnectionStore } from "./stores/connection";
 import { Connect } from "./components/Connect";
+import { TunePanel } from "./components/dialogs/TunePanel";
 import { t, type Locale } from "./i18n";
 
 function App() {
@@ -51,6 +52,8 @@ function App() {
       <p>heartbeat: {lastSeq ?? "—"}</p>
 
       <Connect locale={locale} />
+
+      <TunePanel locale={locale} />
 
       <div style={{ marginTop: "2rem" }}>
         <button onClick={toggleLocale}>

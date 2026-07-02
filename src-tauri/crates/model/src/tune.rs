@@ -200,6 +200,21 @@ impl Tune {
         !self.dirty.is_empty()
     }
 
+    /// Evaluate a `visible`/`enable` expression against this tune's current
+    /// constant values, reusing the Task 2 sandboxed evaluator.
+    ///
+    /// A referenced name resolves to its current physical value via the same
+    /// [`Self::lookup_expr_var`] used for `Expr`-scaled numbers, so dialog
+    /// visibility is driven by exactly one source of truth (the Rust
+    /// evaluator) rather than a duplicated TS port. Returns the evaluator's
+    /// error on an unparseable/undefined expression; callers typically fail
+    /// **open** (treat a broken condition as visible) so a bad INI expression
+    /// never silently hides a field.
+    pub fn eval_condition(&self, expr: &str) -> Result<bool, opentune_ini::ExprError> {
+        let lookup = |var: &str| self.lookup_expr_var(var);
+        opentune_ini::eval_bool(expr, &lookup)
+    }
+
     /// The page numbers with unburned edits, sorted ascending.
     pub fn dirty_pages(&self) -> Vec<u16> {
         let mut pages = self.dirty.clone();

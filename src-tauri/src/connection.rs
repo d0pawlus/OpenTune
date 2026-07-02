@@ -7,7 +7,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use opentune_ini::{parse_comms, CommsSettings};
+use opentune_ini::{parse_comms, parse_definition, CommsSettings, Definition};
+use opentune_model::Tune;
 use opentune_protocol::{
     reconnect::{ConnectionManager, ReconnectConfig},
     ConnectionState, ProtocolError,
@@ -35,8 +36,25 @@ pub enum ActiveConnection {
     },
 }
 
-/// Tauri managed state type.
-pub type ConnectionStore = Arc<Mutex<Option<ActiveConnection>>>;
+// ── Session: the single owner of connection + definition + tune ──────────────
+
+/// Everything a live tuning session owns, held under one mutex so **all**
+/// hardware/page access is serialized (ARCHITECTURE §9 — serial is inherently
+/// single-conversation). The M1 [`ActiveConnection`] is the sole owner of the
+/// transport; the immutable [`Definition`] (`Arc`) and the owned [`Tune`] live
+/// alongside it, so a `set_value`/`burn`/`undo` never touches the wire outside
+/// this lock. `tune` is `None` until [`Session::load_tune`] reads the pages.
+pub struct Session {
+    /// The live connection — sole owner of the transport.
+    pub conn: ActiveConnection,
+    /// The parsed firmware definition; immutable, shared cheaply.
+    pub def: Arc<Definition>,
+    /// The in-memory editable tune, once loaded from the ECU.
+    pub tune: Option<Tune>,
+}
+
+/// Tauri managed state type — the whole session behind one mutex.
+pub type SessionStore = Arc<Mutex<Option<Session>>>;
 
 // ── Source discriminant (IPC-visible) ────────────────────────────────────────
 
@@ -84,15 +102,36 @@ pub fn load_comms_from_str(ini: &str) -> Result<CommsSettings, String> {
     parse_comms(ini).map_err(|e| format!("cannot parse bundled INI: {e}"))
 }
 
+/// Parse a full [`Definition`] from a file path (expands a leading `~`).
+///
+/// M2 needs the whole definition — pages (to size the simulator + tune),
+/// constants (to decode/encode), and menus/dialogs (to render the UI) — not
+/// just the M1 comms slice.
+pub fn load_definition_from_path(path: &str) -> Result<Definition, String> {
+    let expanded = expand_tilde(path);
+    let text = std::fs::read_to_string(&expanded)
+        .map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
+    parse_definition(&text).map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
+}
+
+/// Parse a full [`Definition`] from an in-memory string (bundled INI).
+pub fn load_definition_from_str(ini: &str) -> Result<Definition, String> {
+    parse_definition(ini).map_err(|e| format!("cannot parse bundled INI: {e}"))
+}
+
 // ── Connect helpers ──────────────────────────────────────────────────────────
 
 /// Connect to the simulator. Emits `Connecting` then `Connected` (or returns
 /// an error string). The returned `ActiveConnection` owns the live manager.
+///
+/// The simulator is built **from the definition** (`from_definition`) so its
+/// RAM/flash image is sized per declared page — a prerequisite for M2 page
+/// read/write/burn. (M1's handshake-only `EcuSimulator::new()` had no pages.)
 pub fn connect_simulator(
-    comms: CommsSettings,
+    def: &Definition,
     emit: &dyn Fn(ConnectionState),
 ) -> Result<ActiveConnection, String> {
-    let sim = Arc::new(EcuSimulator::new());
+    let sim = Arc::new(EcuSimulator::from_definition(def));
     let sim_ref = Arc::clone(&sim);
 
     let factory: SimFactory =
@@ -103,7 +142,7 @@ pub fn connect_simulator(
         base_delay: std::time::Duration::from_millis(500),
         max_delay: std::time::Duration::from_secs(30),
     };
-    let mut mgr = ConnectionManager::new(comms, cfg, factory);
+    let mut mgr = ConnectionManager::new(def.comms.clone(), cfg, factory);
 
     emit(ConnectionState::Connecting);
     let state = mgr.connect().map_err(|e| e.to_string())?;
@@ -143,41 +182,51 @@ pub fn connect_serial(
 }
 
 /// Drop the simulator link, then drive `reconnect_collect_states` on a
-/// background thread. Each emitted state is forwarded to `emit`; the new
-/// `ActiveConnection` is stored back via `store` on completion.
+/// background thread. Each emitted state is forwarded to `emit`; the session
+/// (with its definition + tune preserved intact) is stored back via `store`
+/// on completion.
 ///
-/// Returns immediately — the reconnect runs in the background.
+/// Returns immediately — the reconnect runs in the background. Only the
+/// connection half of the session is reconnected; the reconnect *logic* is
+/// M1's, unchanged — the definition and tune are simply threaded through.
 pub fn simulate_link_drop_async(
-    active: ActiveConnection,
-    store: ConnectionStore,
+    session: Session,
+    store: SessionStore,
     emit: impl Fn(ConnectionState) + Send + 'static,
 ) {
-    std::thread::spawn(move || match active {
-        ActiveConnection::Sim {
-            mut manager,
-            simulator,
-        } => {
-            // Drop the link; reconnect logic will restore it via the factory
-            // (each `client_transport()` call opens a fresh transport on the
-            // same shared Pipe, which is in the `dropped=true` state here).
-            // We restore the link just before the first reconnect attempt so
-            // the simulator actually answers.
-            simulator.set_link_dropped(true);
-            // Restore immediately so the first reconnect attempt succeeds.
-            simulator.set_link_dropped(false);
+    std::thread::spawn(move || {
+        let Session { conn, def, tune } = session;
+        match conn {
+            ActiveConnection::Sim {
+                mut manager,
+                simulator,
+            } => {
+                // Drop the link; reconnect logic will restore it via the
+                // factory (each `client_transport()` call opens a fresh
+                // transport on the same shared Pipe, which is in the
+                // `dropped=true` state here). We restore the link just before
+                // the first reconnect attempt so the simulator actually answers.
+                simulator.set_link_dropped(true);
+                // Restore immediately so the first reconnect attempt succeeds.
+                simulator.set_link_dropped(false);
 
-            let states = manager.reconnect_collect_states();
-            for s in states {
-                emit(s);
+                let states = manager.reconnect_collect_states();
+                for s in states {
+                    emit(s);
+                }
+                if let Ok(mut guard) = store.lock() {
+                    *guard = Some(Session {
+                        conn: ActiveConnection::Sim { manager, simulator },
+                        def,
+                        tune,
+                    });
+                }
             }
-            if let Ok(mut guard) = store.lock() {
-                *guard = Some(ActiveConnection::Sim { manager, simulator });
+            ActiveConnection::Serial { .. } => {
+                emit(ConnectionState::Failed {
+                    reason: "simulate_link_drop is only available in simulator mode".to_owned(),
+                });
             }
-        }
-        ActiveConnection::Serial { .. } => {
-            emit(ConnectionState::Failed {
-                reason: "simulate_link_drop is only available in simulator mode".to_owned(),
-            });
         }
     });
 }
@@ -207,10 +256,27 @@ mod tests {
         }
     }
 
+    /// Build a minimal page-backed definition for the simulator connect test:
+    /// the plain comms above plus a single 4-byte page.
+    fn plain_definition() -> Definition {
+        Definition {
+            comms: plain_comms(),
+            pages: vec![opentune_ini::PageDef { number: 1, size: 4 }],
+            constants: Vec::new(),
+            pc_variables: Vec::new(),
+            menus: Vec::new(),
+            dialogs: Vec::new(),
+            tables: Vec::new(),
+            curves: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
     #[test]
     fn connect_simulator_emits_connected_with_correct_signature() {
         let emitted = std::sync::Mutex::new(Vec::new());
-        let active = connect_simulator(plain_comms(), &|s| emitted.lock().unwrap().push(s))
+        let def = plain_definition();
+        let active = connect_simulator(&def, &|s| emitted.lock().unwrap().push(s))
             .expect("connect must succeed");
         let emitted = emitted.into_inner().unwrap();
 

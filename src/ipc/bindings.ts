@@ -24,12 +24,41 @@ export const commands = {
 	 *  `Reconnecting{attempt}` states until `Connected` or `Failed`.
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
+	/**
+	 *  Return the parsed firmware definition (menus, dialogs, constants, …) for
+	 *  the frontend to render the data-driven UI against.
+	 */
+	getDefinition: () => typedError<DefinitionDto, string>(__TAURI_INVOKE("get_definition")),
+	/**
+	 *  Read all declared pages from the ECU into a fresh tune. Emits the (clean)
+	 *  dirty state.
+	 */
+	loadTune: () => typedError<null, string>(__TAURI_INVOKE("load_tune")),
+	/**  Read the current physical values of the named constants (for field render). */
+	getValues: (names: string[]) => typedError<Value[], string>(__TAURI_INVOKE("get_values", { names })),
+	/**
+	 *  Set a constant and write the changed bytes live to the ECU. Emits the new
+	 *  dirty state on success.
+	 */
+	setValue: (name: string, value: Value) => typedError<null, string>(__TAURI_INVOKE("set_value", { name, value })),
+	/**  Burn every dirty page to flash. Emits the cleared dirty state. */
+	burnTune: () => typedError<null, string>(__TAURI_INVOKE("burn_tune")),
+	/**  Undo the most recent edit, writing the reverted bytes to the ECU. */
+	undoTune: () => typedError<null, string>(__TAURI_INVOKE("undo_tune")),
+	/**  Redo the most recently undone edit, writing the re-applied bytes to the ECU. */
+	redoTune: () => typedError<null, string>(__TAURI_INVOKE("redo_tune")),
+	/**
+	 *  Evaluate `visible`/`enable` expressions against the current tune values.
+	 *  Fails open (a broken expression yields `true`).
+	 */
+	evalConditions: (exprs: string[]) => typedError<boolean[], string>(__TAURI_INVOKE("eval_conditions", { exprs })),
 };
 
 /** Events */
 export const events = {
 	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
+	tuneDirtyEvent: makeEvent<TuneDirtyEvent>("tune-dirty-event"),
 };
 
 /* Types */
@@ -74,8 +103,94 @@ attempt: number } | { type: "failed";
 /**  Diagnostic string; never expose internal paths or hardware details. */
 reason: string };
 
+/**  A constant's UI metadata (no byte layout). */
+export type ConstantDto = {
+	name: string,
+	units: string,
+	/**  Decimal digits to display for scalar values. */
+	digits: number,
+	/**
+	 *  Lower bound, when a literal (an expression bound resolves to `None` — the
+	 *  backend still range-checks on write).
+	 */
+	low: number | null,
+	/**  Upper bound, when a literal. */
+	high: number | null,
+	kind: ConstantKindDto,
+};
+
+/**  A constant's interpretation kind, trimmed for the UI. */
+export type ConstantKindDto = 
+/**  A single editable scalar. */
+"Scalar" | 
+/**  An enum-like selector with named options. */
+({ Bits: {
+	options: string[],
+} }) & { Array?: never } | 
+/**  A fixed-shape array/table. */
+({ Array: {
+	rows: number,
+	cols: number,
+} }) & { Bits?: never } | 
+/**  A fixed-length text field. */
+"Text";
+
+/**  The UI-facing projection of a [`Definition`]. */
+export type DefinitionDto = {
+	/**  The firmware signature, for display. */
+	signature: string,
+	/**  Top-level menus. */
+	menus: MenuDto[],
+	/**  Dialogs referenced by menu items and panels. */
+	dialogs: DialogDto[],
+	/**  Constants referenced by dialog fields, indexed by name on the frontend. */
+	constants: ConstantDto[],
+	/**  Table editors (rendered as a minimal grid in M2; full editor is M4). */
+	tables: TableDto[],
+};
+
+/**  A dialog and its fields. */
+export type DialogDto = {
+	name: string,
+	title: string,
+	fields: FieldDto[],
+};
+
+/**
+ *  A single field with its raw visibility/enable expressions (evaluated by the
+ *  backend `eval_conditions` command — one source of truth, no TS port).
+ */
+export type FieldDto = {
+	kind: FieldKindDto,
+	visible: string | null,
+	enable: string | null,
+};
+
+/**  The kind of a field (mirrors `FieldKind`, externally tagged). */
+export type FieldKindDto = 
+/**  Bound to a named constant. */
+({ Constant: string }) & { Label?: never; Panel?: never } | 
+/**  A nested panel referencing another dialog by name. */
+({ Panel: string }) & { Constant?: never; Label?: never } | 
+/**  A static label. */
+({ Label: string }) & { Constant?: never; Panel?: never } | 
+/**  A layout spacer. */
+"Gap";
+
 export type Heartbeat = {
 	seq: number,
+};
+
+/**  A top-level menu. */
+export type MenuDto = {
+	label: string,
+	items: MenuItemDto[],
+};
+
+/**  A menu entry that opens a dialog by name. */
+export type MenuItemDto = {
+	label: string,
+	dialog: string,
 };
 
 /**  Port information for the frontend UI. */
@@ -85,6 +200,48 @@ export type PortInfoDto = {
 	pid: number | null,
 	product: string | null,
 };
+
+/**  A table editor definition (bin/cell constant references). */
+export type TableDto = {
+	name: string,
+	x_bins: string,
+	y_bins: string,
+	z: string,
+};
+
+/**
+ *  Emitted whenever the in-memory [`Tune`](opentune_model::Tune) dirty state
+ *  changes — after a `set_value`, `undo`, `redo`, or `burn`. Drives the
+ *  "modified, not burned" badge: `dirty == true` means RAM diverges from flash.
+ * 
+ *  The backend is the single source of truth; the frontend never computes
+ *  dirtiness itself, it just reflects the last event it received.
+ */
+export type TuneDirtyEvent = {
+	/**  Whether any page has unburned edits. */
+	dirty: boolean,
+	/**  The page numbers with unburned edits, ascending. Empty when clean. */
+	dirty_pages: number[],
+};
+
+/**
+ *  A decoded constant value, in its physical (already scaled) representation.
+ * 
+ *  Derives `serde::Serialize` + `serde::Deserialize` + `specta::Type`: the
+ *  frontend both receives values read from a [`Tune`](crate::Tune) and sends
+ *  them back over IPC (the `set_value` command), so `Value` crosses the seam
+ *  in both directions. It stays externally tagged (`{ "Scalar": 12.5 }`),
+ *  which is the shape `specta` generates for the TS union.
+ */
+export type Value = 
+/**  A single physical scalar (already `raw * scale + translate`). */
+({ Scalar: number | null }) & { Array?: never; Enum?: never; Text?: never } | 
+/**  A physical array/table of scalars, row-major. */
+({ Array: (number | null)[] }) & { Enum?: never; Scalar?: never; Text?: never } | 
+/**  A bitfield/enum's raw selected index (see `ConstantKind::Bits::options`). */
+({ Enum: number }) & { Array?: never; Scalar?: never; Text?: never } | 
+/**  A fixed-length text value. */
+({ Text: string }) & { Array?: never; Enum?: never; Scalar?: never };
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
