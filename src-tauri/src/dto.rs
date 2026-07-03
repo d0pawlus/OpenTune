@@ -398,14 +398,50 @@ mod tests {
     }
 
     #[test]
-    fn bundled_definition_projects_empty_gauges_until_task_8_extends_the_ini() {
-        // The bundled sample INI has no [GaugeConfigurations]/[FrontPage] yet
-        // (Task 8 adds them) — the projection must still be present and empty.
+    fn bundled_definition_projects_live_gauges_and_frontpage() {
+        // Task 8 extended the bundled sample INI with [OutputChannels],
+        // [GaugeConfigurations] and [FrontPage] so the default simulator
+        // connect drives a non-empty dashboard. The projection must carry
+        // them with full referential integrity — and the INI we ship must
+        // parse diagnostic-free (no degraded rows).
         let def = load_definition_from_str(BUNDLED_INI).expect("parses");
         let dto = DefinitionDto::from(&def);
-        assert!(dto.gauges.is_empty());
-        assert!(dto.frontpage.gauge_slots.is_empty());
-        assert!(dto.frontpage.indicators.is_empty());
+
+        assert!(!dto.gauges.is_empty(), "bundled INI must define gauges");
+        assert!(
+            !dto.frontpage.gauge_slots.is_empty(),
+            "bundled INI must fill front-page gauge slots"
+        );
+        assert!(
+            !dto.frontpage.indicators.is_empty(),
+            "bundled INI must define at least one indicator"
+        );
+        for slot in &dto.frontpage.gauge_slots {
+            assert!(
+                dto.gauges.iter().any(|g| &g.name == slot),
+                "front-page slot `{slot}` must reference a defined gauge"
+            );
+        }
+        for gauge in &dto.gauges {
+            assert!(
+                def.output_channel(&gauge.channel).is_some(),
+                "gauge `{}` references undeclared output channel `{}`",
+                gauge.name,
+                gauge.channel
+            );
+        }
+        for indicator in &dto.frontpage.indicators {
+            assert!(
+                def.output_channel(&indicator.expr).is_some(),
+                "indicator expr `{}` must be a declared bit channel",
+                indicator.expr
+            );
+        }
+        assert!(
+            def.diagnostics.is_empty(),
+            "the shipped INI must parse without degradation, got {:?}",
+            def.diagnostics
+        );
     }
 
     #[test]

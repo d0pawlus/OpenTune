@@ -90,11 +90,23 @@ async fn connect_realtime_and_load(tx: &OwnerHandle) {
 /// Deterministic wait: block (with a generous 5 s cap) until at least one
 /// `Realtime` event has been collected past `since`, then return it.
 async fn await_frame_since(events: &Collected, since: usize) -> crate::events::RealtimeFrameEvent {
+    await_frame_where(events, since, |_| true).await
+}
+
+/// Deterministic wait (same 5 s cap): the first collected `Realtime` event
+/// past `since` that satisfies `pred`. Predicate-based so a test can wait
+/// out in-flight polls that read the block *before* a `tick_engine` call —
+/// matching on the post-tick value instead of racing the poll pipeline.
+async fn await_frame_where(
+    events: &Collected,
+    since: usize,
+    pred: impl Fn(&crate::events::RealtimeFrameEvent) -> bool,
+) -> crate::events::RealtimeFrameEvent {
     for _ in 0..500 {
         if let Some(frame) = events.lock().unwrap()[since..]
             .iter()
             .find_map(|ev| match ev {
-                OwnerEvent::Realtime(e) => Some(e.clone()),
+                OwnerEvent::Realtime(e) if pred(e) => Some(e.clone()),
                 _ => None,
             })
         {
@@ -102,7 +114,16 @@ async fn await_frame_since(events: &Collected, since: usize) -> crate::events::R
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("no RealtimeFrameEvent within 5 s of starting realtime");
+    panic!("no matching RealtimeFrameEvent within 5 s");
+}
+
+/// The value of channel `name` in a frame, if the frame carries it.
+fn channel_value(frame: &crate::events::RealtimeFrameEvent, name: &str) -> Option<f64> {
+    frame
+        .channels
+        .iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, v)| *v)
 }
 
 // ── 1.1 the owner serves commands sequentially over the channel ─────────────
@@ -154,10 +175,13 @@ async fn owner_serves_commands_sequentially() {
 //
 // secl choreography (reboot detection compares against `last_secl`, seeded at
 // connect and refreshed on every successful reconnect — see M1's
-// `secl_reboot_triggers_reidentify`): the owner builds the simulator inside
-// `Connect`, so secl is 0 at connect time. A first *glitch* drop after
-// `advance_secl(50)` re-seeds `last_secl = 50`; the reboot (`reset_secl` → 0)
-// then reads 0 < 50 on the second reconnect → reboot detected.
+// `secl_reboot_triggers_reidentify`): the Task 8 bundled INI is *windowed*
+// (`ochGetCommand` lifted from `[OutputChannels]`), so `read_secl` reads the
+// engine's och byte 0 — connect consumes the sim's first-och zeroing
+// (baseline 0), and uptime comes from `tick_engine`, not the legacy 'A'-path
+// counter. A first *glitch* drop after 50 s of engine time re-seeds
+// `last_secl = 50`; the reboot re-arms the first-och reset, so the second
+// reconnect reads 0 < 50 → reboot detected.
 
 #[tokio::test]
 async fn reboot_on_reconnect_invalidates_and_rereads_tune() {
@@ -186,15 +210,15 @@ async fn reboot_on_reconnect_invalidates_and_rereads_tune() {
 
     let sim = simulator(&tx).await;
 
-    // Simulated uptime, then a glitch drop: seeds last_secl = 50.
-    sim.advance_secl(50);
+    // 50 s of simulated uptime, then a glitch drop: seeds last_secl = 50.
+    sim.tick_engine(std::time::Duration::from_secs(50));
     send(&tx, |reply| Command::SimulateLinkDrop { reply })
         .await
         .expect("glitch reconnect");
 
-    // ECU reboots: RAM restores from flash (12.5), secl resets to 0.
+    // ECU reboots: RAM restores from flash (12.5) and the boot-scoped
+    // first-och request re-arms, so the reconnect's read_secl answers 0.
     sim.reboot();
-    sim.reset_secl();
     let before_drop = events.lock().unwrap().len();
     send(&tx, |reply| Command::SimulateLinkDrop { reply })
         .await
@@ -237,8 +261,9 @@ async fn glitch_on_reconnect_preserves_unburned_tune() {
     assert!(set.dirty);
 
     let sim = simulator(&tx).await;
-    // Cable glitch: the ECU kept running, secl only advanced.
-    sim.advance_secl(10);
+    // Cable glitch: the ECU kept running, secl only advanced (10 s of
+    // engine time — the windowed read_secl reads the engine's och byte 0).
+    sim.tick_engine(std::time::Duration::from_secs(10));
     let before_drop = events.lock().unwrap().len();
     send(&tx, |reply| Command::SimulateLinkDrop { reply })
         .await
@@ -460,4 +485,196 @@ async fn real_reboot_after_polling_still_detected_and_rereads_tune() {
         vec![false],
         "the re-read must emit exactly one clean dirty event"
     );
+}
+
+// ── 8.1 M3 demo: bundled INI drives live, changing gauges; stop halts them ──
+//
+// End-to-end over the DEFAULT connect path (simulator + bundled sample INI):
+// connect → loadTune → getDefinition (non-empty gauges/frontpage with
+// referential integrity — proves the Task 8 INI extension parses) →
+// StartRealtime → a frontpage-bound channel's value CHANGES across frames as
+// simulated time advances → StopRealtime → frames stop. The frontend half
+// (slot rendering, rebinding, canvas animation) is Task 7's vitest coverage.
+
+#[tokio::test]
+async fn m3_demo_bundled_ini_live_gauges_animate_and_stop() {
+    let (tx, events) = test_owner();
+    connect_and_load(&tx).await;
+
+    // The bundled definition now carries the dashboard (Task 8 extension).
+    let dto = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect("definition");
+    assert!(!dto.gauges.is_empty(), "bundled INI must define gauges");
+    assert!(
+        !dto.frontpage.gauge_slots.is_empty(),
+        "bundled INI must fill front-page slots"
+    );
+    assert!(
+        !dto.frontpage.indicators.is_empty(),
+        "bundled INI must define an indicator"
+    );
+    for slot in &dto.frontpage.gauge_slots {
+        assert!(
+            dto.gauges.iter().any(|g| &g.name == slot),
+            "front-page slot `{slot}` must reference a defined gauge"
+        );
+    }
+
+    // Animate the engine out of STARTUP so channels carry live values.
+    let sim = simulator(&tx).await;
+    sim.tick_engine(std::time::Duration::from_millis(1_500));
+
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let first = await_frame_since(&events, mark).await;
+
+    // Slot 1's bound channel (the tachometer's rpm) must be live, and must
+    // CHANGE across frames once simulated time advances — the deterministic
+    // engine slews rpm by ~200 over 2 s of WARMUP, far beyond its ±10 idle
+    // noise, so waiting for a frame with a different value cannot hang.
+    let bound = &dto
+        .gauges
+        .iter()
+        .find(|g| Some(&g.name) == dto.frontpage.gauge_slots.first())
+        .expect("slot 1 references a defined gauge")
+        .channel;
+    let before = channel_value(&first, bound)
+        .unwrap_or_else(|| panic!("frame must carry the bound channel `{bound}`"));
+    assert!(
+        before > 0.0,
+        "animated `{bound}` must be live, got {before}"
+    );
+
+    sim.tick_engine(std::time::Duration::from_secs(2));
+    let mark = events.lock().unwrap().len();
+    let changed = await_frame_where(&events, mark, |f| {
+        channel_value(f, bound).is_some_and(|v| v != before)
+    })
+    .await;
+    assert_ne!(
+        channel_value(&changed, bound),
+        Some(before),
+        "the bound channel must change across frames"
+    );
+
+    // Stop is serialized after any in-flight tick on the same task, so once
+    // its reply lands no further frame can ever be emitted.
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
+    let after_stop = events.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let frames_after = events.lock().unwrap()[after_stop..]
+        .iter()
+        .filter(|e| matches!(e, OwnerEvent::Realtime(_)))
+        .count();
+    assert_eq!(frames_after, 0, "no frames after stop_realtime");
+}
+
+// ── 8.2 M3 demo: link-drop recovery — reconnect, reboot re-read, frames resume
+//
+// THE M3 demo: while realtime runs, the ECU reboots and the link drops. The
+// owner must emit Reconnecting → Connected, re-read the tune (reboot ⇒ secl
+// reset, Task 1.4 semantics), and realtime frames must RESUME after the
+// reconnect without an app restart — polling stays armed through a drop
+// (fail-open; stopping is only ever the user's explicit command).
+
+#[tokio::test]
+async fn m3_demo_link_drop_recovery_rereads_tune_and_resumes_frames() {
+    let (tx, events) = test_owner();
+    connect_and_load(&tx).await;
+
+    // Burn 12.5 to flash, then an unburned 15.0 on top: the reboot re-read
+    // lands on 12.5/clean; a stale tune would keep 15.0.
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("set 12.5");
+    send(&tx, |reply| Command::Burn { reply })
+        .await
+        .expect("burn 12.5");
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(15.0),
+        reply,
+    })
+    .await
+    .expect("unburned 15.0");
+
+    // 60 s of uptime, then live polling; waiting for a frame whose secl
+    // already reads ≥ 60 proves ≥ 1 poll fed `note_secl` *after* the tick —
+    // the reboot baseline is re-synced past the connect-time zero.
+    let sim = simulator(&tx).await;
+    sim.tick_engine(std::time::Duration::from_secs(60));
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_where(&events, mark, |f| {
+        channel_value(f, "secl").is_some_and(|v| v >= 60.0)
+    })
+    .await;
+
+    // The ECU reboots and the link drops WHILE realtime is running.
+    sim.reboot();
+    let before_drop = events.lock().unwrap().len();
+    send(&tx, |reply| Command::SimulateLinkDrop { reply })
+        .await
+        .expect("link drop recovers");
+
+    // Reconnect lifecycle: Reconnecting, then Connected, in that order.
+    {
+        let events = events.lock().unwrap();
+        let reconnecting = events[before_drop..].iter().position(|e| {
+            matches!(
+                e,
+                OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+            )
+        });
+        let connected = events[before_drop..].iter().position(|e| {
+            matches!(
+                e,
+                OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+            )
+        });
+        let reconnecting = reconnecting.expect("drop must emit Reconnecting");
+        let connected = connected.expect("drop must end Connected");
+        assert!(
+            reconnecting < connected,
+            "Reconnecting must precede Connected"
+        );
+    }
+
+    // Reboot detected → tune re-read: flash 12.5 back, one clean dirty event.
+    assert_eq!(
+        req_fuel(&tx).await,
+        Value::Scalar(12.5),
+        "the reboot-detected reconnect must re-read the tune"
+    );
+    assert_eq!(
+        dirty_events_since(&events, before_drop),
+        vec![false],
+        "the re-read must emit exactly one clean dirty event"
+    );
+
+    // Frames RESUME without an app restart. The drop reply only lands after
+    // the reconnect settled, so any frame collected past this point is
+    // post-recovery — and it carries the rebooted, re-zeroed secl origin.
+    let after_drop = events.lock().unwrap().len();
+    let resumed = await_frame_since(&events, after_drop).await;
+    let secl = channel_value(&resumed, "secl").expect("frame carries secl");
+    assert!(
+        secl < 60.0,
+        "post-reboot frames restart from the zeroed secl, got {secl}"
+    );
+
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
 }
