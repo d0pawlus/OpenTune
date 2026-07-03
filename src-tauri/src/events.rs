@@ -56,6 +56,18 @@ pub enum ConnectionStateEvent {
     },
 }
 
+/// The M3 realtime dashboard frame payload, emitted at up to ~30 Hz.
+///
+/// Not yet registered with the event system — registration lands in Task 6
+/// alongside the commands that emit it. The shape is frozen here so
+/// downstream tasks (decode, polling loop, frontend gauges) build against a
+/// fixed contract.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Type, Event)]
+pub struct RealtimeFrameEvent {
+    /// (channel name, physical value) pairs — the full decoded frame, ≤30 Hz.
+    pub channels: Vec<(String, f64)>,
+}
+
 impl From<opentune_protocol::ConnectionState> for ConnectionStateEvent {
     fn from(state: opentune_protocol::ConnectionState) -> Self {
         use opentune_protocol::ConnectionState;

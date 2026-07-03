@@ -263,6 +263,7 @@ mod tests {
             inter_write_delay_ms: 10,
             endianness: Endianness::Little,
             envelope: EnvelopeFormat::Plain,
+            och_block_size: 0,
         }
     }
 
@@ -279,6 +280,12 @@ mod tests {
             tables: Vec::new(),
             curves: Vec::new(),
             diagnostics: Vec::new(),
+            output_channels: Vec::new(),
+            gauges: Vec::new(),
+            frontpage: opentune_ini::FrontPageDef {
+                gauge_slots: Vec::new(),
+                indicators: Vec::new(),
+            },
         }
     }
 

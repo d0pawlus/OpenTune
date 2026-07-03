@@ -2390,6 +2390,9 @@ dependencies = [
 [[package]]
 name = "opentune-realtime"
 version = "0.0.0"
+dependencies = [
+ "opentune-ini",
+]
 
 [[package]]
 name = "opentune-simulator"

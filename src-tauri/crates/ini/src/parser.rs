@@ -53,6 +53,8 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
         inter_write_delay_ms,
         endianness,
         envelope,
+        // Task 2 fills this from the INI; M1/M2 parsing predates the field.
+        och_block_size: 0,
     })
 }
 

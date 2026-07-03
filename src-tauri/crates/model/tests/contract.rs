@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use opentune_ini::{
-    CommsSettings, ConstantDef, ConstantKind, Definition, Endianness, EnvelopeFormat, Number,
-    PageDef, ScalarType,
+    CommsSettings, ConstantDef, ConstantKind, Definition, Endianness, EnvelopeFormat, FrontPageDef,
+    Number, PageDef, ScalarType,
 };
 use opentune_model::Tune;
 
@@ -28,6 +28,7 @@ fn hand_built_comms() -> CommsSettings {
         inter_write_delay_ms: 10,
         endianness: Endianness::Little,
         envelope: EnvelopeFormat::MsEnvelope10,
+        och_block_size: 0,
     }
 }
 
@@ -58,6 +59,12 @@ fn hand_built_definition() -> Definition {
         tables: vec![],
         curves: vec![],
         diagnostics: vec![],
+        output_channels: Vec::new(),
+        gauges: Vec::new(),
+        frontpage: FrontPageDef {
+            gauge_slots: Vec::new(),
+            indicators: Vec::new(),
+        },
     }
 }
 

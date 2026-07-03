@@ -27,6 +27,8 @@ mod constants_parser;
 mod definition;
 mod expr;
 mod expr_parser;
+mod gauges;
+mod output_channels;
 mod parser;
 mod preprocessor;
 mod ui;
@@ -38,6 +40,8 @@ mod ui_tokens;
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};
 pub use expr::{eval, eval_bool, ExprError};
+pub use gauges::{FrontPageDef, GaugeDef, IndicatorDef};
+pub use output_channels::OutputChannelDef;
 pub use parser::parse_comms;
 pub use preprocessor::preprocess;
 pub use ui::{
@@ -114,6 +118,9 @@ pub struct CommsSettings {
     pub endianness: Endianness,
     /// `messageEnvelopeFormat` — wire framing (plain vs CRC-wrapped).
     pub envelope: EnvelopeFormat,
+    /// `ochBlockSize` — total byte length of one full realtime frame (e.g. 139).
+    /// The `%2c` count for a full `read_output_channels`. `0` when the INI omits it.
+    pub och_block_size: u32,
 }
 
 /// Errors the M1 INI slice can produce.

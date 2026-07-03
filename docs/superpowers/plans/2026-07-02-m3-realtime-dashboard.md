@@ -218,14 +218,15 @@ pub enum OutputChannelDef {
 impl OutputChannelDef { pub fn name(&self) -> &str; }
 
 // ── ini: gauges.rs ──────────────────────────────────────────────────────────
-/// One `[GaugeConfigurations]` entry. Any positional field may be a `{ expr }`
-/// referencing PcVariables/constants → captured as `Number` (Lit or Expr),
-/// reusing the M2 `Number` type. `bitStringValue(...)` units degrade to `Expr`.
+/// One `[GaugeConfigurations]` entry. The six numeric bounds may each be a
+/// `{ expr }` referencing PcVariables/constants → captured as `Number` (Lit or
+/// Expr), reusing the M2 `Number` type. `units` is a text label, not a
+/// number — captured as `String`, matching `ConstantDef.units`.
 pub struct GaugeDef {
     pub name: String,          // gauge id referenced by FrontPage slots
     pub channel: String,       // the output-channel var it displays (e.g. "rpm")
     pub title: String,
-    pub units: Number,         // usually Lit-via-string; may be {expr}/bitStringValue
+    pub units: String,         // unit label shown in the UI (e.g. "RPM", "kPa")
     pub low: Number,
     pub high: Number,
     pub lo_danger: Number,
@@ -614,8 +615,9 @@ tests `src-tauri/crates/ini/tests/gauges.rs`, additions to `src-tauri/crates/ini
 > documented in the dossier §A. Record write-fresh per ADR-0006. Bitwise `&`/`<<` appear in
 > real indicators/computed channels (`syncStatus = { halfSync + (sync << 1) }`,
 > `{ sd_status & 1 }`) and the M2 evaluator lacks them — add them (small grammar extension)
-> or degrade; adding is cheap and unblocks indicators. `bitStringValue(...)` in gauge `units`
-> stays `UnsupportedFn` → captured as `Number::Expr`, degrades to `""` at render.
+> or degrade; adding is cheap and unblocks indicators. Gauge `units` is a text label
+> (`GaugeDef.units: String`, matching `ConstantDef.units`) — capture it verbatim, including a
+> `bitStringValue(...)` call site, as its raw source text; it is never evaluated via `eval()`.
 
 **Fixture excerpt** (`speeduino-gauges.ini` — trimmed real grammar):
 
@@ -657,8 +659,9 @@ Expected: FAIL (stub returns empty).
 - [ ] **3.2 Implement `parse_gauges`** in `gauges.rs`: track the current `gaugeCategory` as a
   string carried down entries. For each `name = var, "title", units, lo, hi, loD, loW, hiW,
   hiD, vd, ld`, split on commas honoring quotes; the first token is the channel var; parse
-  the 12 positional fields; any of units/lo/hi/loD/loW/hiW/hiD may be `{expr}` or a literal →
-  parse each into `Number` (reuse the M2 number-or-expression helper); `vd`/`ld` → `u8`.
+  the 12 positional fields; `units` is a text label → unquote and store verbatim as `String`
+  (never evaluated); any of lo/hi/loD/loW/hiW/hiD may be `{expr}` or a literal → parse each
+  into `Number` (reuse the M2 number-or-expression helper); `vd`/`ld` → `u8`.
   Malformed row → `Diagnostic`, skip. Implement `parse_frontpage`: `gaugeN = name` lines fill
   `gauge_slots` in numeric slot order; `indicator = { expr }, off, on, offBg, offFg, onBg,
   onFg` fills `indicators`. Wire both into `parse_definition`.
@@ -945,7 +948,7 @@ Bindings **regenerated**, not hand-written.
 > config dir (Decision 6), not the `project` crate.
 
 - [ ] **7.1 Extend `DefinitionDto`** (`src-tauri/src/dto.rs`) with the gauge/frontpage
-  projection the UI needs: a `GaugeDto { name, channel, title, units: Option<f64-or-string?>,
+  projection the UI needs: a `GaugeDto { name, channel, title, units: String,
   low, high, lo_danger, lo_warn, hi_warn, hi_danger, value_digits, label_digits, category }`
   (numeric bounds as `Option<f64>` — `lit()` helper, `None` for `{expr}` bounds, like
   `ConstantDto`) and a `FrontPageDto { gauge_slots: Vec<String>, indicators: Vec<IndicatorDto> }`.
@@ -1057,6 +1060,8 @@ git commit -m "test(app): E2E live gauge dashboard demo with link-drop recovery 
 ---
 
 ## Self-review
+
+**Amended post-freeze review: GaugeDef.units is String (labels, not evaluable) — matches ConstantDef.units.**
 
 **Spec coverage (M3 roadmap bullets + follow-ups):**
 - `realtime` polling loop → Task 6 (`loop.rs`, owner tick). ✅

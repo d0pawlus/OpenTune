@@ -10,7 +10,8 @@ use crate::constants_parser::parse_constants;
 use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
 use crate::{
-    CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, IniError, MenuDef, TableDef,
+    CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, FrontPageDef, GaugeDef, IniError,
+    MenuDef, OutputChannelDef, TableDef,
 };
 use std::collections::HashSet;
 
@@ -51,6 +52,14 @@ pub struct Definition {
     pub curves: Vec<CurveDef>,
     /// Notes on INI sections that were skipped or could not be fully parsed.
     pub diagnostics: Vec<Diagnostic>,
+    /// `[OutputChannels]` entries. Realtime frames (M3) decode against these.
+    /// Look up by name via [`Definition::output_channel`].
+    pub output_channels: Vec<OutputChannelDef>,
+    /// `[GaugeConfigurations]` entries backing the default dashboard.
+    pub gauges: Vec<GaugeDef>,
+    /// `[FrontPage]` — the default dashboard layout. Empty `Vec`s when the INI
+    /// declares no `[FrontPage]`.
+    pub frontpage: FrontPageDef,
 }
 
 impl Definition {
@@ -60,6 +69,11 @@ impl Definition {
     /// is a separate namespace and is not searched here.
     pub fn constant(&self, name: &str) -> Option<&ConstantDef> {
         self.constants.iter().find(|c| c.name == name)
+    }
+
+    /// Look up an output channel by name (mirrors [`Definition::constant`]).
+    pub fn output_channel(&self, name: &str) -> Option<&OutputChannelDef> {
+        self.output_channels.iter().find(|c| c.name() == name)
     }
 }
 
@@ -104,5 +118,29 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         tables: ui.tables,
         curves: ui.curves,
         diagnostics,
+        output_channels: parse_output_channels(&preprocessed),
+        gauges: parse_gauges(&preprocessed),
+        frontpage: parse_frontpage(&preprocessed),
     })
+}
+
+/// Stub for the Task 2 `[OutputChannels]` parser — always returns an empty
+/// list. Real parsing lands in Task 2.
+fn parse_output_channels(_ini_text: &str) -> Vec<OutputChannelDef> {
+    Vec::new()
+}
+
+/// Stub for the Task 3 `[GaugeConfigurations]` parser — always returns an
+/// empty list. Real parsing lands in Task 3.
+fn parse_gauges(_ini_text: &str) -> Vec<GaugeDef> {
+    Vec::new()
+}
+
+/// Stub for the Task 3 `[FrontPage]` parser — always returns an empty layout.
+/// Real parsing lands in Task 3.
+fn parse_frontpage(_ini_text: &str) -> FrontPageDef {
+    FrontPageDef {
+        gauge_slots: Vec::new(),
+        indicators: Vec::new(),
+    }
 }
