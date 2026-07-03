@@ -286,6 +286,12 @@ impl<T: Transport> Protocol for MsProtocol<T> {
     fn burn(&mut self, page: u16) -> Result<()> {
         self.do_burn(page)
     }
+
+    /// Delegates to [`MsProtocol::do_read_output_channels`] (defined in
+    /// [`crate::pages`]).
+    fn read_output_channels(&mut self, offset: u16, len: u16) -> Result<Vec<u8>> {
+        self.do_read_output_channels(offset, len)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -151,4 +151,10 @@ pub trait Protocol {
     /// Persist `page`'s current RAM contents to flash (`savePage` semantics —
     /// per-page, not whole-config).
     fn burn(&mut self, page: u16) -> Result<()>;
+
+    /// Read `len` bytes of the output-channel block starting at `offset` by
+    /// expanding `ochGetCommand` (which carries `%2o`/`%2c` windows) and reading the
+    /// response. In MsEnvelope10 the payload is `[SERIAL_RC_OK, ...len bytes]`; the
+    /// leading status byte is stripped. In Plain the response is `len` raw bytes.
+    fn read_output_channels(&mut self, offset: u16, len: u16) -> Result<Vec<u8>>;
 }

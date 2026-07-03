@@ -85,6 +85,9 @@ impl Protocol for FakeProtocol {
     fn burn(&mut self, _page: u16) -> Result<()> {
         Ok(())
     }
+    fn read_output_channels(&mut self, _offset: u16, len: u16) -> Result<Vec<u8>> {
+        Ok(vec![0u8; len as usize])
+    }
 }
 
 #[test]

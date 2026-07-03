@@ -231,6 +231,47 @@ impl<T: Transport> MsProtocol<T> {
         self.send_page_command(&command, 0, MAX_PAGE_RESPONSE)?;
         Ok(())
     }
+
+    /// [`crate::Protocol::read_output_channels`] for the generic MS/TS engine.
+    ///
+    /// Expands `ochGetCommand` (e.g. `"r$tsCanId\x30%2o%2c"`) with the given
+    /// `offset`/`len` window and sends it via [`MsProtocol::send_page_command`].
+    ///
+    /// Response shape differs by framing (`case 'r'`, comms.cpp:359-374):
+    /// - **Plain** (`comms_legacy.cpp`): `len` raw bytes, no status prefix —
+    ///   no length prefix to distrust, so a short physical reply surfaces as
+    ///   a transport timeout rather than silent truncation.
+    /// - **`MsEnvelope10`** (`comms.cpp`): `[SERIAL_RC_OK, block bytes...]`,
+    ///   status byte stripped here. Unlike [`Self::do_read_page`], a payload
+    ///   shorter than `len` is **not** an error — the INI's declared
+    ///   `ochBlockSize` can disagree with the firmware's actual frame size, so
+    ///   this returns exactly the envelope's own bytes (`rest.to_vec()`).
+    pub(crate) fn do_read_output_channels(&mut self, offset: u16, len: u16) -> Result<Vec<u8>> {
+        let template = self.comms.och_get_command.clone();
+        let envelope = self.comms.envelope;
+        let params = TemplateParams {
+            page: 0,
+            offset,
+            count: len,
+            value: &[],
+            can_id: 0,
+        };
+        let command = expand_template(&template, &params)?;
+        let response = self.send_page_command(&command, len as usize, MAX_PAGE_RESPONSE)?;
+
+        let data = match envelope {
+            EnvelopeFormat::Plain => response,
+            EnvelopeFormat::MsEnvelope10 => {
+                let (_status, rest) = response.split_first().ok_or_else(|| {
+                    ProtocolError::MalformedResponse(
+                        "empty output-channels response (expected a status byte)".to_string(),
+                    )
+                })?;
+                rest.to_vec()
+            }
+        };
+        Ok(data)
+    }
 }
 
 /// Sleep for `ms` milliseconds, skipping the syscall entirely when `ms == 0`
