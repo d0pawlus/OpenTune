@@ -1,0 +1,171 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.tune-panel {
+  --field-gap: var(--space-md);
+  --hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: 2rem;
+  padding: var(--space-md);
+  border: 1px solid var(--hairline);
+  border-radius: 0.5rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.tune-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.tune-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+/* "Modified, not burned" badge. */
+.tune-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-surface);
+  background: var(--color-accent);
+  transition: opacity var(--duration-normal) ease;
+}
+
+.tune-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.tune-body {
+  display: grid;
+  grid-template-columns: minmax(9rem, 12rem) 1fr;
+  gap: var(--field-gap);
+  margin-top: var(--space-md);
+}
+
+.tune-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-right: var(--space-md);
+  border-right: 1px solid var(--hairline);
+}
+
+.tune-menu-item {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border: none;
+  border-radius: 0.3rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tune-menu-item[aria-current="true"] {
+  background: color-mix(in oklch, var(--color-accent) 18%, transparent);
+  font-weight: 600;
+}
+
+.tune-error {
+  margin: 0.5rem 0 0;
+  color: oklch(55% 0.2 25);
+  font-size: 0.85rem;
+}
+
+.dialog-title {
+  margin: 0 0 var(--space-md);
+  font-size: 1rem;
+}
+
+.dialog-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: minmax(6rem, 10rem) 1fr;
+  align-items: center;
+  gap: var(--space-md);
+}
+
+.field-name {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.field-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.field-input,
+.field-select {
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--hairline);
+  border-radius: 0.3rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  min-width: 6rem;
+}
+
+.field-input:disabled,
+.field-select:disabled {
+  opacity: 0.5;
+}
+
+.field-units {
+  opacity: 0.7;
+  font-size: 0.85rem;
+}
+
+.field-missing {
+  color: oklch(55% 0.2 25);
+  font-size: 0.85rem;
+}
+
+.dialog-label {
+  margin: 0.4rem 0 0;
+  font-weight: 600;
+}
+
+.dialog-gap {
+  height: 0.5rem;
+}
+
+.table-field {
+  margin-top: var(--space-md);
+}
+
+.table-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+}
+
+.table-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--hairline);
+  border: 1px solid var(--hairline);
+}
+
+.table-cell {
+  padding: 0.25rem 0.4rem;
+  background: var(--color-surface);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+
+.table-empty {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

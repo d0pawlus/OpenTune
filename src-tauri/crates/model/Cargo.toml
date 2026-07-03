@@ -4,3 +4,8 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
+
+[dependencies]
+opentune-ini = { path = "../ini" }
+serde = { version = "1", features = ["derive"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }

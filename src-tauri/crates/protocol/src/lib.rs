@@ -13,15 +13,24 @@
 //!
 //! M1 covers **connect & identify** only: handshake → signature → version, plus
 //! the [`ConnectionState`] machine that makes reliable reconnect (pain point #1)
-//! a first-class type. Page read/write/burn are M2 — their trait methods are
-//! declared here (so the seam is stable) but stubbed with `todo!()`.
+//! a first-class type.
+//!
+//! # M2: page read / write / burn
+//!
+//! [`Protocol::read_page`]/[`Protocol::write`]/[`Protocol::burn`] extend the
+//! M1 seam with inline-page-id operations (no stateful page-select — see
+//! [`pages`]), implemented for the generic engine in
+//! [`pages`]/[`MsProtocol`] and confirmed against Speeduino `comms.cpp` /
+//! `comms_legacy.cpp` @ `63fd68e9`.
 
 mod engine;
+pub mod pages;
 pub mod reconnect;
 
 pub use engine::{crc32_of, MsProtocol};
+pub use pages::{expand_template, TemplateParams};
 
-use opentune_ini::CommsSettings;
+use opentune_ini::{CommsSettings, PageDef};
 use opentune_transport::TransportError;
 
 /// The identity an ECU reports during the handshake — the result of M1's core
@@ -83,6 +92,14 @@ pub enum ProtocolError {
     /// The ECU sent a malformed or unexpected response.
     #[error("malformed response: {0}")]
     MalformedResponse(String),
+    /// A comms-settings command template (`pageReadCommand`, `pageValueWrite`,
+    /// `burnCommand`, …) could not be expanded — e.g. a truncated/invalid
+    /// `\xNN` hex escape. Indicates a bad INI, not a wire/runtime failure.
+    /// Additive M2 variant: `ProtocolError` is not `Serialize` (doesn't cross
+    /// the specta/IPC seam) and no existing code matches it exhaustively, so
+    /// this does not change the M1-frozen shape's observable contract.
+    #[error("malformed command template: {0}")]
+    MalformedTemplate(String),
 }
 
 /// Result alias for protocol operations.
@@ -106,10 +123,32 @@ pub trait Protocol {
     /// Read the firmware's running second counter (`secl`). Used by reconnect to
     /// detect whether the ECU rebooted during a drop and resync accordingly.
     fn read_secl(&mut self) -> Result<u8>;
-}
 
-/// Read one config page (M2). Declared here only to keep the trait's eventual
-/// shape visible; not part of the M1 [`Protocol`] trait above.
-pub fn read_page_placeholder() {
-    todo!("M2: page read/write/burn — out of M1 scope")
+    /// Read one full memory page. `page` supplies both the page id and its
+    /// expected byte size ([`PageDef::size`]) so implementations know how
+    /// many bytes to read back.
+    ///
+    /// No page-select step: the page id travels inline in every command
+    /// (Speeduino `comms.cpp`/`comms_legacy.cpp` — the legacy `'P'`
+    /// select is unused by current firmware and is not implemented here).
+    fn read_page(&mut self, page: PageDef) -> Result<Vec<u8>>;
+
+    /// Write `bytes` at `offset` within `page`. Applies live to ECU RAM;
+    /// [`Protocol::burn`] persists to flash separately.
+    ///
+    /// **Guarantee:** `Ok(())` means the command bytes were sent and — in
+    /// CRC-framed comms — a CRC-valid acknowledgement was received (the
+    /// firmware's specific return code, e.g. a range-rejection, is not
+    /// decoded). Any error — including
+    /// [`opentune_transport::TransportError::Disconnected`] surfacing
+    /// mid-exchange as [`ProtocolError::Transport`] — means the caller MUST
+    /// treat the write as **not confirmed applied**. There is no partial
+    /// "some bytes landed" state visible to the caller: either this returns
+    /// `Ok(())`, or the caller must assume the ECU's state relative to this
+    /// write is unknown and re-verify (e.g. by re-reading the page).
+    fn write(&mut self, page: u16, offset: u16, bytes: &[u8]) -> Result<()>;
+
+    /// Persist `page`'s current RAM contents to flash (`savePage` semantics —
+    /// per-page, not whole-config).
+    fn burn(&mut self, page: u16) -> Result<()>;
 }

@@ -19,7 +19,7 @@
 //! Source: Speeduino `comms.cpp` / rusEFI `tunerstudio.cpp` (ADR-0006).
 
 use crate::{EcuIdentity, Protocol, ProtocolError, Result};
-use opentune_ini::{CommsSettings, EnvelopeFormat};
+use opentune_ini::{CommsSettings, EnvelopeFormat, PageDef};
 use opentune_transport::Transport;
 
 /// Maximum bytes to read for a null-terminated plain-protocol response.
@@ -29,7 +29,11 @@ const MAX_PLAIN_RESPONSE: usize = 128;
 /// Generic MS/TS protocol engine parameterised by an INI [`CommsSettings`]
 /// and any [`Transport`] implementation.
 pub struct MsProtocol<T: Transport> {
-    comms: CommsSettings,
+    /// Crate-visible (not just module-private) so [`crate::pages`]'s page
+    /// read/write/burn methods — a separate inherent `impl` block in a
+    /// different file — can read the command templates and delays without
+    /// duplicating them.
+    pub(crate) comms: CommsSettings,
     transport: T,
 }
 
@@ -98,7 +102,7 @@ impl<T: Transport> MsProtocol<T> {
     /// 2-byte big-endian length covers payload bytes only; the 4-byte CRC32
     /// covers the payload bytes only. Ported from Speeduino `comms.cpp` and
     /// rusEFI `tunerstudio.cpp` (ADR-0006).
-    fn envelope_write(&mut self, payload: &[u8]) -> Result<()> {
+    pub(crate) fn envelope_write(&mut self, payload: &[u8]) -> Result<()> {
         let len = payload.len() as u16;
         let crc = crc32_of(payload);
         let mut frame = Vec::with_capacity(2 + payload.len() + 4);
@@ -112,12 +116,26 @@ impl<T: Transport> MsProtocol<T> {
     /// Read `[len_hi, len_lo, payload..., crc32(4 bytes)]`, verify CRC,
     /// and return the payload as a UTF-8 string (trailing NUL stripped).
     fn envelope_read_string(&mut self) -> Result<String> {
+        let payload = self.envelope_read_bytes(MAX_PLAIN_RESPONSE)?;
+        let text_bytes = payload.strip_suffix(b"\x00").unwrap_or(&payload);
+        String::from_utf8(text_bytes.to_vec())
+            .map_err(|e| ProtocolError::MalformedResponse(format!("non-UTF-8 payload: {e}")))
+    }
+
+    /// Read `[len_hi, len_lo, payload..., crc32(4 bytes)]`, verify the CRC,
+    /// and return the raw payload bytes — no UTF-8/NUL handling, unlike
+    /// [`Self::envelope_read_string`]. Shared by the string-response callers
+    /// above and the binary page-read/write-ack path in [`crate::pages`]
+    /// (page data is not necessarily valid UTF-8). `max_len` bounds the
+    /// accepted `payload_len` as a sanity guard against a corrupted length
+    /// prefix causing a huge allocation.
+    pub(crate) fn envelope_read_bytes(&mut self, max_len: usize) -> Result<Vec<u8>> {
         let mut len_buf = [0u8; 2];
         self.transport.read_exact(&mut len_buf)?;
         let payload_len = u16::from_be_bytes(len_buf) as usize;
-        if payload_len > MAX_PLAIN_RESPONSE {
+        if payload_len > max_len {
             return Err(ProtocolError::MalformedResponse(format!(
-                "envelope payload length {payload_len} exceeds limit {MAX_PLAIN_RESPONSE}"
+                "envelope payload length {payload_len} exceeds limit {max_len}"
             )));
         }
         let mut payload = vec![0u8; payload_len];
@@ -132,9 +150,48 @@ impl<T: Transport> MsProtocol<T> {
                 actual: received_crc,
             });
         }
-        let text_bytes = payload.strip_suffix(b"\x00").unwrap_or(&payload);
-        String::from_utf8(text_bytes.to_vec())
-            .map_err(|e| ProtocolError::MalformedResponse(format!("non-UTF-8 payload: {e}")))
+        Ok(payload)
+    }
+
+    /// Send an already-expanded page-domain command (`pageReadCommand`,
+    /// `pageValueWrite`, `burnCommand`) and return its response bytes,
+    /// dispatching on [`CommsSettings::envelope`] like [`Self::send_query`]
+    /// but working with raw bytes rather than a NUL-terminated string.
+    ///
+    /// - **Plain**: writes `payload`, then reads exactly `plain_response_len`
+    ///   raw bytes. Pass `0` for write/burn — Speeduino's legacy handler
+    ///   (`comms_legacy.cpp` `'M'`/`'b'`) sends no acknowledgement in this
+    ///   framing.
+    /// - **`MsEnvelope10`**: every command gets a CRC-verified,
+    ///   self-describing envelope response (`comms.cpp` acks writes/burns
+    ///   with a 1-byte return code via `sendReturnCodeMsg`); `envelope_max_len`
+    ///   bounds the accepted response size.
+    ///
+    /// Any transport failure (including
+    /// [`opentune_transport::TransportError::Disconnected`] if the device
+    /// vanishes between the write and the ack read) propagates as `Err`.
+    pub(crate) fn send_page_command(
+        &mut self,
+        payload: &[u8],
+        plain_response_len: usize,
+        envelope_max_len: usize,
+    ) -> Result<Vec<u8>> {
+        self.transport.flush()?;
+        match self.comms.envelope {
+            EnvelopeFormat::Plain => {
+                self.transport.write(payload)?;
+                if plain_response_len == 0 {
+                    return Ok(Vec::new());
+                }
+                let mut buf = vec![0u8; plain_response_len];
+                self.transport.read_exact(&mut buf)?;
+                Ok(buf)
+            }
+            EnvelopeFormat::MsEnvelope10 => {
+                self.envelope_write(payload)?;
+                self.envelope_read_bytes(envelope_max_len)
+            }
+        }
     }
 }
 
@@ -211,6 +268,23 @@ impl<T: Transport> Protocol for MsProtocol<T> {
                 Ok(payload[0])
             }
         }
+    }
+
+    /// Delegates to [`MsProtocol::do_read_page`] (defined in
+    /// [`crate::pages`] — see there for the comms.cpp/comms_legacy.cpp
+    /// framing citations).
+    fn read_page(&mut self, page: PageDef) -> Result<Vec<u8>> {
+        self.do_read_page(page)
+    }
+
+    /// Delegates to [`MsProtocol::do_write`] (defined in [`crate::pages`]).
+    fn write(&mut self, page: u16, offset: u16, bytes: &[u8]) -> Result<()> {
+        self.do_write(page, offset, bytes)
+    }
+
+    /// Delegates to [`MsProtocol::do_burn`] (defined in [`crate::pages`]).
+    fn burn(&mut self, page: u16) -> Result<()> {
+        self.do_burn(page)
     }
 }
 

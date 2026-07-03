@@ -32,4 +32,5 @@ opentune-protocol = { path = "crates/protocol" }
 opentune-transport = { path = "crates/transport" }
 opentune-simulator = { path = "crates/simulator" }
 opentune-ini = { path = "crates/ini" }
+opentune-model = { path = "crates/model" }
 

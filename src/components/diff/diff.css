@@ -1,0 +1,50 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.tune-diff {
+  --hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--hairline);
+}
+
+.tune-diff-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.tune-diff-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.tune-diff-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.tune-diff-empty {
+  margin: 0.5rem 0 0;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.tune-diff-table {
+  margin-top: var(--space-md);
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+.tune-diff-table th,
+.tune-diff-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+}
+
+.tune-diff-name {
+  font-family: ui-monospace, monospace;
+}

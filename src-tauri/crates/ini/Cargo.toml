@@ -7,3 +7,5 @@ publish = false
 
 [dependencies]
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"] }

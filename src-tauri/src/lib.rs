@@ -1,27 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod commands;
 pub mod connection;
+pub mod dto;
 pub mod events;
+pub mod session;
+mod session_diff;
+mod tune_commands;
 
 use std::sync::{Arc, Mutex};
 
 use specta_typescript::Typescript;
 use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    let builder = Builder::<tauri::Wry>::new()
+/// Assemble the tauri-specta builder. Single source for the command/event
+/// registration lists so `run()` and the `binding_gen` tests can never drift.
+fn build_specta() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             commands::app_info,
             commands::list_ports,
             commands::connect,
             commands::disconnect,
             commands::simulate_link_drop,
+            tune_commands::get_definition,
+            tune_commands::load_tune,
+            tune_commands::get_values,
+            tune_commands::set_value,
+            tune_commands::burn_tune,
+            tune_commands::undo_tune,
+            tune_commands::redo_tune,
+            tune_commands::eval_conditions,
+            tune_commands::snapshot_tune,
+            tune_commands::diff_tune,
+            tune_commands::merge_tune,
         ])
         .events(collect_events![
             events::Heartbeat,
-            events::ConnectionStateEvent
-        ]);
+            events::ConnectionStateEvent,
+            events::TuneDirtyEvent,
+        ])
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let builder = build_specta();
 
     #[cfg(debug_assertions)]
     builder
@@ -30,7 +52,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(Arc::new(Mutex::new(None::<connection::ActiveConnection>)))
+        .manage(Arc::new(Mutex::new(None::<connection::Session>)))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -54,37 +76,31 @@ pub fn run() {
 #[cfg(test)]
 mod binding_gen {
     use super::*;
+    use std::sync::Mutex;
 
-    fn make_builder() -> Builder<tauri::Wry> {
-        Builder::<tauri::Wry>::new()
-            .commands(collect_commands![
-                commands::app_info,
-                commands::list_ports,
-                commands::connect,
-                commands::disconnect,
-                commands::simulate_link_drop,
-            ])
-            .events(collect_events![
-                events::Heartbeat,
-                events::ConnectionStateEvent
-            ])
+    /// These tests all export to and read back the same `bindings.ts` path.
+    /// Under the default parallel test runner that races (pre-existing flake);
+    /// this mutex serializes them so each export→read pair is atomic. Recovers
+    /// from poisoning so one panicking test does not cascade.
+    static BINDINGS_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Export the bindings under the shared lock and return their contents.
+    fn export_and_read() -> String {
+        let _guard = BINDINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        build_specta()
+            .export(Typescript::default(), "../src/ipc/bindings.ts")
+            .expect("failed to export typescript bindings");
+        std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist")
     }
 
     #[test]
     fn export_typescript_bindings() {
-        make_builder()
-            .export(Typescript::default(), "../src/ipc/bindings.ts")
-            .expect("failed to export typescript bindings");
+        let _ = export_and_read();
     }
 
     #[test]
     fn export_typescript_bindings_includes_heartbeat() {
-        make_builder()
-            .export(Typescript::default(), "../src/ipc/bindings.ts")
-            .expect("failed to export typescript bindings");
-
-        let contents =
-            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        let contents = export_and_read();
         assert!(
             contents.contains("Heartbeat"),
             "bindings.ts should contain Heartbeat type, got:\n{contents}"
@@ -93,12 +109,7 @@ mod binding_gen {
 
     #[test]
     fn export_typescript_bindings_includes_connection_state_event() {
-        make_builder()
-            .export(Typescript::default(), "../src/ipc/bindings.ts")
-            .expect("failed to export typescript bindings");
-
-        let contents =
-            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        let contents = export_and_read();
         assert!(
             contents.contains("ConnectionStateEvent"),
             "bindings.ts should contain ConnectionStateEvent type, got:\n{contents}"
@@ -111,12 +122,7 @@ mod binding_gen {
 
     #[test]
     fn export_typescript_bindings_includes_list_ports_command() {
-        make_builder()
-            .export(Typescript::default(), "../src/ipc/bindings.ts")
-            .expect("failed to export typescript bindings");
-
-        let contents =
-            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        let contents = export_and_read();
         assert!(
             contents.contains("listPorts"),
             "bindings.ts should contain listPorts command, got:\n{contents}"
@@ -129,12 +135,7 @@ mod binding_gen {
 
     #[test]
     fn export_typescript_bindings_includes_connect_commands() {
-        make_builder()
-            .export(Typescript::default(), "../src/ipc/bindings.ts")
-            .expect("failed to export typescript bindings");
-
-        let contents =
-            std::fs::read_to_string("../src/ipc/bindings.ts").expect("bindings.ts must exist");
+        let contents = export_and_read();
         assert!(
             contents.contains("connect"),
             "bindings.ts should contain connect command"
@@ -151,5 +152,45 @@ mod binding_gen {
             contents.contains("ConnectSource"),
             "bindings.ts should contain ConnectSource type"
         );
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_tune_commands_and_event() {
+        let contents = export_and_read();
+        for needle in [
+            "getDefinition",
+            "loadTune",
+            "setValue",
+            "burnTune",
+            "undoTune",
+            "redoTune",
+            "evalConditions",
+            "TuneDirtyEvent",
+            "DefinitionDto",
+            "DialogDto",
+            "ConstantKindDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_diff_merge_commands() {
+        let contents = export_and_read();
+        for needle in [
+            "snapshotTune",
+            "diffTune",
+            "mergeTune",
+            "FieldDiffDto",
+            "CellDiffDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
     }
 }

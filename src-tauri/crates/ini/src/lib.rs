@@ -21,12 +21,34 @@
 //! `ochGetCommand`. The parsing agent fills [`parse_comms`]; the *shape* is
 //! frozen here so downstream work can begin in parallel.
 
+mod constants;
+mod constants_fields;
+mod constants_parser;
+mod definition;
+mod expr;
+mod expr_parser;
 mod parser;
+mod preprocessor;
+mod ui;
+mod ui_dialog_parser;
+mod ui_parser;
+mod ui_table_curve_parser;
+mod ui_tokens;
 
+pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
+pub use definition::{parse_definition, Definition, PageDef};
+pub use expr::{eval, eval_bool, ExprError};
 pub use parser::parse_comms;
+pub use preprocessor::preprocess;
+pub use ui::{
+    CurveDef, Diagnostic, DialogDef, DialogField, FieldKind, MenuDef, MenuItem, TableDef,
+};
 
 /// Byte/field order of multi-byte values, taken from the INI `endianness` key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Derives `serde::Serialize` + `specta::Type` because it is reachable from
+/// [`Definition`] via [`CommsSettings`], which the frontend consumes over IPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, specta::Type)]
 pub enum Endianness {
     /// `endianness = little` (Speeduino default).
     #[default]
@@ -40,7 +62,10 @@ pub enum Endianness {
 /// Newer firmware wraps payloads with a length prefix + CRC32 (the "CRC
 /// protocol"); legacy firmware sends them raw. The protocol engine selects its
 /// framing from this (see [protocol.md](../../../docs/protocol.md)).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Derives `serde::Serialize` + `specta::Type` because it is reachable from
+/// [`Definition`] via [`CommsSettings`], which the frontend consumes over IPC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub enum EnvelopeFormat {
     /// Legacy unframed bytes (no length prefix, no CRC).
     Plain,
@@ -55,7 +80,10 @@ pub enum EnvelopeFormat {
 /// Commands are kept as the raw INI template strings (e.g. `"p%2i%2o%2c"`); the
 /// `protocol` crate owns expanding the `%2i`/`%2o`/`%2c`/`%v` placeholders. The
 /// `ini` crate does **not** interpret them — it only extracts them faithfully.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Derives `serde::Serialize` + `specta::Type` because it is reachable from
+/// [`Definition`], which the frontend consumes over IPC.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct CommsSettings {
     /// `signature` — the exact identity string the ECU must report
     /// (e.g. `"speeduino 202504-dev"`). Matched on connect.

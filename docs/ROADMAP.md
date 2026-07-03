@@ -71,18 +71,18 @@ Goal: parse an INI, connect to a (simulated) ECU, and confirm identity.
 **Demo:** connect to the simulator (and, for testers, a real Speeduino), see its
 signature, and watch the app silently recover from a simulated connection drop.
 
-## M2 — Read, edit & burn the tune ⬜
+## M2 — Read, edit & burn the tune ✅
 
 Goal: full configuration editing — the core of a tuning tool.
 
-- ⬜ `ini`: full constants/pages parsing; expression evaluator; dialogs/menus.
-- ⬜ `model`: build `Tune` from pages; typed scaled accessors; dirty/undo-redo;
+- ✅ `ini`: full constants/pages parsing; expression evaluator; dialogs/menus.
+- ✅ `model`: build `Tune` from pages; typed scaled accessors; dirty/undo-redo;
   RAM-vs-flash state.
-- ⬜ `protocol`: page read/write, page activation, burn, CRC variants.
-- ⬜ `simulator`: backing memory image for page read/write/burn.
-- ⬜ Frontend **data-driven dialog engine**: render menus/dialogs/fields with
+- ✅ `protocol`: page read/write, page activation, burn, CRC variants.
+- ✅ `simulator`: backing memory image for page read/write/burn.
+- ✅ Frontend **data-driven dialog engine**: render menus/dialogs/fields with
   conditional visible/enable; edit values → live write.
-- ⬜ **Tune diff/merge (most-requested missing TS feature):** compare two tunes
+- ✅ **Tune diff/merge (most-requested missing TS feature):** compare two tunes
   (current vs. file/snapshot), show per-setting and per-table-cell differences, and
   selectively merge individual changes. Builds naturally on the `model`'s
   field-level dirty tracking.

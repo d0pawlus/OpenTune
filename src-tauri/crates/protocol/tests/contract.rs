@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Contract tests for the `opentune-protocol` M1 identity seam.
 
-use opentune_ini::{CommsSettings, Endianness, EnvelopeFormat};
+use opentune_ini::{CommsSettings, Endianness, EnvelopeFormat, PageDef};
 use opentune_protocol::{ConnectionState, EcuIdentity, Protocol, ProtocolError, Result};
 
 fn comms_with_signature(sig: &str) -> CommsSettings {
@@ -74,6 +74,15 @@ impl Protocol for FakeProtocol {
     }
     fn read_secl(&mut self) -> Result<u8> {
         Ok(42)
+    }
+    fn read_page(&mut self, page: PageDef) -> Result<Vec<u8>> {
+        Ok(vec![0u8; page.size])
+    }
+    fn write(&mut self, _page: u16, _offset: u16, _bytes: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn burn(&mut self, _page: u16) -> Result<()> {
+        Ok(())
     }
 }
 

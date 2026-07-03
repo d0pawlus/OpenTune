@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `EcuSimulator` — minimal virtual ECU driven by TDD.
 //!
-//! Wire semantics ported from Speeduino `comms.cpp` (GPL-3),
-//! per [ADR-0006](../../../../docs/adr/0006-reuse-existing-parsers.md).
+//! Wire semantics ported from Speeduino `comms.cpp`/`comms_legacy.cpp`
+//! (GPL-3), per [ADR-0006](../../../../docs/adr/0006-reuse-existing-parsers.md).
+//! M1's Q/S/A handshake dispatch and M2 Task 6's page read/write/burn
+//! dispatch both port that source directly (byte layout cross-checked
+//! against `opentune-protocol`'s `pages.rs`, which cites the exact
+//! `comms.cpp`/`comms_legacy.cpp` lines). See [`crate::memory`] for the
+//! `speeduino-serial-sim` port-note covering the backing memory image this
+//! module dispatches into.
 
+use crate::memory::MemoryImage;
+use opentune_ini::{Definition, PageDef};
 use opentune_transport::{Transport, TransportError};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -18,16 +26,22 @@ struct Pipe {
     /// Firmware second counter. Byte 0 of the `'A'` (realtime) response.
     /// `advance_secl` increments it; `reset_secl` sets it to 0 for reboot tests.
     secl: u8,
+    /// Page RAM/flash images (M2 Task 6). Empty when built via
+    /// [`EcuSimulator::new`] — page commands against an empty image are the
+    /// documented [`MemoryImage`] no-op, so the M1 handshake-only sim keeps
+    /// working unchanged.
+    memory: MemoryImage,
 }
 
 impl Pipe {
-    fn new() -> Self {
+    fn new(pages: &[PageDef]) -> Self {
         Self {
             cmd_buf: VecDeque::new(),
             rsp_buf: VecDeque::new(),
             dropped: false,
             open: false,
             secl: 0,
+            memory: MemoryImage::new(pages),
         }
     }
 }
@@ -105,47 +119,123 @@ fn process(pipe: &Arc<Mutex<Pipe>>) {
             let _ = p.cmd_buf.drain(..2);
             let payload: Vec<u8> = p.cmd_buf.drain(..plen).collect();
             let _ = p.cmd_buf.drain(..4);
-            let cmd = *payload.first().unwrap_or(&0);
             let secl = p.secl;
-            drop(p);
-            process_cmd_crc(cmd, secl, pipe);
+            let framed = respond_crc(&payload, secl, &mut p.memory);
+            p.rsp_buf.extend(framed);
             return;
         } else {
-            let cmd = p.cmd_buf.pop_front().unwrap();
+            // Plain protocol: a command occupies a variable number of bytes
+            // depending on its first byte ('p'/'M'/'b' carry a page/offset/
+            // length/value payload) — wait for the full command before
+            // dispatching, mirroring the CRC branch's "wait for the full
+            // frame" handling above.
+            let Some(len) = plain_command_len(&p.cmd_buf) else {
+                break;
+            };
+            if p.cmd_buf.len() < len {
+                break;
+            }
+            let cmd_bytes: Vec<u8> = p.cmd_buf.drain(..len).collect();
             let secl = p.secl;
-            respond_plain(cmd, secl, &mut p.rsp_buf);
+            let out = respond_plain(&cmd_bytes, secl, &mut p.memory);
+            p.rsp_buf.extend(out);
         }
     }
 }
 
-fn process_cmd_crc(cmd: u8, secl: u8, pipe: &Arc<Mutex<Pipe>>) {
-    let mut p = pipe.lock().unwrap();
-    respond_crc(cmd, secl, &mut p.rsp_buf);
+/// Total byte length of the plain-protocol command starting at `buf`'s
+/// front, or `None` if not enough bytes have arrived yet to even compute it
+/// (only `'M'` needs this — its value length is itself part of the command,
+/// read from the same buffered bytes).
+///
+/// Layout confirmed against `comms.cpp`/`comms_legacy.cpp` — see
+/// `opentune-protocol`'s `pages.rs` module doc for the exact source lines:
+/// `'p'` = `cmd + %2i + %2o + %2c` (7 bytes); `'b'` = `cmd + %2i` (3 bytes);
+/// `'M'` = `cmd + %2i + %2o + %2c + %v` (7 + value-length bytes).
+fn plain_command_len(buf: &VecDeque<u8>) -> Option<usize> {
+    match *buf.front()? {
+        b'p' => Some(7),
+        b'b' => Some(3),
+        b'M' => {
+            if buf.len() < 7 {
+                return None;
+            }
+            let count = u16::from_le_bytes([buf[5], buf[6]]) as usize;
+            Some(7 + count)
+        }
+        _ => Some(1), // 'Q' / 'S' / 'A' / anything unrecognized.
+    }
 }
 
-fn respond_plain(cmd: u8, secl: u8, rsp: &mut VecDeque<u8>) {
-    match cmd {
+/// Extract `(page, offset, count)` from a `'p'`/`'M'` command's raw bytes —
+/// the same layout for plain command bytes and a CRC payload (both start
+/// with the command byte). `page` is the low byte only, matching
+/// `comms_legacy.cpp`'s "first byte of the page identifier ... is always
+/// 0". Returns `None` on a too-short/malformed buffer rather than
+/// indexing out of bounds — a corrupt CRC payload must never panic the sim
+/// thread.
+fn parse_page_offset_count(bytes: &[u8]) -> Option<(u16, u16, u16)> {
+    let page = *bytes.get(2)? as u16;
+    let offset = u16::from_le_bytes([*bytes.get(3)?, *bytes.get(4)?]);
+    let count = u16::from_le_bytes([*bytes.get(5)?, *bytes.get(6)?]);
+    Some((page, offset, count))
+}
+
+/// Extract the page id from a `'b'` command's raw bytes (`cmd + %2i`, low
+/// byte only). `None` on a too-short buffer.
+fn parse_page(bytes: &[u8]) -> Option<u16> {
+    bytes.get(2).map(|&b| b as u16)
+}
+
+/// Dispatch one plain-protocol command and return the raw response bytes
+/// (empty for `'M'`/`'b'` — `comms_legacy.cpp` sends no acknowledgement in
+/// this framing, so the sim must not push any either or a later read would
+/// consume the wrong bytes).
+fn respond_plain(cmd_bytes: &[u8], secl: u8, memory: &mut MemoryImage) -> Vec<u8> {
+    match cmd_bytes[0] {
         b'Q' => {
-            rsp.extend(EcuSimulator::SIGNATURE.as_bytes());
-            rsp.push_back(0);
+            let mut v = EcuSimulator::SIGNATURE.as_bytes().to_vec();
+            v.push(0);
+            v
         }
         b'S' => {
-            rsp.extend(EcuSimulator::VERSION.as_bytes());
-            rsp.push_back(0);
+            let mut v = EcuSimulator::VERSION.as_bytes().to_vec();
+            v.push(0);
+            v
         }
-        b'A' => {
-            // First byte of realtime frame is `secl` — used by reconnect resync.
-            rsp.push_back(secl);
+        // First byte of realtime frame is `secl` — used by reconnect resync.
+        b'A' => vec![secl],
+        // comms_legacy.cpp `case 'p'`: raw page bytes, no status prefix.
+        b'p' => match parse_page_offset_count(cmd_bytes) {
+            Some((page, offset, count)) => memory.read(page, offset, count),
+            None => Vec::new(),
+        },
+        // comms_legacy.cpp `case 'M'`: fire-and-forget, no ack bytes.
+        b'M' => {
+            if let Some((page, offset, count)) = parse_page_offset_count(cmd_bytes) {
+                let value = cmd_bytes.get(7..7 + count as usize).unwrap_or(&[]);
+                memory.write(page, offset, value);
+            }
+            Vec::new()
         }
-        _ => {
-            rsp.push_back(0);
+        // comms_legacy.cpp `case 'b'`: fire-and-forget, no ack bytes.
+        b'b' => {
+            if let Some(page) = parse_page(cmd_bytes) {
+                memory.burn(page);
+            }
+            Vec::new()
         }
+        _ => vec![0],
     }
 }
 
-fn respond_crc(cmd: u8, secl: u8, rsp: &mut VecDeque<u8>) {
+/// Dispatch one CRC-framed (`msEnvelope_1.0`) command and return the full
+/// wire frame (`[len_hi, len_lo, payload..., crc32]`) ready to push to
+/// `rsp_buf`.
+fn respond_crc(payload: &[u8], secl: u8, memory: &mut MemoryImage) -> Vec<u8> {
     use opentune_protocol::crc32_of;
-    let payload: Vec<u8> = match cmd {
+    let cmd = payload.first().copied().unwrap_or(0);
+    let response: Vec<u8> = match cmd {
         b'Q' => {
             let mut v = EcuSimulator::SIGNATURE.as_bytes().to_vec();
             v.push(0);
@@ -157,13 +247,39 @@ fn respond_crc(cmd: u8, secl: u8, rsp: &mut VecDeque<u8>) {
             v
         }
         b'A' => vec![secl],
+        // comms.cpp `case 'p'`: [SERIAL_RC_OK, page bytes...].
+        b'p' => match parse_page_offset_count(payload) {
+            Some((page, offset, count)) => {
+                let mut v = vec![0x00];
+                v.extend(memory.read(page, offset, count));
+                v
+            }
+            None => vec![0x00],
+        },
+        // comms.cpp acks writes via sendReturnCodeMsg(SERIAL_RC_OK).
+        b'M' => {
+            if let Some((page, offset, count)) = parse_page_offset_count(payload) {
+                let value = payload.get(7..7 + count as usize).unwrap_or(&[]);
+                memory.write(page, offset, value);
+            }
+            vec![0x00]
+        }
+        // comms.cpp acks burns via sendReturnCodeMsg(SERIAL_RC_BURN_OK).
+        b'b' => {
+            if let Some(page) = parse_page(payload) {
+                memory.burn(page);
+            }
+            vec![0x04]
+        }
         _ => vec![0],
     };
-    let len = payload.len() as u16;
-    let crc = crc32_of(&payload);
-    rsp.extend(len.to_be_bytes());
-    rsp.extend(&payload);
-    rsp.extend(crc.to_be_bytes());
+    let len = response.len() as u16;
+    let crc = crc32_of(&response);
+    let mut framed = Vec::with_capacity(2 + response.len() + 4);
+    framed.extend(len.to_be_bytes());
+    framed.extend(&response);
+    framed.extend(crc.to_be_bytes());
+    framed
 }
 
 /// The virtual ECU.
@@ -175,14 +291,27 @@ impl EcuSimulator {
     pub const SIGNATURE: &'static str = "speeduino 202504-dev";
     pub const VERSION: &'static str = "Speeduino 2025.04-dev";
 
+    /// Handshake-only sim (M1): no declared pages, so page read/write/burn
+    /// commands against it are the documented [`MemoryImage`] no-op rather
+    /// than an error. Use [`Self::from_definition`] once page geometry is
+    /// known.
     pub fn new() -> Self {
         Self {
-            pipe: Arc::new(Mutex::new(Pipe::new())),
+            pipe: Arc::new(Mutex::new(Pipe::new(&[]))),
         }
     }
 
     pub fn new_crc() -> Self {
         Self::new()
+    }
+
+    /// Build a sim backed by `definition`'s page geometry (M2 Task 6): a
+    /// zero-filled RAM + flash image per declared [`PageDef`], enabling
+    /// read/write/burn against it via [`opentune_protocol::MsProtocol`].
+    pub fn from_definition(definition: &Definition) -> Self {
+        Self {
+            pipe: Arc::new(Mutex::new(Pipe::new(&definition.pages))),
+        }
     }
 
     pub fn client_transport(&self) -> EcuClientTransport {
@@ -208,6 +337,14 @@ impl EcuSimulator {
     /// Drives test `secl_reboot_triggers_reidentify`.
     pub fn reset_secl(&self) {
         self.pipe.lock().unwrap().secl = 0;
+    }
+
+    /// Simulated ECU reboot (M2 Task 6): every declared page's RAM resets
+    /// from its flash image — burned bytes survive, un-burned writes are
+    /// lost (see [`MemoryImage::reboot`]). Scoped to the memory image only;
+    /// `secl` is a separate M1 concern with its own [`Self::reset_secl`].
+    pub fn reboot(&self) {
+        self.pipe.lock().unwrap().memory.reboot();
     }
 
     pub fn flush(&self) {

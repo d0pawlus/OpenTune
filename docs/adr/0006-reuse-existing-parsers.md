@@ -75,3 +75,27 @@ a deliberate, recorded choice.
 
 Pairs with the (pending) ADR on positioning relative to LibreTune, which may itself
 be a reuse source — subject to the GPL-2/GPL-3 caveat above.
+
+### Note (2026-07-02) — write-fresh exception: `ini::expr` evaluator
+
+Task 2 (`ini` crate expression evaluator, `src-tauri/crates/ini/src/expr.rs`)
+is a **deliberate, recorded exception** to the port-first default above.
+
+The only working reference implementation for the sandboxed
+arithmetic/boolean grammar used in `visible`/`enable` conditions and
+constant-scaling expressions is rusEFI's `ExpressionEvaluator.java`. That
+source is licensed GPLv3 **plus additional §7 field-of-use terms**
+(restricting use in aircraft and off-road applications) that this project
+does not carry anywhere else in the tree. Porting it — even faithfully —
+would import those additional terms into this crate. The other candidate
+references (`hyper-tuner/ini`, `adbancroft/TunerStudioIniParser`) both treat
+`{ … }` expressions as opaque strings and never evaluate them, so neither is
+a usable port source either.
+
+**Decision:** `ini::expr` is written fresh. rusEFI's evaluator was consulted
+only as a *structural* reference — to confirm the real-world operator set
+(arithmetic, comparisons, boolean ops, bare-symbol variables, and the
+unsupported `bitStringValue`/`table` function-call forms) enumerated from
+real `speeduino.ini` files — not as a line-by-line port. No code or algorithm
+was copied. See the module doc comment in `expr.rs` for the same rationale
+recorded alongside the implementation.

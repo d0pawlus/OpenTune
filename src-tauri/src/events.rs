@@ -8,6 +8,20 @@ pub struct Heartbeat {
     pub seq: u32,
 }
 
+/// Emitted whenever the in-memory [`Tune`](opentune_model::Tune) dirty state
+/// changes — after a `set_value`, `undo`, `redo`, or `burn`. Drives the
+/// "modified, not burned" badge: `dirty == true` means RAM diverges from flash.
+///
+/// The backend is the single source of truth; the frontend never computes
+/// dirtiness itself, it just reflects the last event it received.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Type, Event)]
+pub struct TuneDirtyEvent {
+    /// Whether any page has unburned edits.
+    pub dirty: bool,
+    /// The page numbers with unburned edits, ascending. Empty when clean.
+    pub dirty_pages: Vec<u16>,
+}
+
 /// IPC-serialisable mirror of [`opentune_protocol::ConnectionState`].
 ///
 /// `tauri-specta` requires `specta::Type` on every emitted event type.
