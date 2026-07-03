@@ -78,6 +78,31 @@ gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w
 - **`loop.rs` → `poll.rs`:** `loop` to słowo kluczowe Rusta; brief nazwał plik
   nie do użycia.
 
+- **Zegary canvas ręcznie, zero nowych zależności (Task 7):** rdzeń to pętla
+  `requestAnimationFrame` czytająca `useRealtimeStore.getState()` — 30 Hz
+  nigdy nie wchodzi w reconciliation Reacta (żadnego stanu React per ramka,
+  żadnych subskrypcji selektorów na gorącej ścieżce); przemalowanie tylko
+  przy zmianie wartości, pierwsze malowanie gwarantowane.
+- **Field: wzorzec draft-null zamiast `useEffect`-reset z briefu (Task 7):**
+  wymuszony przez regułę eslint `react-hooks/set-state-in-effect`, ale
+  recenzent uznał go za *lepszy* — w trakcie edycji draft wygrywa, więc
+  zmiana propa nie nadpisuje pisanego tekstu; poza edycją wartość backendu
+  prześwituje naturalnie. `null` Scalar (sentinel NaN z Task 6) renderuje
+  "—", nigdy 0.
+- **Styl zegara per slot (round/bar/digital) w JSON layoutu (Task 7):** brief
+  nakazywał trzy komponenty, ale nie mówił, gdzie Bar/Digital są osiągalne;
+  selektor stylu w GaugeBinderze czyni każdy deliverable osiągalnym.
+  Backend layoutu = nieprzezroczysty blob (walidacja po stronie frontendu
+  przy wczytaniu; `parseLayout` nigdy nie ufa zawartości pliku).
+- **Reaktywność motywu przez `useLayoutEffect` w App (poprawka po review,
+  Task 7):** samo przewleczenie propa `theme` łapało motyw *wychodzący* —
+  React opróżnia efekty pasywne dziecko-przed-rodzicem, więc canvas czytał
+  `data-theme` zanim App go zapisał. Awans setter-a atrybutu w App do
+  `useLayoutEffect` (efekty layoutu flushują przed wszystkimi pasywnymi);
+  canvas zostaje pasywny. Odrzucona alternatywa: mapowanie propa wprost na
+  kolory w JS — dublowałoby paletę oklch i łamało tokens.css jako jedyne
+  źródło prawdy o kolorze. Asymetria jest nośna i skomentowana w App.tsx.
+
 ## Uwagi do dyskusji (nieblokujące)
 
 - **Bundlowany `speeduino.sample.ini` nie ma `[OutputChannels]` /
@@ -96,6 +121,16 @@ gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w
   speeduino.ini trzyma gołe `"r"` w `[MegaTune]`, a szablon okienkowy w
   `[OutputChannels]`. Escape `\$` w `expand_template` naprawiony (emitował
   zabłąkany bajt 0x5C ⇒ 8-bajtowe żądanie).
+- **Lampka wskaźnikowa: wyrażenia inne niż goła nazwa bitu cicho gasną**
+  (fail-open do OFF) — dla lampki ostrzegawczej w realnym aucie to groźny
+  kierunek degradacji; przyszła poprawka to stan "nieznany"/tooltip albo
+  ewaluacja wskaźników po stronie backendu. Para z tym: `applyFrame` pomija
+  `null` (trzyma ostatnią dobrą wartość) bez sygnalizacji nieświeżości —
+  jedna wspólna poprawka "age-out + diagnostyka staleness" w M4+.
+- **`useLayoutEffect` w App strzeżony komentarzem, nie testem** — harness
+  testowy dubluje okablowanie App, więc "uproszczenie" hooka z powrotem do
+  `useEffect` przywróciłoby błąd bez czerwonego testu; test na poziomie App
+  wymagałby mockowania IPC (decyzja odłożona).
 - **Odłożone drobiazgi do finalnego review gałęzi:** nieaktualny doc-comment
   `events.rs` ("Not yet registered" — już zarejestrowane, propaguje do
   bindings.ts); brak bezpośredniego testu przewymiarowanego `%2c` (bezpieczne
