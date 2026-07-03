@@ -1,0 +1,105 @@
+# M3 — decyzje i uwagi (notatnik wykonawczy)
+
+Decyzje podjęte w trakcie realizacji M3 (dashboard czasu rzeczywistego) tam,
+gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w M2:
+ścieżka optymalna, nieblokująca przyszłego rozwoju. Plan:
+`docs/superpowers/plans/2026-07-02-m3-realtime-dashboard.md`; badania:
+`docs/notes/m3-research.md`.
+
+## Decyzje
+
+- **`GaugeDef.units: String`, nie `Number` (poprawka w punkcie zamrożenia,
+  Task 0):** blok interfejsów planu deklarował `units` jako `Number`, co było
+  semantycznie błędne — jednostki to etykiety ("RPM", "%"), a `Number::Expr`
+  to ścieżka `eval()`. Poprawione w kodzie, testach i planie (łącznie z
+  krokami parsera Task 3 i `GaugeDto` Task 7) zanim cokolwiek zdążyło na tym
+  typie zbudować.
+- **Odstępstwo §9 z M2 ZAMKNIĘTE (Task 1):** owner-task Tokio + kanał poleceń
+  **opakowuje** synchroniczny `Session` (owner *nad* Session, nie przepisanie
+  Session na async) — wszystkie testy M2 zielone bez zmian to dowód, że
+  migracja nie zmieniła zachowania. Sesja wędruje przez `spawn_blocking` przez
+  `Option::take`; każde ramię obsługi wysyła dokładnie jedną odpowiedź; panika
+  ownera degraduje do "not connected".
+- **Reconnect po serialu KOLEJKUJE komendy za ownerem** zamiast fail-fast
+  (intencja §9); do rewizji przy UX realnego serialu.
+- **Reboot wykryty przy reconnect ⇒ ponowny odczyt tune** (unieważnienie
+  follow-upu M2); glitch (secl idzie do przodu) zachowuje niewypalone edycje.
+  Obie ścieżki przetestowane, strażnik glitcha dowiedziony mutacją.
+- **Zasięg przesunięcia bitowego (Task 3):** licznik `<<` poza 0..=63 →
+  `ExprError::Math` zamiast niestrzeżonego rzutowania z briefu (ryzyko paniki
+  w debug). Gramatyka: `or → and → bitand(&) → compare → shift(<<) → additive`.
+- **Tolerancja krótkiej ramki tylko na ścieżce CRC (Task 4):** realny rozjazd
+  INI/firmware (`ochBlockSize` 139 vs `LOG_ENTRY_SIZE` 138) ⇒ nigdy nie ufamy
+  deklarowanej długości; ścieżka CRC zwraca skrócony, CRC-zweryfikowany
+  `Vec`. Plain krótka odpowiedź = szybki timeout (pułapka rozjazdu dotyczy
+  wyłącznie koperty).
+- **Symulator: animacja PORT z `askrejans/speeduino-serial-sim` (MIT), enkodowanie
+  FRESH (Task 5):** maszyna stanów i korelacje fizyki przeniesione 1:1
+  (poszerzenie `i16`→`i32` jako udokumentowane bezpieczniejsze odstępstwo);
+  enkodowanie do bloku och sterowane offsetami z INI (`och_codec.rs`), nie
+  sztywną 130-bajtową strukturą referencji. **Lekcja licencyjna:** sam cytat
+  "MIT" nie wystarcza — MIT wymaga zachowania linii copyright przy
+  redystrybucji (tu pod GPL-3); dopisane
+  `Copyright (c) 2026 Arvis Skrējāns` do obu nagłówków port-note.
+- **Zerowanie secl przy pierwszym 'r' (Task 5):** wierny port zachowania
+  firmware (comms.cpp) — symulator zeruje licznik przy pierwszym żądaniu och;
+  `reboot()` ponownie uzbraja. To obnażyło utajone ryzyko M1 (niżej).
+- **`opentune-realtime` pozostaje decode-only (Task 6):** jedyna zależność to
+  `opentune-ini`; poller bierze odczyt bloku jako domknięcie zamiast uchwytu
+  `Protocol`. ~30 linii czytników skalarnych świadomie zduplikowane z
+  `opentune-model` zamiast zależności lub trzeciego crate'a na 30 trywialnych
+  linii.
+- **Fail-open per kanał / per wartość (Task 6):** zły expr lub krótki bufor →
+  kanał ląduje w `diagnostics`, ramka nigdy nie jest pusta. `get_values`:
+  nierozwiązywalna stała → sentinel `f64::NAN` (serde_json ⇒ `null`; frontend
+  renderuje "—", Task 7.6). Świadome poszerzenie: nieznana *nazwa* też
+  degraduje do sentinela — literówka z frontendu pokaże "—" zamiast błędu.
+- **Utrata danych przez fałszywy reboot — ZAMKNIĘTE dwuczęściowo (Task 6):**
+  reguła M1 `new_secl < last_secl` bez strażnika + zerowanie secl przy
+  pierwszym 'r' = po starcie pollingu zwykły glitch wyglądałby jak reboot ⇒
+  cichy ponowny odczyt tune ⇒ **utrata stanu dirty** (wartość przeżywa glitch
+  w RAM; ginie fałszywe "czysto", które maskuje niewypalone edycje przed
+  późniejszym realnym rebootem). Poprawka: (1) `ConnectionManager::note_secl` —
+  każdy udany poll karmi bazę bajtem 0 bloku; (2) `read_secl` świadomy
+  szablonu okienkowego — bo samo (1) na realnym INI albo timeoutuje (Plain
+  czeka na 6 brakujących bajtów żądania), albo czyta status `0x00` jako
+  fałszywy secl i **powoduje** dokładnie tę utratę, którą miało zamykać.
+  Ścieżka jednobajtowa (`"A"`) zachowana bajt-w-bajt (test przypinający).
+  Test e2e zweryfikowany kontrfaktycznie (wyłączenie note_secl = czerwony).
+- **Nowa własność systemu (zaakceptowana):** na INI z szablonem okienkowym
+  odczyt secl przy connect *sam jest* pierwszym żądaniem och i konsumuje
+  zerowanie — baza startuje od 0, więc detekcja rebootu wymaga wcześniejszego
+  polla, by podnieść bazę. Zgodne z ruchem realnego TunerStudio.
+- **Poll 25 Hz / emisja ≤30 Hz; jawny start/stop:** `start_realtime`/
+  `stop_realtime` bez auto-startu; Connect i Disconnect czyszczą polling
+  (świeża sesja nigdy nie dziedziczy). Komendy zawsze wywłaszczają poll
+  (`tokio::select!` z `biased`). Nieudane polle połykane per tick (fail-open)
+  — zatrzymanie to jawna komenda użytkownika, nie decyzja pętli.
+- **`loop.rs` → `poll.rs`:** `loop` to słowo kluczowe Rusta; brief nazwał plik
+  nie do użycia.
+
+## Uwagi do dyskusji (nieblokujące)
+
+- **Bundlowany `speeduino.sample.ini` nie ma `[OutputChannels]` /
+  `[GaugeConfigurations]` / `[FrontPage]`** — domyślny connect do symulatora
+  nie wyemituje żadnej ramki (`start_realtime` zwraca Ok, polle cicho
+  zawodzą 25 Hz). Do rozszerzenia w Task 8 (gotowy wzorzec:
+  `src-tauri/tests/fixtures/realtime-owner.ini`).
+- **Serial nadal nie może pollować** — uchwyty protokołu per-operacja z M2
+  zwracają `SERIAL_UNSUPPORTED`; realtime na sprzęcie czeka na "trwały
+  `MsProtocol` w `ConnectionManager`" (follow-up M3-serial).
+- **Brak backoffu nieudanych polli** — na martwym łączu / INI bez och pętla
+  próbuje 25 Hz w nieskończoność; tanie, ale oczywisty follow-up to mały
+  backoff błędów w `poll_tick`.
+- **`ochGetCommand` z `[OutputChannels]` nadpisuje `[MegaTune]`** w
+  `parse_definition` (parse_comms nietknięty — kontrakt M1); realne
+  speeduino.ini trzyma gołe `"r"` w `[MegaTune]`, a szablon okienkowy w
+  `[OutputChannels]`. Escape `\$` w `expand_template` naprawiony (emitował
+  zabłąkany bajt 0x5C ⇒ 8-bajtowe żądanie).
+- **Odłożone drobiazgi do finalnego review gałęzi:** nieaktualny doc-comment
+  `events.rs` ("Not yet registered" — już zarejestrowane, propaguje do
+  bindings.ts); brak bezpośredniego testu przewymiarowanego `%2c` (bezpieczne
+  konstrukcyjnie); podwójny `strip_inline_comment` w gauges_parser (no-op);
+  bajt statusu zdejmowany bez sprawdzenia wartości (wzorzec w całym crate);
+  `constants_fields.rs` 504 linie / `pages.rs` równe 400 linii (dzielić przy
+  następnym dodatku, nie przycinać doków).
