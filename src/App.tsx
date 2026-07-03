@@ -2,7 +2,9 @@
 import { useEffect, useState } from "react";
 import { commands, events, type AppInfo } from "./ipc/bindings";
 import { useConnectionStore } from "./stores/connection";
+import { useRealtimeStore } from "./stores/realtime";
 import { Connect } from "./components/Connect";
+import { Dashboard } from "./components/dashboard/Dashboard";
 import { TunePanel } from "./components/dialogs/TunePanel";
 import { t, type Locale } from "./i18n";
 
@@ -34,6 +36,17 @@ function App() {
     };
   }, []);
 
+  // Reflect ≤30 Hz realtime frames into the reflect-only store; canvas
+  // gauges read it imperatively (rAF + getState), never via React state.
+  useEffect(() => {
+    const unlisten = events.realtimeFrameEvent.listen((e) =>
+      useRealtimeStore.getState().applyFrame(e.payload),
+    );
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme =
       theme === "high-contrast" ? "high-contrast" : "";
@@ -52,6 +65,8 @@ function App() {
       <p>heartbeat: {lastSeq ?? "—"}</p>
 
       <Connect locale={locale} />
+
+      <Dashboard locale={locale} />
 
       <TunePanel locale={locale} />
 

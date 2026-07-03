@@ -3,6 +3,7 @@ mod commands;
 pub mod connection;
 pub mod dto;
 pub mod events;
+mod layout;
 pub mod owner;
 mod realtime_commands;
 pub mod session;
@@ -36,6 +37,8 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::merge_tune,
             realtime_commands::start_realtime,
             realtime_commands::stop_realtime,
+            layout::save_layout,
+            layout::load_layout,
         ])
         .events(collect_events![
             events::Heartbeat,
@@ -205,6 +208,23 @@ mod binding_gen {
     fn export_typescript_bindings_includes_realtime_commands_and_event() {
         let contents = export_and_read();
         for needle in ["startRealtime", "stopRealtime", "RealtimeFrameEvent"] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_layout_commands_and_gauge_dtos() {
+        let contents = export_and_read();
+        for needle in [
+            "saveLayout",
+            "loadLayout",
+            "GaugeDto",
+            "FrontPageDto",
+            "IndicatorDto",
+        ] {
             assert!(
                 contents.contains(needle),
                 "bindings.ts should contain `{needle}`, got:\n{contents}"

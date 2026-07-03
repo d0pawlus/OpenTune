@@ -74,6 +74,10 @@ export const commands = {
 	startRealtime: () => typedError<null, string>(__TAURI_INVOKE("start_realtime")),
 	/**  Stop the realtime poll loop. */
 	stopRealtime: () => typedError<null, string>(__TAURI_INVOKE("stop_realtime")),
+	/**  Persist the dashboard layout JSON to the app config dir. */
+	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
+	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
+	loadLayout: () => typedError<string | null, string>(__TAURI_INVOKE("load_layout")),
 };
 
 /** Events */
@@ -177,6 +181,10 @@ export type DefinitionDto = {
 	constants: ConstantDto[],
 	/**  Table editors (rendered as a minimal grid in M2; full editor is M4). */
 	tables: TableDto[],
+	/**  `[GaugeConfigurations]` entries backing the dashboard (M3). */
+	gauges: GaugeDto[],
+	/**  `[FrontPage]` — the default dashboard layout (M3). */
+	frontpage: FrontPageDto,
 };
 
 /**  A dialog and its fields. */
@@ -219,8 +227,56 @@ export type FieldKindDto =
 /**  A layout spacer. */
 "Gap";
 
+/**  `[FrontPage]` — the default dashboard layout. */
+export type FrontPageDto = {
+	/**  `gauge1..gauge8` → gauge names, in slot order. */
+	gauge_slots: string[],
+	/**  Boolean indicator lamps shown alongside the gauges. */
+	indicators: IndicatorDto[],
+};
+
+/**
+ *  A gauge's display rules (title, unit label, thresholds, digits) — the UI
+ *  projection of [`GaugeDef`]. Numeric bounds follow the [`ConstantDto`]
+ *  convention: a literal projects to `Some`, an `{ expr }` bound to `None`
+ *  (the gauge falls back to a neutral zone for `None` thresholds).
+ */
+export type GaugeDto = {
+	/**  Gauge id referenced by `FrontPageDto::gauge_slots`. */
+	name: string,
+	/**  The output-channel name it displays (keys the realtime frame map). */
+	channel: string,
+	title: string,
+	/**  The unit label shown in the UI (e.g. "RPM", "kPa"). */
+	units: string,
+	low: number | null,
+	high: number | null,
+	lo_danger: number | null,
+	lo_warn: number | null,
+	hi_warn: number | null,
+	hi_danger: number | null,
+	/**  Decimal digits for the live value readout. */
+	value_digits: number,
+	/**  Decimal digits for scale labels. */
+	label_digits: number,
+	/**  `gaugeCategory`, for grouping menus. */
+	category: string,
+};
+
 export type Heartbeat = {
 	seq: number,
+};
+
+/**  One `[FrontPage]` `indicator` entry (colors are named colors, verbatim). */
+export type IndicatorDto = {
+	/**  Bare bit-channel name or comparison; evaluated against realtime frames. */
+	expr: string,
+	off_label: string,
+	on_label: string,
+	off_bg: string,
+	off_fg: string,
+	on_bg: string,
+	on_fg: string,
 };
 
 /**  A top-level menu. */

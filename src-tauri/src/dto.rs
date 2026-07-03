@@ -10,7 +10,8 @@
 //! both the correct API boundary and what keeps the generated bindings valid.
 
 use opentune_ini::{
-    ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, MenuDef, Number, TableDef,
+    ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, FrontPageDef, GaugeDef,
+    IndicatorDef, MenuDef, Number, TableDef,
 };
 use opentune_model::{CellDiff, FieldDiff, Value};
 
@@ -27,6 +28,10 @@ pub struct DefinitionDto {
     pub constants: Vec<ConstantDto>,
     /// Table editors (rendered as a minimal grid in M2; full editor is M4).
     pub tables: Vec<TableDto>,
+    /// `[GaugeConfigurations]` entries backing the dashboard (M3).
+    pub gauges: Vec<GaugeDto>,
+    /// `[FrontPage]` — the default dashboard layout (M3).
+    pub frontpage: FrontPageDto,
 }
 
 /// A top-level menu.
@@ -110,6 +115,55 @@ pub struct TableDto {
     pub z: String,
 }
 
+/// A gauge's display rules (title, unit label, thresholds, digits) — the UI
+/// projection of [`GaugeDef`]. Numeric bounds follow the [`ConstantDto`]
+/// convention: a literal projects to `Some`, an `{ expr }` bound to `None`
+/// (the gauge falls back to a neutral zone for `None` thresholds).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct GaugeDto {
+    /// Gauge id referenced by `FrontPageDto::gauge_slots`.
+    pub name: String,
+    /// The output-channel name it displays (keys the realtime frame map).
+    pub channel: String,
+    pub title: String,
+    /// The unit label shown in the UI (e.g. "RPM", "kPa").
+    pub units: String,
+    pub low: Option<f64>,
+    pub high: Option<f64>,
+    pub lo_danger: Option<f64>,
+    pub lo_warn: Option<f64>,
+    pub hi_warn: Option<f64>,
+    pub hi_danger: Option<f64>,
+    /// Decimal digits for the live value readout.
+    pub value_digits: u32,
+    /// Decimal digits for scale labels.
+    pub label_digits: u32,
+    /// `gaugeCategory`, for grouping menus.
+    pub category: String,
+}
+
+/// `[FrontPage]` — the default dashboard layout.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct FrontPageDto {
+    /// `gauge1..gauge8` → gauge names, in slot order.
+    pub gauge_slots: Vec<String>,
+    /// Boolean indicator lamps shown alongside the gauges.
+    pub indicators: Vec<IndicatorDto>,
+}
+
+/// One `[FrontPage]` `indicator` entry (colors are named colors, verbatim).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct IndicatorDto {
+    /// Bare bit-channel name or comparison; evaluated against realtime frames.
+    pub expr: String,
+    pub off_label: String,
+    pub on_label: String,
+    pub off_bg: String,
+    pub off_fg: String,
+    pub on_bg: String,
+    pub on_fg: String,
+}
+
 // ── Conversions ──────────────────────────────────────────────────────────────
 
 impl From<&Definition> for DefinitionDto {
@@ -120,6 +174,8 @@ impl From<&Definition> for DefinitionDto {
             dialogs: def.dialogs.iter().map(DialogDto::from).collect(),
             constants: def.constants.iter().map(ConstantDto::from).collect(),
             tables: def.tables.iter().map(TableDto::from).collect(),
+            gauges: def.gauges.iter().map(GaugeDto::from).collect(),
+            frontpage: FrontPageDto::from(&def.frontpage),
         }
     }
 }
@@ -205,6 +261,49 @@ impl From<&TableDef> for TableDto {
             x_bins: t.x_bins.clone(),
             y_bins: t.y_bins.clone(),
             z: t.z.clone(),
+        }
+    }
+}
+
+impl From<&GaugeDef> for GaugeDto {
+    fn from(g: &GaugeDef) -> Self {
+        Self {
+            name: g.name.clone(),
+            channel: g.channel.clone(),
+            title: g.title.clone(),
+            units: g.units.clone(),
+            low: lit(&g.low),
+            high: lit(&g.high),
+            lo_danger: lit(&g.lo_danger),
+            lo_warn: lit(&g.lo_warn),
+            hi_warn: lit(&g.hi_warn),
+            hi_danger: lit(&g.hi_danger),
+            value_digits: u32::from(g.value_digits),
+            label_digits: u32::from(g.label_digits),
+            category: g.category.clone(),
+        }
+    }
+}
+
+impl From<&FrontPageDef> for FrontPageDto {
+    fn from(fp: &FrontPageDef) -> Self {
+        Self {
+            gauge_slots: fp.gauge_slots.clone(),
+            indicators: fp.indicators.iter().map(IndicatorDto::from).collect(),
+        }
+    }
+}
+
+impl From<&IndicatorDef> for IndicatorDto {
+    fn from(i: &IndicatorDef) -> Self {
+        Self {
+            expr: i.expr.clone(),
+            off_label: i.off_label.clone(),
+            on_label: i.on_label.clone(),
+            off_bg: i.off_bg.clone(),
+            off_fg: i.off_fg.clone(),
+            on_bg: i.on_bg.clone(),
+            on_fg: i.on_fg.clone(),
         }
     }
 }
@@ -296,6 +395,77 @@ mod tests {
         let req = dto.constants.iter().find(|c| c.name == "reqFuel").unwrap();
         assert_eq!(req.kind, ConstantKindDto::Scalar);
         assert_eq!(req.high, Some(6553.5));
+    }
+
+    #[test]
+    fn bundled_definition_projects_empty_gauges_until_task_8_extends_the_ini() {
+        // The bundled sample INI has no [GaugeConfigurations]/[FrontPage] yet
+        // (Task 8 adds them) — the projection must still be present and empty.
+        let def = load_definition_from_str(BUNDLED_INI).expect("parses");
+        let dto = DefinitionDto::from(&def);
+        assert!(dto.gauges.is_empty());
+        assert!(dto.frontpage.gauge_slots.is_empty());
+        assert!(dto.frontpage.indicators.is_empty());
+    }
+
+    #[test]
+    fn gauge_dto_projects_literal_bounds_to_some_and_expr_bounds_to_none() {
+        let def = GaugeDef {
+            name: "rpmGauge".to_string(),
+            channel: "rpm".to_string(),
+            title: "Engine Speed".to_string(),
+            units: "RPM".to_string(),
+            low: Number::Lit(0.0),
+            high: Number::Expr("rpmHigh".to_string()),
+            lo_danger: Number::Lit(300.0),
+            lo_warn: Number::Lit(600.0),
+            hi_warn: Number::Lit(6000.0),
+            hi_danger: Number::Expr("rpmDanger".to_string()),
+            value_digits: 0,
+            label_digits: 2,
+            category: "Engine".to_string(),
+        };
+        let dto = GaugeDto::from(&def);
+        assert_eq!(dto.name, "rpmGauge");
+        assert_eq!(dto.channel, "rpm");
+        assert_eq!(dto.title, "Engine Speed");
+        assert_eq!(dto.units, "RPM");
+        assert_eq!(dto.low, Some(0.0));
+        assert_eq!(dto.high, None);
+        assert_eq!(dto.lo_danger, Some(300.0));
+        assert_eq!(dto.lo_warn, Some(600.0));
+        assert_eq!(dto.hi_warn, Some(6000.0));
+        assert_eq!(dto.hi_danger, None);
+        assert_eq!(dto.value_digits, 0);
+        assert_eq!(dto.label_digits, 2);
+        assert_eq!(dto.category, "Engine");
+    }
+
+    #[test]
+    fn front_page_dto_projects_slots_and_indicators() {
+        let def = FrontPageDef {
+            gauge_slots: vec!["rpmGauge".to_string(), "cltGauge".to_string()],
+            indicators: vec![IndicatorDef {
+                expr: "running".to_string(),
+                off_label: "Not Running".to_string(),
+                on_label: "Running".to_string(),
+                off_bg: "black".to_string(),
+                off_fg: "white".to_string(),
+                on_bg: "green".to_string(),
+                on_fg: "black".to_string(),
+            }],
+        };
+        let dto = FrontPageDto::from(&def);
+        assert_eq!(dto.gauge_slots, vec!["rpmGauge", "cltGauge"]);
+        assert_eq!(dto.indicators.len(), 1);
+        let ind = &dto.indicators[0];
+        assert_eq!(ind.expr, "running");
+        assert_eq!(ind.off_label, "Not Running");
+        assert_eq!(ind.on_label, "Running");
+        assert_eq!(ind.off_bg, "black");
+        assert_eq!(ind.off_fg, "white");
+        assert_eq!(ind.on_bg, "green");
+        assert_eq!(ind.on_fg, "black");
     }
 
     #[test]
