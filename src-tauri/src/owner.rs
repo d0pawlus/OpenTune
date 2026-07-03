@@ -12,8 +12,10 @@
 //! itself never blocks.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use opentune_model::Value;
+use opentune_realtime::RealtimePoller;
 use tauri_specta::Event as _;
 use tokio::sync::{mpsc, oneshot};
 
@@ -21,7 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
 use crate::dto::{DefinitionDto, FieldDiffDto};
-use crate::events::{ConnectionStateEvent, TuneDirtyEvent};
+use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use ops::{build_session, link_drop};
 
 const NOT_CONNECTED: &str = "not connected";
@@ -103,6 +105,8 @@ pub enum Command {
 pub enum OwnerEvent {
     Connection(ConnectionStateEvent),
     TuneDirty(TuneDirtyEvent),
+    /// A decoded realtime frame, already coalesced to ≤30 Hz (Task 6).
+    Realtime(RealtimeFrameEvent),
 }
 
 /// The owner's event sink, callable from the blocking pool.
@@ -137,6 +141,9 @@ pub fn spawn_owner(app: tauri::AppHandle) -> OwnerHandle {
         OwnerEvent::TuneDirty(e) => {
             let _ = e.emit(&app);
         }
+        OwnerEvent::Realtime(e) => {
+            let _ = e.emit(&app);
+        }
     });
     spawn_owner_with_emitter(emit)
 }
@@ -148,11 +155,17 @@ pub fn spawn_owner_with_emitter(emit: Emitter) -> OwnerHandle {
     tx
 }
 
+/// The owner-driven poll cadence: 25 Hz. UI emission is separately coalesced
+/// to ≤30 Hz by the [`RealtimePoller`]'s 33 ms gate.
+const POLL_INTERVAL: Duration = Duration::from_millis(40);
+
 /// The owner's private state: the session it exclusively owns plus the
-/// realtime `polling` flag (ticked by Task 6).
+/// realtime polling state (Task 6). `poller` holds the ≤30 Hz emit gate;
+/// it exists exactly while `polling` is set.
 struct Owner {
     session: Option<Session>,
     polling: bool,
+    poller: Option<RealtimePoller>,
     emit: Emitter,
 }
 
@@ -160,10 +173,25 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
     let mut owner = Owner {
         session: None,
         polling: false,
+        poller: None,
         emit,
     };
-    while let Some(cmd) = rx.recv().await {
-        owner.serve(cmd).await;
+    let mut tick = tokio::time::interval(POLL_INTERVAL);
+    // While polling is off (or a long command blocks the loop), ticks pile
+    // up unobserved — skip them instead of bursting to "catch up".
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            // `biased` + commands first: a pending command (write/burn/…)
+            // always preempts a poll tick, so realtime traffic never delays
+            // or interleaves with user-initiated wire operations.
+            biased;
+            cmd = rx.recv() => match cmd {
+                Some(cmd) => owner.serve(cmd).await,
+                None => break,
+            },
+            _ = tick.tick(), if owner.wants_poll() => owner.poll_tick().await,
+        }
     }
 }
 
@@ -179,6 +207,10 @@ impl Owner {
             }
             Command::Disconnect { reply } => {
                 self.session = None;
+                // Realtime is explicit-start only — a fresh connection must
+                // not silently resume a previous session's polling.
+                self.polling = false;
+                self.poller = None;
                 (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
                 let _ = reply.send(Ok(()));
             }
@@ -231,11 +263,13 @@ impl Owner {
                 let _ = reply.send(self.merge_tune(picks).await);
             }
             Command::StartRealtime { reply } => {
-                self.polling = true; // Task 6 adds the poll tick.
+                self.polling = true;
+                self.poller = Some(RealtimePoller::default());
                 let _ = reply.send(Ok(()));
             }
             Command::StopRealtime { reply } => {
                 self.polling = false;
+                self.poller = None;
                 let _ = reply.send(Ok(()));
             }
             #[cfg(test)]
@@ -257,6 +291,50 @@ impl Owner {
     fn emit_dirty(&self, r: &Result<TuneDirtyEvent, String>) {
         if let Ok(ev) = r {
             (self.emit)(OwnerEvent::TuneDirty(ev.clone()));
+        }
+    }
+
+    /// True while the poll tick should fire: realtime was explicitly started
+    /// and there is a live session to poll.
+    fn wants_poll(&self) -> bool {
+        self.polling && self.session.is_some()
+    }
+
+    /// One 25 Hz poll tick: run [`Session::poll_frame`] on the blocking pool
+    /// (it touches the wire — same `spawn_blocking` move-in/move-out pattern
+    /// as [`Self::with_session`], extended to carry the poller's gate state),
+    /// and emit [`RealtimeFrameEvent`] when a coalesced frame comes back.
+    ///
+    /// A failed poll is dropped, not fatal (fail-open): the wire may be
+    /// mid-glitch or the INI may declare no och block — the next tick simply
+    /// tries again, and stopping is always the user's explicit command.
+    async fn poll_tick(&mut self) {
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let mut poller = self.poller.take().unwrap_or_default();
+        match tokio::task::spawn_blocking(move || {
+            let r = session.poll_frame(&mut poller);
+            (session, poller, r)
+        })
+        .await
+        {
+            Ok((session, poller, r)) => {
+                self.session = Some(session);
+                self.poller = Some(poller);
+                if let Ok(Some(frame)) = r {
+                    let channels = frame
+                        .channels
+                        .into_iter()
+                        .map(|c| (c.name, c.value))
+                        .collect();
+                    (self.emit)(OwnerEvent::Realtime(RealtimeFrameEvent { channels }));
+                }
+            }
+            // Panicked mid-poll: the session is lost (poisoned-equivalent,
+            // same as `with_session`); subsequent commands report
+            // "not connected" and the poll gate stays disarmed.
+            Err(_) => self.polling = false,
         }
     }
 
@@ -291,6 +369,10 @@ impl Owner {
     /// slow serial connect still shows live progress.
     async fn connect(&mut self, source: ConnectSource) -> Result<(), String> {
         self.session = None;
+        // Realtime is explicit-start only: a fresh session never inherits a
+        // previous session's polling (same rule as Disconnect).
+        self.polling = false;
+        self.poller = None;
         let emit = Arc::clone(&self.emit);
         let session = tokio::task::spawn_blocking(move || build_session(source, &emit))
             .await

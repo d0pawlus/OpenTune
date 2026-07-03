@@ -22,6 +22,7 @@ use std::sync::Arc;
 use opentune_ini::{CommsSettings, PageDef};
 use opentune_model::{ModelError, Tune, Value};
 use opentune_protocol::{MsProtocol, Protocol};
+use opentune_realtime::{RealtimeError, RealtimeFrame, RealtimePoller};
 use opentune_transport::Transport;
 
 use crate::connection::{ActiveConnection, Session};
@@ -29,6 +30,8 @@ use crate::dto::DefinitionDto;
 use crate::events::TuneDirtyEvent;
 
 pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
+const NO_OCH_BLOCK: &str =
+    "the loaded INI declares no ochBlockSize — realtime polling is unavailable";
 const SERIAL_UNSUPPORTED: &str = "live page operations are not yet wired for serial \
     connections (M3: persist MsProtocol in ConnectionManager); use the simulator for M2";
 
@@ -57,12 +60,69 @@ impl Session {
     }
 
     /// Read the current physical values of the named constants (for rendering).
+    ///
+    /// **Fails open per value** (M3 Task 6.7): one unresolvable constant
+    /// (e.g. an `{ expr }` scale over a missing variable) degrades to a
+    /// `NaN` sentinel instead of erroring the whole call, so every other
+    /// requested value still renders. The IPC shape stays stable — one
+    /// `Value` per requested name. `serde_json` serializes `f64::NAN` as
+    /// `null`; the frontend renders that as "—" (Task 7.6).
     pub fn read_values(&self, names: &[String]) -> Result<Vec<Value>, String> {
         let tune = self.tune.as_ref().ok_or_else(|| NO_TUNE.to_string())?;
-        names
+        Ok(names
             .iter()
-            .map(|n| tune.get(n).map_err(fmt_model_err))
-            .collect()
+            .map(|n| tune.get(n).unwrap_or(Value::Scalar(f64::NAN)))
+            .collect())
+    }
+
+    /// One realtime poll tick (M3 Task 6.5): read the full och block through
+    /// the connection, hand it to the coalescing `poller`
+    /// ([`RealtimePoller::poll_once`] decodes + gates emission to ≤30 Hz),
+    /// and keep the reconnect manager's `secl` baseline in sync.
+    ///
+    /// The baseline feed is the Task 6 blocker-c fix: `secl` is byte 0 of
+    /// the och block by MS/TS convention, and the firmware zeroes it on the
+    /// first och request (and wraps it at 255) — without feeding every
+    /// successfully polled value into
+    /// [`ConnectionManager::note_secl`](opentune_protocol::reconnect::ConnectionManager::note_secl),
+    /// a later glitch reconnect compares against a stale baseline, falsely
+    /// detects a reboot, and the owner's reboot path re-reads the tune,
+    /// silently discarding unburned edits.
+    pub fn poll_frame(
+        &mut self,
+        poller: &mut RealtimePoller,
+    ) -> Result<Option<RealtimeFrame>, String> {
+        let Session { conn, def, .. } = self;
+        let len = u16::try_from(def.comms.och_block_size)
+            .map_err(|_| format!("ochBlockSize {} exceeds u16", def.comms.och_block_size))?;
+        if len == 0 {
+            return Err(NO_OCH_BLOCK.to_string());
+        }
+
+        let mut proto = protocol_for(conn, &def.comms)?;
+        let polled_secl = std::cell::Cell::new(None);
+        let read_block = || {
+            let block = proto
+                .read_output_channels(0, len)
+                .map_err(|e| RealtimeError::Poll(e.to_string()))?;
+            if let Some(&byte0) = block.first() {
+                polled_secl.set(Some(byte0));
+            }
+            Ok(block)
+        };
+        let result = poller.poll_once(read_block, def.as_ref());
+
+        if let Some(secl) = polled_secl.get() {
+            match conn {
+                ActiveConnection::Sim { manager, .. } => manager.note_secl(secl),
+                ActiveConnection::Serial { manager } => manager.note_secl(secl),
+            }
+        }
+
+        result.map_err(|e| match e {
+            RealtimeError::Poll(detail) => detail,
+            RealtimeError::NotConnected => "not connected".to_string(),
+        })
     }
 
     /// Set a constant, writing the changed bytes live to the ECU. Validated on
@@ -292,6 +352,57 @@ mod tests {
         let ev = s.load_tune().expect("load");
         assert!(!ev.dirty, "freshly loaded tune must be clean");
         assert!(ev.dirty_pages.is_empty());
+    }
+
+    #[test]
+    fn read_values_fails_open_per_value_with_nan_sentinel() {
+        // Task 6.7 (follow-up b): one unresolvable constant must not blank
+        // the whole panel. `bad`'s scale is an expression over a variable
+        // that resolves to nothing, so `tune.get("bad")` errors — the value
+        // degrades to the NaN sentinel (JSON `null`; the UI renders "—")
+        // while every other requested value still comes back intact.
+        let ini = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   blockReadTimeout     = 2000
+   blockingFactor       = 121
+   endianness           = little
+   ochGetCommand        = "A"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+
+[Constants]
+    endianness      = little
+    nPages          = 1
+    pageSize        = 8
+
+page = 1
+      good  = scalar, U16,  0, "ms", 0.1,                 0.0, 0.0, 6553.5, 1
+      bad   = scalar, U16,  2, "x",  { nonexistentVar },  0.0, 0.0, 100.0,  1
+"#;
+        let def = Arc::new(load_definition_from_str(ini).expect("test INI parses"));
+        let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
+        let mut s = Session {
+            conn,
+            def,
+            tune: None,
+            snapshot: None,
+        };
+        s.load_tune().unwrap();
+
+        let values = s
+            .read_values(&["good".into(), "bad".into()])
+            .expect("one unresolvable constant must not error the whole call");
+        assert_eq!(values.len(), 2, "IPC shape stays one value per name");
+        assert_eq!(values[0], Value::Scalar(0.0), "resolvable value intact");
+        assert!(
+            matches!(values[1], Value::Scalar(v) if v.is_nan()),
+            "unresolvable value degrades to the NaN sentinel, got {:?}",
+            values[1]
+        );
     }
 
     #[test]

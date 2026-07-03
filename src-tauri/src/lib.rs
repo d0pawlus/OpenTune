@@ -4,6 +4,7 @@ pub mod connection;
 pub mod dto;
 pub mod events;
 pub mod owner;
+mod realtime_commands;
 pub mod session;
 mod session_diff;
 mod tune_commands;
@@ -33,11 +34,14 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::snapshot_tune,
             tune_commands::diff_tune,
             tune_commands::merge_tune,
+            realtime_commands::start_realtime,
+            realtime_commands::stop_realtime,
         ])
         .events(collect_events![
             events::Heartbeat,
             events::ConnectionStateEvent,
             events::TuneDirtyEvent,
+            events::RealtimeFrameEvent,
         ])
 }
 
@@ -190,6 +194,17 @@ mod binding_gen {
             "FieldDiffDto",
             "CellDiffDto",
         ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_realtime_commands_and_event() {
+        let contents = export_and_read();
+        for needle in ["startRealtime", "stopRealtime", "RealtimeFrameEvent"] {
             assert!(
                 contents.contains(needle),
                 "bindings.ts should contain `{needle}`, got:\n{contents}"

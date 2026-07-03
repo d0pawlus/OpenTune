@@ -226,20 +226,44 @@ impl<T: Transport> Protocol for MsProtocol<T> {
 
     /// Read the ECU's `secl` (second counter) for reconnect-detection.
     ///
-    /// Sends the `ochGetCommand` and returns the **first byte** of the
-    /// response, which is `secl` in both Speeduino's and rusEFI's output
-    /// channel layout. The remainder of the response is discarded because M1
-    /// only needs the counter; M3's realtime engine will use the full frame.
+    /// `secl` is byte 0 of the output-channel block in both Speeduino's and
+    /// rusEFI's layout. Two `ochGetCommand` shapes exist:
+    ///
+    /// - **Single-byte command** (M1 fixtures / bundled INI, e.g. `"A"`):
+    ///   the response carries `secl` at byte 0 with *no* status prefix in
+    ///   either framing — the original M1 path, preserved verbatim below.
+    /// - **Windowed template** (real INIs post-`[OutputChannels]` lift, e.g.
+    ///   `r\$tsCanId\x30%2o%2c`): sending only the first byte would leave
+    ///   the firmware waiting for the rest of the request (Plain: timeout)
+    ///   or return a status-only envelope whose byte 0 is `SERIAL_RC_OK`,
+    ///   not `secl` (M3 Task 6 blocker c — a constant-zero secl silently
+    ///   breaks reboot detection). Such templates are expanded as a proper
+    ///   1-byte window at offset 0 via `do_read_output_channels`, which
+    ///   also strips the envelope status byte correctly.
     fn read_secl(&mut self) -> Result<u8> {
-        let cmd = self
-            .comms
-            .och_get_command
-            .as_bytes()
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                ProtocolError::MalformedResponse("ochGetCommand is empty".to_string())
-            })?;
+        let template = self.comms.och_get_command.clone();
+        let params = crate::TemplateParams {
+            page: 0,
+            offset: 0,
+            count: 1,
+            value: &[],
+            can_id: 0,
+        };
+        let command = crate::expand_template(&template, &params)?;
+        let Some((&cmd, rest)) = command.split_first() else {
+            return Err(ProtocolError::MalformedResponse(
+                "ochGetCommand is empty".to_string(),
+            ));
+        };
+        if !rest.is_empty() {
+            // Windowed template: secl is byte 0 of a 1-byte och window.
+            let block = self.do_read_output_channels(0, 1)?;
+            return block.first().copied().ok_or_else(|| {
+                ProtocolError::MalformedResponse(
+                    "empty output-channels window for secl".to_string(),
+                )
+            });
+        }
         self.transport.flush()?;
         match self.comms.envelope {
             EnvelopeFormat::Plain => {

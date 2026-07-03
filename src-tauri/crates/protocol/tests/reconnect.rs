@@ -192,6 +192,56 @@ fn secl_reboot_triggers_reidentify() {
     );
 }
 
+// ── Test 4b: note_secl keeps the reboot baseline live while polling ────────
+//
+// M3 Task 6 blocker c: once the realtime poll loop sends 'r' requests, secl
+// can legitimately move backwards without a reboot — the firmware zeroes it
+// on the FIRST och request (comms.cpp:361-365), and the u8 counter wraps
+// every 256 s. A stale connect-time baseline then makes the next glitch
+// reconnect read `new_secl < last_secl` → false reboot → the owner re-reads
+// the tune and silently discards unburned edits. The owner therefore feeds
+// byte 0 of every successfully polled block into `note_secl`.
+
+#[test]
+fn note_secl_prevents_false_reboot_after_secl_moved_backwards_without_reboot() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    // Connect while secl = 50 — baseline 50.
+    sim.advance_secl(50);
+
+    let sim_factory = Arc::clone(&sim);
+    let mut call_count = 0u32;
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        call_count += 1;
+        if call_count > 1 {
+            sim_factory.set_link_dropped(false);
+        }
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+    assert_eq!(mgr.last_secl(), 50);
+
+    // Polling sees the counter at 10 (post-zero / post-wrap — NO reboot);
+    // the owner feeds each polled block's byte 0 to the manager.
+    sim.reset_secl();
+    sim.advance_secl(10);
+    mgr.note_secl(10);
+
+    // A cable glitch: without note_secl the reconnect would read 10 < 50 →
+    // false reboot → tune re-read → unburned edits discarded upstream.
+    sim.set_link_dropped(true);
+    let states = mgr.reconnect_collect_states();
+    assert!(
+        matches!(states.last().unwrap(), ConnectionState::Connected { .. }),
+        "glitch reconnect must end Connected"
+    );
+    assert!(
+        !mgr.last_reconnect_caused_reidentify(),
+        "a polled-forward baseline must not read as a reboot"
+    );
+}
+
 // ── Test 5: exhausted attempts → Failed ───────────────────────────────────
 
 #[test]

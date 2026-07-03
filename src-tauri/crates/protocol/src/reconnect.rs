@@ -75,6 +75,19 @@ where
         self.last_secl
     }
 
+    /// Keep the reboot-detection baseline live while realtime polling runs
+    /// (M3 Task 6 blocker c). `secl` is byte 0 of the output-channel block
+    /// by MS/TS convention, so the owner feeds every successfully polled
+    /// block's first byte here. Without this, the baseline captured at
+    /// connect goes stale while the counter advances/wraps (or is zeroed by
+    /// the firmware's first-och-request reset) during polling — a later
+    /// glitch reconnect then reads `new_secl < last_secl`, falsely detects
+    /// a reboot, and the owner's reboot path re-reads the tune, silently
+    /// discarding unburned edits.
+    pub fn note_secl(&mut self, secl: u8) {
+        self.last_secl = secl;
+    }
+
     /// Force internal state to a value — test helper only.
     #[doc(hidden)]
     pub fn force_state_for_test(&mut self, state: ConnectionState) {

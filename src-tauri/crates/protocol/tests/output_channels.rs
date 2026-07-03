@@ -229,6 +229,62 @@ fn plain_short_reply_errors_no_length_prefix_to_trust() {
     ));
 }
 
+// ── read_secl with a windowed ochGetCommand (M3 Task 6 blocker c) ────────
+//
+// After the [OutputChannels] ochGetCommand lift, real INIs give the manager
+// the *windowed* template. M1's read_secl sent only the template's first
+// byte — the firmware would wait for the remaining 6 bytes (Plain: timeout)
+// or answer a status-only envelope whose byte 0 is SERIAL_RC_OK, not secl
+// (envelope: every secl read returns 0). Both silently break reboot
+// detection, so read_secl must expand the full template as a 1-byte window.
+
+#[test]
+fn read_secl_expands_windowed_template_and_strips_envelope_status() {
+    let comms = envelope_comms();
+    // comms.cpp `case 'r'` payload: [SERIAL_RC_OK, secl].
+    let response = envelope_frame(&[0x00, 42]);
+    let transport = ScriptedTransport::with_response(response);
+    let mut proto = MsProtocol::new(comms, transport);
+
+    assert_eq!(proto.read_secl().unwrap(), 42, "secl, not the status byte");
+
+    // Full windowed request: offset 0, count 1.
+    let expected_payload = [b'r', 0x00, 0x30, 0x00, 0x00, 0x01, 0x00];
+    assert_eq!(
+        proto.transport_ref().sent,
+        envelope_frame(&expected_payload)
+    );
+}
+
+#[test]
+fn read_secl_expands_windowed_template_in_plain_framing() {
+    let comms = plain_comms();
+    let transport = ScriptedTransport::with_response(vec![37]);
+    let mut proto = MsProtocol::new(comms, transport);
+
+    assert_eq!(proto.read_secl().unwrap(), 37);
+    assert_eq!(
+        proto.transport_ref().sent,
+        vec![b'r', 0x00, 0x30, 0x00, 0x00, 0x01, 0x00],
+        "must send the full 7-byte windowed request, not a bare 'r'"
+    );
+}
+
+#[test]
+fn read_secl_keeps_single_byte_command_semantics() {
+    // M1 fixtures/bundled INI use `ochGetCommand = "A"` — a single-byte
+    // command whose response carries secl at byte 0 with *no* status prefix
+    // in either framing. That exact behavior must be preserved.
+    let comms = CommsSettings {
+        och_get_command: "A".to_string(),
+        ..plain_comms()
+    };
+    let transport = ScriptedTransport::with_response(vec![9]);
+    let mut proto = MsProtocol::new(comms, transport);
+    assert_eq!(proto.read_secl().unwrap(), 9);
+    assert_eq!(proto.transport_ref().sent, vec![b'A']);
+}
+
 #[test]
 fn reports_disconnected_when_device_vanishes_mid_read() {
     let comms = envelope_comms();

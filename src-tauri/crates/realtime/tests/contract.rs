@@ -67,16 +67,20 @@ fn hand_built_definition() -> Definition {
 
 #[test]
 fn decode_frame_signature_accepts_definition_and_block() {
-    // Pins the seam: (&Definition, &[u8]) -> RealtimeFrame. The stub body
-    // returns an empty frame; the real decoder (a later M3 task) must keep
-    // this exact signature.
+    // Pins the seam: (&Definition, &[u8]) -> RealtimeFrame. Task 6 replaced
+    // the Task 0 stub (which returned an empty frame) with the real decoder,
+    // so an all-zero 8-byte block now decodes the single declared channel
+    // (`map`, U16 @4, scale 1.0) to 0.0 — same signature, real behavior.
     let def = hand_built_definition();
     let block = vec![0u8; def.comms.och_block_size as usize];
     let frame = decode_frame(&def, &block);
     assert_eq!(
         frame,
         RealtimeFrame {
-            channels: vec![],
+            channels: vec![ChannelValue {
+                name: "map".to_string(),
+                value: 0.0,
+            }],
             diagnostics: vec![],
         }
     );

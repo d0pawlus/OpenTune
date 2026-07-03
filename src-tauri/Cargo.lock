@@ -2340,6 +2340,7 @@ dependencies = [
  "opentune-ini",
  "opentune-model",
  "opentune-protocol",
+ "opentune-realtime",
  "opentune-simulator",
  "opentune-transport",
  "serde",

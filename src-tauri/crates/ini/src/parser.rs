@@ -68,6 +68,27 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
 /// override the MegaTune one via last-wins). Defaults to `0` when absent,
 /// per [`CommsSettings::och_block_size`]'s documented default.
 fn extract_och_block_size(ini_text: &str) -> u32 {
+    extract_output_channels_value(ini_text, "ochBlockSize")
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+/// Read `ochGetCommand` from `[OutputChannels]`, if declared there.
+///
+/// Real speeduino.ini carries a bare `ochGetCommand = "r"` in `[MegaTune]`
+/// and the *windowed* template (`r\$tsCanId\x30%2o%2c`) in
+/// `[OutputChannels]` — the windowed one is what TunerStudio actually
+/// sends, so [`crate::parse_definition`] lets it override the comms-section
+/// value (M3 Task 6 blocker a). `parse_comms` itself is left unchanged: its
+/// M1 contract is "the first `[MegaTune]`/`[TunerStudio]` section".
+pub(crate) fn extract_och_get_command(ini_text: &str) -> Option<String> {
+    extract_output_channels_value(ini_text, "ochGetCommand")
+}
+
+/// Targeted scan for one `key = value` under `[OutputChannels]` (first
+/// occurrence wins). Returns the unquoted value with inline comments
+/// stripped, or `None` when the key is absent.
+fn extract_output_channels_value(ini_text: &str, key: &str) -> Option<String> {
     let mut in_output_channels = false;
 
     for raw_line in ini_text.lines() {
@@ -87,16 +108,14 @@ fn extract_och_block_size(ini_text: &str) -> u32 {
         }
 
         if let Some((k, v)) = line.split_once('=') {
-            if k.trim() == "ochBlockSize" {
+            if k.trim() == key {
                 let value = strip_inline_comment(v.trim()).trim();
-                if let Ok(n) = unquote(value).trim().parse::<u32>() {
-                    return n;
-                }
+                return Some(unquote(value).to_string());
             }
         }
     }
 
-    0
+    None
 }
 
 // ---------------------------------------------------------------------------

@@ -96,6 +96,13 @@ pub fn expand_template(template: &str, params: &TemplateParams<'_>) -> Result<Ve
         } else if rest.starts_with(b"$tsCanId") {
             out.push(params.can_id);
             i += "$tsCanId".len();
+        } else if rest.starts_with(b"\\$") {
+            // INI string escape: `\$tsCanId` in real INI source (backslash
+            // keeps the `$` literal at INI level) must expand identically to
+            // `$tsCanId` — drop the backslash and let the next iteration
+            // handle the `$` (placeholder or literal). Without this, the
+            // stray 0x5C byte made an 8-byte 'r' request out of a 7-byte one.
+            i += 1;
         } else if rest.starts_with(b"\\x") {
             if rest.len() < 4 {
                 return Err(ProtocolError::MalformedTemplate(format!(
@@ -325,6 +332,25 @@ mod tests {
         };
         let out = expand_template("r$tsCanId\\x30%2o%2c", &params).unwrap();
         assert_eq!(out, vec![b'r', 0x00, 0x30, 0x05, 0x00, 0x0A, 0x00]);
+    }
+
+    #[test]
+    fn backslash_dollar_tscanid_expands_identically_to_dollar_tscanid() {
+        // Templates parsed from *real INI text* carry the INI's string escape:
+        // `ochGetCommand = "r\$tsCanId\x30%2o%2c"` — a backslash before `$`.
+        // It must expand byte-identically to the unescaped `$tsCanId` form
+        // (M3 Task 6 blocker b): exactly the 7-byte plain 'r' request, not an
+        // 8-byte one with a stray 0x5C.
+        let params = TemplateParams {
+            page: 0,
+            offset: 5,
+            count: 10,
+            value: &[],
+            can_id: 0,
+        };
+        let out = expand_template(r"r\$tsCanId\x30%2o%2c", &params).unwrap();
+        assert_eq!(out, vec![b'r', 0x00, 0x30, 0x05, 0x00, 0x0A, 0x00]);
+        assert_eq!(out.len(), 7, "no stray 0x5C byte from the INI escape");
     }
 
     #[test]

@@ -67,12 +67,20 @@ export const commands = {
 	 *  earlier picks already committed (M2 behavior, preserved).
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
+	/**
+	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
+	 *  ≤30 Hz as `RealtimeFrameEvent`s).
+	 */
+	startRealtime: () => typedError<null, string>(__TAURI_INVOKE("start_realtime")),
+	/**  Stop the realtime poll loop. */
+	stopRealtime: () => typedError<null, string>(__TAURI_INVOKE("stop_realtime")),
 };
 
 /** Events */
 export const events = {
 	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
+	realtimeFrameEvent: makeEvent<RealtimeFrameEvent>("realtime-frame-event"),
 	tuneDirtyEvent: makeEvent<TuneDirtyEvent>("tune-dirty-event"),
 };
 
@@ -233,6 +241,19 @@ export type PortInfoDto = {
 	vid: number | null,
 	pid: number | null,
 	product: string | null,
+};
+
+/**
+ *  The M3 realtime dashboard frame payload, emitted at up to ~30 Hz.
+ * 
+ *  Not yet registered with the event system — registration lands in Task 6
+ *  alongside the commands that emit it. The shape is frozen here so
+ *  downstream tasks (decode, polling loop, frontend gauges) build against a
+ *  fixed contract.
+ */
+export type RealtimeFrameEvent = {
+	/**  (channel name, physical value) pairs — the full decoded frame, ≤30 Hz. */
+	channels: ([string, number | null])[],
 };
 
 /**  A table editor definition (bin/cell constant references). */

@@ -104,8 +104,14 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let gauges = parse_gauges(&preprocessed, &output_channels.channels);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
+    // `[OutputChannels]` may declare its own `ochGetCommand` (the windowed
+    // template TunerStudio actually sends); it overrides the bare
+    // `[MegaTune]`/`[TunerStudio]` value when present (M3 Task 6 blocker a).
+    let och_get_command = crate::parser::extract_och_get_command(&preprocessed)
+        .unwrap_or_else(|| comms.och_get_command.clone());
     let comms = CommsSettings {
         endianness,
+        och_get_command,
         ..comms
     };
 

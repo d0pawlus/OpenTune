@@ -3,9 +3,16 @@
 //!
 //! Decodes raw `read_output_channels` ("och") byte blocks streamed by the ECU
 //! into physical-unit channel values, against the `[OutputChannels]` entries
-//! declared in an [`opentune_ini::Definition`]. This module only freezes the
-//! shape and pins [`decode_frame`]'s signature with a minimal stub; the real
-//! per-channel decode (scalar/bits/computed-expression) is a later M3 task.
+//! declared in an [`opentune_ini::Definition`], and paces UI emission via the
+//! coalescing [`RealtimePoller`]. Decode-only by design: this crate depends
+//! on `opentune-ini` alone — the poller reaches the wire through a
+//! caller-supplied closure, never a protocol handle.
+
+mod decode;
+mod poll;
+
+pub use decode::decode_frame;
+pub use poll::RealtimePoller;
 
 /// One decoded channel value in physical units, or a diagnostic if it failed.
 #[derive(Debug, Clone, PartialEq)]
@@ -20,20 +27,6 @@ pub struct RealtimeFrame {
     pub channels: Vec<ChannelValue>,
     /// Names that failed to decode this frame (fail-open — never blanks the frame).
     pub diagnostics: Vec<String>,
-}
-
-/// Decode one raw och block against the definition's channels into physical values.
-///
-/// Fails open per channel: a bad expr/short buffer records a diagnostic and
-/// skips that channel rather than failing the whole frame.
-///
-/// Stub for this task: always returns an empty frame. Real per-channel
-/// decoding (scalar/bits/computed) is a later M3 task.
-pub fn decode_frame(_def: &opentune_ini::Definition, _block: &[u8]) -> RealtimeFrame {
-    RealtimeFrame {
-        channels: Vec::new(),
-        diagnostics: Vec::new(),
-    }
 }
 
 /// Errors the realtime polling loop can produce.

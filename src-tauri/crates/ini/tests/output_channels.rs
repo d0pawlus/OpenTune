@@ -144,6 +144,47 @@ fn unknown_output_channel_kind_records_diagnostic_and_continues() {
 }
 
 #[test]
+fn output_channels_och_get_command_overrides_megatune() {
+    // Real speeduino.ini declares a bare `ochGetCommand = "r"` in [MegaTune]
+    // and the *windowed* template under [OutputChannels]. The windowed one is
+    // what TunerStudio actually sends, so it must win in the parsed
+    // definition (M3 Task 6 blocker a).
+    let def = parse_definition(fixture()).expect("parses");
+    assert_eq!(
+        def.comms.och_get_command, r"r\$tsCanId\x30%2o%2c",
+        "[OutputChannels] ochGetCommand must override the [MegaTune] one"
+    );
+}
+
+#[test]
+fn megatune_och_get_command_kept_when_output_channels_declares_none() {
+    // An INI whose [OutputChannels] has channels but no ochGetCommand keeps
+    // the [MegaTune] value — the override only applies when declared.
+    let ini = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   blockReadTimeout     = 2000
+   blockingFactor       = 251
+   ochGetCommand        = "A"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+
+[OutputChannels]
+ochBlockSize     =  8
+secl        = scalar, U08,  0, "sec",   1.000, 0.000
+"#;
+    let def = parse_definition(ini).expect("parses");
+    assert_eq!(
+        def.comms.och_get_command, "A",
+        "[MegaTune]-only INIs must keep working unchanged"
+    );
+    assert_eq!(def.comms.och_block_size, 8);
+}
+
+#[test]
 fn computed_channel_bare_expression_with_no_units_field() {
     // A computed channel with no trailing `, "units"` at all → units == "".
     let ini = format!("{}\n{}\n", fixture(), "bareComputed = { secl + 1 }");
