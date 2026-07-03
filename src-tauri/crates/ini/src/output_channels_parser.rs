@@ -170,8 +170,9 @@ fn unrecognised(name: &str) -> Diagnostic {
 }
 
 /// Strip a trailing `; …` inline comment, honoring quoted strings and
-/// brace-expressions (mirrors `constants_parser::strip_inline_comment`).
-fn strip_inline_comment(s: &str) -> &str {
+/// brace-expressions (mirrors `constants_parser::strip_inline_comment`;
+/// `pub(crate)` so `gauges_parser` shares it instead of adding a third copy).
+pub(crate) fn strip_inline_comment(s: &str) -> &str {
     let mut in_quote = false;
     let mut brace_depth = 0u32;
     for (i, ch) in s.char_indices() {

@@ -114,7 +114,7 @@ pub(crate) fn unquote(s: &str) -> String {
 /// Parse a number-or-expression field: `{ expr }` becomes
 /// [`Number::Expr`] with braces stripped and whitespace trimmed; anything
 /// else is parsed as a literal float.
-fn parse_number(field: &str) -> Number {
+pub(crate) fn parse_number(field: &str) -> Number {
     let trimmed = field.trim();
     if let Some(inner) = trimmed.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
         return Number::Expr(inner.trim().to_string());

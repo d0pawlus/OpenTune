@@ -114,15 +114,15 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    // and_expr := compare ( "&&" compare )*
+    // and_expr := bitand ( "&&" bitand )*
     //
     // Evaluated eagerly — see [`Parser::parse_or`].
     fn parse_and(&mut self) -> Result<f64, ExprError> {
-        let mut lhs = self.parse_compare()?;
+        let mut lhs = self.parse_bitand()?;
         loop {
             self.skip_whitespace();
             if self.eat_str("&&") {
-                let rhs = self.parse_compare()?;
+                let rhs = self.parse_bitand()?;
                 lhs = bool_to_f64(truthy(lhs) && truthy(rhs));
             } else {
                 break;
@@ -131,9 +131,43 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    // compare := additive ( ("==" | "!=" | "<=" | ">=" | "<" | ">") additive )*
+    // bitand := compare ( "&" compare )*
+    //
+    // Bitwise AND on f64 values cast through i64 (M3 Task 3 — real
+    // indicators use it: `{ sd_status & 1 }`). Sits between equality and
+    // `&&`, per standard C precedence. Only a *single* `&` is consumed
+    // here — `&&` belongs to [`Parser::parse_and`] above (see
+    // [`Parser::eat_single_amp`]).
+    fn parse_bitand(&mut self) -> Result<f64, ExprError> {
+        let mut lhs = self.parse_compare()?;
+        while self.eat_single_amp() {
+            let rhs = self.parse_compare()?;
+            lhs = ((lhs as i64) & (rhs as i64)) as f64;
+        }
+        Ok(lhs)
+    }
+
+    /// Consumes a single `&` only when it is *not* the start of `&&`
+    /// (which must stay intact for [`Parser::parse_and`] to see).
+    fn eat_single_amp(&mut self) -> bool {
+        self.skip_whitespace();
+        let rest = &self.src[self.pos()..];
+        if rest.starts_with('&') && !rest.starts_with("&&") {
+            self.chars.next();
+            true
+        } else {
+            false
+        }
+    }
+
+    // compare := shift ( ("==" | "!=" | "<=" | ">=" | "<" | ">") shift )*
+    //
+    // Operands are shift-expressions: `<<` binds tighter than any
+    // comparison (standard C precedence). `parse_shift` consumes every
+    // `<<` greedily before returning, so the `<`/`<=` checks below can
+    // never mistake the first half of a `<<` for a comparison.
     fn parse_compare(&mut self) -> Result<f64, ExprError> {
-        let mut lhs = self.parse_additive()?;
+        let mut lhs = self.parse_shift()?;
         loop {
             self.skip_whitespace();
             let op = if self.eat_str("==") {
@@ -153,10 +187,35 @@ impl<'a> Parser<'a> {
             };
             match op {
                 Some(op) => {
-                    let rhs = self.parse_additive()?;
+                    let rhs = self.parse_shift()?;
                     lhs = op.apply(lhs, rhs);
                 }
                 None => break,
+            }
+        }
+        Ok(lhs)
+    }
+
+    // shift := additive ( "<<" additive )*
+    //
+    // Bitwise left shift on f64 values cast through i64 (M3 Task 3 — real
+    // computed channels use it: `{ halfSync + (sync << 1) }`). Binds
+    // tighter than comparison, looser than `+`/`-`, per standard C
+    // precedence. A shift count outside `0..=63` is undefined for i64 —
+    // it degrades loudly as [`ExprError::Math`], like division by zero.
+    fn parse_shift(&mut self) -> Result<f64, ExprError> {
+        let mut lhs = self.parse_additive()?;
+        loop {
+            self.skip_whitespace();
+            if self.eat_str("<<") {
+                let rhs = self.parse_additive()?;
+                let amount = rhs as i64;
+                if !(0..64).contains(&amount) {
+                    return Err(ExprError::Math);
+                }
+                lhs = ((lhs as i64) << amount) as f64;
+            } else {
+                break;
             }
         }
         Ok(lhs)

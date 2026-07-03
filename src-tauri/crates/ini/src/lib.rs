@@ -28,6 +28,7 @@ mod definition;
 mod expr;
 mod expr_parser;
 mod gauges;
+mod gauges_parser;
 mod output_channels;
 mod output_channels_parser;
 mod parser;

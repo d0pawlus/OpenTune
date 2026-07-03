@@ -7,6 +7,7 @@
 //! shape.
 
 use crate::constants_parser::parse_constants;
+use crate::gauges_parser::parse_gauges;
 use crate::output_channels_parser::parse_output_channels;
 use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
@@ -100,6 +101,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let parsed = parse_constants(&preprocessed)?;
     let ui = parse_ui(&preprocessed, &parsed.constants);
     let output_channels = parse_output_channels(&preprocessed);
+    let gauges = parse_gauges(&preprocessed, &output_channels.channels);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
     let comms = CommsSettings {
@@ -110,6 +112,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let mut diagnostics = parsed.diagnostics;
     diagnostics.extend(ui.diagnostics);
     diagnostics.extend(output_channels.diagnostics);
+    diagnostics.extend(gauges.diagnostics);
 
     Ok(Definition {
         comms,
@@ -122,22 +125,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         curves: ui.curves,
         diagnostics,
         output_channels: output_channels.channels,
-        gauges: parse_gauges(&preprocessed),
-        frontpage: parse_frontpage(&preprocessed),
+        gauges: gauges.gauges,
+        frontpage: gauges.frontpage,
     })
-}
-
-/// Stub for the Task 3 `[GaugeConfigurations]` parser — always returns an
-/// empty list. Real parsing lands in Task 3.
-fn parse_gauges(_ini_text: &str) -> Vec<GaugeDef> {
-    Vec::new()
-}
-
-/// Stub for the Task 3 `[FrontPage]` parser — always returns an empty layout.
-/// Real parsing lands in Task 3.
-fn parse_frontpage(_ini_text: &str) -> FrontPageDef {
-    FrontPageDef {
-        gauge_slots: Vec::new(),
-        indicators: Vec::new(),
-    }
 }
