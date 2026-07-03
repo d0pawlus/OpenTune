@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//! App + connection IPC commands.
+//!
+//! The connection commands are thin async senders into the §9 owner task
+//! (see [`crate::owner`]): each builds a oneshot reply channel, sends the
+//! matching [`Command`], and awaits the result. No command touches the
+//! transport or holds any state — the owner emits every event.
+
 use serde::Serialize;
 use specta::Type;
-use tauri_specta::Event as _;
+use tauri::State;
 
-use std::sync::Arc;
+use crate::connection::ConnectSource;
+use crate::owner::{request, Command, OwnerHandle};
 
-use crate::connection::{
-    connect_serial, connect_simulator, load_definition_from_path, load_definition_from_str,
-    simulate_link_drop_async, ActiveConnection, ConnectSource, Session, SessionStore,
-};
-use crate::events::ConnectionStateEvent;
-
-// ── Bundled INI (plain protocol, matches EcuSimulator::new()) ─────────────────
-
-const BUNDLED_INI: &str = include_str!("../resources/speeduino.sample.ini");
-
-// ── Existing commands ─────────────────────────────────────────────────────────
+// ── App info / port enumeration (no session involved) ────────────────────────
 
 #[derive(Serialize, Type, Clone, Debug, PartialEq)]
 pub struct AppInfo {
@@ -64,109 +62,32 @@ pub fn list_ports() -> Result<Vec<PortInfoDto>, String> {
         .map_err(|e| e.to_string())
 }
 
-// ── M1 connection commands ────────────────────────────────────────────────────
+// ── M1 connection commands (thin senders into the owner task) ────────────────
 
 /// Connect to an ECU (simulator or serial).
 ///
-/// Emits `ConnectionStateEvent` transitions over IPC as the connection
-/// progresses. Returns `Ok(())` once the initial handshake succeeds.
+/// The owner emits `ConnectionStateEvent` transitions over IPC as the
+/// connection progresses. Resolves `Ok(())` once the handshake succeeds.
 #[tauri::command]
 #[specta::specta]
-pub fn connect(
-    source: ConnectSource,
-    state: tauri::State<'_, SessionStore>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    // Drop any existing session before opening a new one.
-    {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        *guard = None;
-    }
-
-    let emit_app = app.clone();
-    let emit = move |cs: opentune_protocol::ConnectionState| {
-        let _ = ConnectionStateEvent::from(cs).emit(&emit_app);
-    };
-
-    // Parse the full definition first: it sizes the simulator's page image,
-    // shapes the tune, and drives the UI. The connection layer then becomes
-    // the sole owner of the transport, with the definition + (not-yet-loaded)
-    // tune co-located behind the same mutex.
-    let (conn, def) = match source {
-        ConnectSource::Simulator { ini_path } => {
-            let def = match ini_path {
-                Some(ref path) => load_definition_from_path(path)?,
-                None => load_definition_from_str(BUNDLED_INI)?,
-            };
-            let def = Arc::new(def);
-            let conn = connect_simulator(def.as_ref(), &emit)?;
-            (conn, def)
-        }
-        ConnectSource::Serial {
-            ref port_name,
-            ref ini_path,
-        } => {
-            let def = Arc::new(load_definition_from_path(ini_path)?);
-            let conn = connect_serial(port_name.clone(), def.comms.clone(), &emit)?;
-            (conn, def)
-        }
-    };
-
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    *guard = Some(Session {
-        conn,
-        def,
-        tune: None,
-        snapshot: None,
-    });
-    Ok(())
+pub async fn connect(source: ConnectSource, owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::Connect { source, reply }).await
 }
 
-/// Disconnect from the ECU and emit `Disconnected`.
+/// Disconnect from the ECU; the owner emits `Disconnected`.
 #[tauri::command]
 #[specta::specta]
-pub fn disconnect(
-    state: tauri::State<'_, SessionStore>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    *guard = None;
-    let _ = ConnectionStateEvent::Disconnected.emit(&app);
-    Ok(())
+pub async fn disconnect(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::Disconnect { reply }).await
 }
 
-/// Simulator-only: drop the link and drive the reconnect loop.
-///
-/// Returns immediately; the reconnect runs on a background thread, emitting
-/// `Reconnecting{attempt}` states until `Connected` or `Failed`.
+/// Simulator-only: drop the link and drive the reconnect loop. The owner
+/// emits `Reconnecting{attempt}` states until `Connected` or `Failed`, and
+/// re-reads the tune when the reconnect detected an ECU reboot.
 #[tauri::command]
 #[specta::specta]
-pub fn simulate_link_drop(
-    state: tauri::State<'_, SessionStore>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let session = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        guard.take()
-    };
-    let session = session.ok_or_else(|| "not connected".to_string())?;
-
-    match &session.conn {
-        ActiveConnection::Serial { .. } => {
-            // Put the session back — link drop is simulator-only.
-            let mut guard = state.lock().map_err(|e| e.to_string())?;
-            *guard = Some(session);
-            return Err("simulate_link_drop is only available in simulator mode".to_string());
-        }
-        ActiveConnection::Sim { .. } => {}
-    }
-
-    let store = Arc::clone(&state);
-    let emit = move |cs: opentune_protocol::ConnectionState| {
-        let _ = ConnectionStateEvent::from(cs).emit(&app);
-    };
-    simulate_link_drop_async(session, store, emit);
-    Ok(())
+pub async fn simulate_link_drop(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::SimulateLinkDrop { reply }).await
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

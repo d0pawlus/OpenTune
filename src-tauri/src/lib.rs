@@ -3,13 +3,13 @@ mod commands;
 pub mod connection;
 pub mod dto;
 pub mod events;
+pub mod owner;
 pub mod session;
 mod session_diff;
 mod tune_commands;
 
-use std::sync::{Arc, Mutex};
-
 use specta_typescript::Typescript;
+use tauri::Manager as _;
 use tauri_specta::{collect_commands, collect_events, Builder, Event as _};
 
 /// Assemble the tauri-specta builder. Single source for the command/event
@@ -52,10 +52,13 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(Arc::new(Mutex::new(None::<connection::Session>)))
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+
+            // §9: spawn the single wire-owner task; commands talk to it
+            // through the managed sender.
+            app.manage(owner::spawn_owner(app.handle().clone()));
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {

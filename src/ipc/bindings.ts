@@ -11,17 +11,16 @@ export const commands = {
 	/**
 	 *  Connect to an ECU (simulator or serial).
 	 * 
-	 *  Emits `ConnectionStateEvent` transitions over IPC as the connection
-	 *  progresses. Returns `Ok(())` once the initial handshake succeeds.
+	 *  The owner emits `ConnectionStateEvent` transitions over IPC as the
+	 *  connection progresses. Resolves `Ok(())` once the handshake succeeds.
 	 */
 	connect: (source: ConnectSource) => typedError<null, string>(__TAURI_INVOKE("connect", { source })),
-	/**  Disconnect from the ECU and emit `Disconnected`. */
+	/**  Disconnect from the ECU; the owner emits `Disconnected`. */
 	disconnect: () => typedError<null, string>(__TAURI_INVOKE("disconnect")),
 	/**
-	 *  Simulator-only: drop the link and drive the reconnect loop.
-	 * 
-	 *  Returns immediately; the reconnect runs on a background thread, emitting
-	 *  `Reconnecting{attempt}` states until `Connected` or `Failed`.
+	 *  Simulator-only: drop the link and drive the reconnect loop. The owner
+	 *  emits `Reconnecting{attempt}` states until `Connected` or `Failed`, and
+	 *  re-reads the tune when the reconnect detected an ECU reboot.
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 	/**
@@ -30,18 +29,18 @@ export const commands = {
 	 */
 	getDefinition: () => typedError<DefinitionDto, string>(__TAURI_INVOKE("get_definition")),
 	/**
-	 *  Read all declared pages from the ECU into a fresh tune. Emits the (clean)
-	 *  dirty state.
+	 *  Read all declared pages from the ECU into a fresh tune. The owner emits
+	 *  the (clean) dirty state.
 	 */
 	loadTune: () => typedError<null, string>(__TAURI_INVOKE("load_tune")),
 	/**  Read the current physical values of the named constants (for field render). */
 	getValues: (names: string[]) => typedError<Value[], string>(__TAURI_INVOKE("get_values", { names })),
 	/**
-	 *  Set a constant and write the changed bytes live to the ECU. Emits the new
-	 *  dirty state on success.
+	 *  Set a constant and write the changed bytes live to the ECU. The owner
+	 *  emits the new dirty state on success.
 	 */
 	setValue: (name: string, value: Value) => typedError<null, string>(__TAURI_INVOKE("set_value", { name, value })),
-	/**  Burn every dirty page to flash. Emits the cleared dirty state. */
+	/**  Burn every dirty page to flash. The owner emits the cleared dirty state. */
 	burnTune: () => typedError<null, string>(__TAURI_INVOKE("burn_tune")),
 	/**  Undo the most recent edit, writing the reverted bytes to the ECU. */
 	undoTune: () => typedError<null, string>(__TAURI_INVOKE("undo_tune")),
@@ -63,13 +62,9 @@ export const commands = {
 	 *  Merge the picked constants from the snapshot baseline into the current
 	 *  tune, writing each accepted pick live to the ECU.
 	 * 
-	 *  `merge_tune` applies picks one at a time (see `session_diff.rs`) and can
-	 *  abort mid-batch when a later pick's write fails, after earlier picks
-	 *  already committed and dirtied the tune. The dirty event is emitted from
-	 *  `Session::current_dirty_event` — read *after* the merge attempt,
-	 *  regardless of its `Ok`/`Err` result — so the badge always reflects the
-	 *  tune's actual state at the end of the command instead of silently
-	 *  under-reporting a partial merge as still clean.
+	 *  The owner emits the tune's *actual* dirty state after the merge attempt —
+	 *  regardless of `Ok`/`Err` — because a merge can abort mid-batch after
+	 *  earlier picks already committed (M2 behavior, preserved).
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 };
