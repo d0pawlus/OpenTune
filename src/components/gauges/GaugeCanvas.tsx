@@ -7,7 +7,13 @@
 import { useEffect, useRef } from "react";
 import { useRealtimeStore } from "../../stores/realtime";
 
-/** Zone/text colors resolved from the CSS design tokens at mount. */
+/** The app-shell theme name; switching it re-resolves the CSS tokens below. */
+export type Theme = "default" | "high-contrast";
+
+/**
+ * Zone/text colors resolved from the CSS design tokens. Re-resolved whenever
+ * the `theme` prop changes (see {@link GaugeCanvas}), not just at mount.
+ */
 export interface GaugeTheme {
   ok: string;
   warn: string;
@@ -31,6 +37,8 @@ interface GaugeCanvasProps {
   width: number;
   height: number;
   draw: GaugeDraw;
+  /** Current app-shell theme; a change forces a fresh token resolution. */
+  theme: Theme;
   /** Accessible name for the rendered gauge. */
   label: string;
 }
@@ -60,13 +68,17 @@ function resolveTheme(el: HTMLElement): GaugeTheme {
  * reads the bound channel **imperatively** from the realtime store
  * (`getState().getChannel(...)`, no selector subscription) — so ≤30 Hz
  * frames never enter React reconciliation. The canvas repaints only when
- * the value actually changed since the last painted frame.
+ * the value actually changed since the last painted frame, *or* when the
+ * `theme` prop changes: a theme switch re-resolves the CSS tokens and
+ * resets the "already painted" guard so the very next frame repaints even
+ * if the bound value is unchanged.
  */
 export function GaugeCanvas({
   channel,
   width,
   height,
   draw,
+  theme,
   label,
 }: GaugeCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -82,7 +94,9 @@ export function GaugeCanvas({
     const dpr = window.devicePixelRatio || 1;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
-    const theme = resolveTheme(canvas);
+    // Re-resolved every time this effect (re-)runs, including on a `theme`
+    // prop change — never captured once and reused across theme switches.
+    const resolvedTheme = resolveTheme(canvas);
 
     let frame = 0;
     let painted = false;
@@ -94,13 +108,16 @@ export function GaugeCanvas({
         last = value;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
-        draw(ctx, value, { width, height }, theme);
+        draw(ctx, value, { width, height }, resolvedTheme);
       }
       frame = requestAnimationFrame(paint);
     };
     frame = requestAnimationFrame(paint);
     return () => cancelAnimationFrame(frame);
-  }, [channel, width, height, draw]);
+    // `theme` itself is never read here — it exists purely to invalidate the
+    // effect (and reset `painted`/`resolvedTheme`) on a theme switch; the
+    // actual colors always come from the live CSS custom properties.
+  }, [channel, width, height, draw, theme]);
 
   return (
     <canvas

@@ -94,12 +94,12 @@ describe("Dashboard", () => {
 
   it("renders nothing when disconnected", () => {
     useConnectionStore.setState({ connectionState: { type: "disconnected" } });
-    const { container } = render(<Dashboard locale="en" />);
+    const { container } = render(<Dashboard locale="en" theme="default" />);
     expect(container.firstChild).toBeNull();
   });
 
   it("renders the FrontPage slots and indicators when no layout is persisted", async () => {
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     expect(
       await screen.findByRole("img", { name: "Engine Speed" }),
     ).toBeTruthy();
@@ -113,7 +113,7 @@ describe("Dashboard", () => {
       status: "ok",
       data: serializeLayout([{ gauge: "cltGauge", kind: "bar" }]),
     });
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     expect(await screen.findByRole("img", { name: "Coolant" })).toBeTruthy();
     expect(screen.queryByRole("img", { name: "Engine Speed" })).toBeNull();
   });
@@ -123,7 +123,7 @@ describe("Dashboard", () => {
       status: "ok",
       data: "not json {",
     });
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     expect(
       await screen.findByRole("img", { name: "Engine Speed" }),
     ).toBeTruthy();
@@ -139,7 +139,7 @@ describe("Dashboard", () => {
         },
       }),
     });
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     expect(
       await screen.findByRole("img", { name: "Engine Speed" }),
     ).toBeTruthy();
@@ -147,7 +147,7 @@ describe("Dashboard", () => {
   });
 
   it("start/stop live toggles the realtime commands", async () => {
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     const toggle = await screen.findByRole("button", { name: "Start live" });
     fireEvent.click(toggle);
     await waitFor(() =>
@@ -164,7 +164,7 @@ describe("Dashboard", () => {
   });
 
   it("rebinds a slot in edit mode and persists via saveLayout", async () => {
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     await screen.findByRole("img", { name: "Engine Speed" });
     fireEvent.click(screen.getByRole("button", { name: "Edit layout" }));
 
@@ -186,7 +186,7 @@ describe("Dashboard", () => {
   });
 
   it("reorders slots with the move buttons", async () => {
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     await screen.findByRole("img", { name: "Engine Speed" });
     fireEvent.click(screen.getByRole("button", { name: "Edit layout" }));
 
@@ -198,7 +198,7 @@ describe("Dashboard", () => {
   });
 
   it("changes a slot's gauge style in edit mode", async () => {
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     await screen.findByRole("img", { name: "Engine Speed" });
     fireEvent.click(screen.getByRole("button", { name: "Edit layout" }));
 
@@ -223,7 +223,7 @@ describe("Dashboard", () => {
         frontpage: { gauge_slots: [], indicators: [] },
       }),
     });
-    render(<Dashboard locale="en" />);
+    render(<Dashboard locale="en" theme="default" />);
     expect(
       await screen.findByText("No gauges defined by this INI"),
     ).toBeTruthy();

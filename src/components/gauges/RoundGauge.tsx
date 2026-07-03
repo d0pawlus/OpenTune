@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useCallback } from "react";
 import type { GaugeDto } from "../../ipc/bindings";
-import { GaugeCanvas, type GaugeDraw } from "./GaugeCanvas";
+import { GaugeCanvas, type GaugeDraw, type Theme } from "./GaugeCanvas";
 import {
   GAUGE_START_ANGLE,
   GAUGE_SWEEP,
@@ -19,7 +19,13 @@ export const FALLBACK_LOW = 0;
 export const FALLBACK_HIGH = 100;
 
 /** Classic 270° sweep gauge: zone-colored value arc, needle and readout. */
-export function RoundGauge({ gauge }: { gauge: GaugeDto }) {
+export function RoundGauge({
+  gauge,
+  theme,
+}: {
+  gauge: GaugeDto;
+  theme: Theme;
+}) {
   const draw = useCallback<GaugeDraw>(
     (ctx, value, size, theme) => {
       const low = gauge.low ?? FALLBACK_LOW;
@@ -100,6 +106,7 @@ export function RoundGauge({ gauge }: { gauge: GaugeDto }) {
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
+      theme={theme}
       label={gauge.title}
     />
   );

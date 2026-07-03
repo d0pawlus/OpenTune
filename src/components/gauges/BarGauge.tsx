@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useCallback } from "react";
 import type { GaugeDto } from "../../ipc/bindings";
-import { GaugeCanvas, type GaugeDraw } from "./GaugeCanvas";
+import { GaugeCanvas, type GaugeDraw, type Theme } from "./GaugeCanvas";
 import { formatValue, gaugeGeometry, zoneColor } from "./gaugeMath";
 import { FALLBACK_HIGH, FALLBACK_LOW } from "./RoundGauge";
 
@@ -12,7 +12,7 @@ const BAR_TOP = 34;
 const BAR_HEIGHT = 16;
 
 /** Horizontal fill bar with a zone-colored fill and inline readout. */
-export function BarGauge({ gauge }: { gauge: GaugeDto }) {
+export function BarGauge({ gauge, theme }: { gauge: GaugeDto; theme: Theme }) {
   const draw = useCallback<GaugeDraw>(
     (ctx, value, size, theme) => {
       const low = gauge.low ?? FALLBACK_LOW;
@@ -74,6 +74,7 @@ export function BarGauge({ gauge }: { gauge: GaugeDto }) {
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
+      theme={theme}
       label={gauge.title}
     />
   );

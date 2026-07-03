@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useCallback } from "react";
 import type { GaugeDto } from "../../ipc/bindings";
-import { GaugeCanvas, type GaugeDraw } from "./GaugeCanvas";
+import { GaugeCanvas, type GaugeDraw, type Theme } from "./GaugeCanvas";
 import { formatValue, zoneColor } from "./gaugeMath";
 
 const WIDTH = 210;
 const HEIGHT = 96;
 
 /** Large numeric readout, tinted by its warn/danger zone. */
-export function DigitalGauge({ gauge }: { gauge: GaugeDto }) {
+export function DigitalGauge({
+  gauge,
+  theme,
+}: {
+  gauge: GaugeDto;
+  theme: Theme;
+}) {
   const draw = useCallback<GaugeDraw>(
     (ctx, value, size, theme) => {
       const cx = size.width / 2;
@@ -49,6 +55,7 @@ export function DigitalGauge({ gauge }: { gauge: GaugeDto }) {
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
+      theme={theme}
       label={gauge.title}
     />
   );

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useCallback } from "react";
 import type { IndicatorDto } from "../../ipc/bindings";
-import { GaugeCanvas, type GaugeDraw } from "./GaugeCanvas";
+import { GaugeCanvas, type GaugeDraw, type Theme } from "./GaugeCanvas";
 
 const WIDTH = 150;
 const HEIGHT = 44;
@@ -16,7 +16,13 @@ const BARE_CHANNEL = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * evaluated frontend-side, so it fails open to the off state (never crashes
  * the panel).
  */
-export function IndicatorLamp({ indicator }: { indicator: IndicatorDto }) {
+export function IndicatorLamp({
+  indicator,
+  theme,
+}: {
+  indicator: IndicatorDto;
+  theme: Theme;
+}) {
   const channel = BARE_CHANNEL.test(indicator.expr) ? indicator.expr : "";
 
   const draw = useCallback<GaugeDraw>(
@@ -50,6 +56,7 @@ export function IndicatorLamp({ indicator }: { indicator: IndicatorDto }) {
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
+      theme={theme}
       label={indicator.on_label || indicator.expr}
     />
   );

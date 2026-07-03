@@ -8,6 +8,7 @@ import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { BarGauge } from "../gauges/BarGauge";
 import { DigitalGauge } from "../gauges/DigitalGauge";
+import type { Theme } from "../gauges/GaugeCanvas";
 import { IndicatorLamp } from "../gauges/IndicatorLamp";
 import { RoundGauge } from "../gauges/RoundGauge";
 import { GaugeBinder } from "./GaugeBinder";
@@ -22,10 +23,18 @@ import {
 import "../gauges/gauges.css";
 import "./dashboard.css";
 
-function SlotGauge({ kind, gauge }: { kind: GaugeKind; gauge: GaugeDto }) {
-  if (kind === "bar") return <BarGauge gauge={gauge} />;
-  if (kind === "digital") return <DigitalGauge gauge={gauge} />;
-  return <RoundGauge gauge={gauge} />;
+function SlotGauge({
+  kind,
+  gauge,
+  theme,
+}: {
+  kind: GaugeKind;
+  gauge: GaugeDto;
+  theme: Theme;
+}) {
+  if (kind === "bar") return <BarGauge gauge={gauge} theme={theme} />;
+  if (kind === "digital") return <DigitalGauge gauge={gauge} theme={theme} />;
+  return <RoundGauge gauge={gauge} theme={theme} />;
 }
 
 /**
@@ -38,7 +47,7 @@ function SlotGauge({ kind, gauge }: { kind: GaugeKind; gauge: GaugeDto }) {
  * The connected panel is a separate component so that disconnecting unmounts
  * it — slot/live/edit state never leaks across connections.
  */
-export function Dashboard({ locale }: { locale: Locale }) {
+export function Dashboard({ locale, theme }: { locale: Locale; theme: Theme }) {
   const connectionState = useConnectionStore((s) => s.connectionState);
   const isConnected = connectionState?.type === "connected";
   const definition = useTuneStore((s) => s.definition);
@@ -46,14 +55,18 @@ export function Dashboard({ locale }: { locale: Locale }) {
   if (!isConnected || !definition) {
     return null;
   }
-  return <DashboardPanel locale={locale} definition={definition} />;
+  return (
+    <DashboardPanel locale={locale} theme={theme} definition={definition} />
+  );
 }
 
 function DashboardPanel({
   locale,
+  theme,
   definition,
 }: {
   locale: Locale;
+  theme: Theme;
   definition: DefinitionDto;
 }) {
   const [slots, setSlots] = useState<SlotLayout[]>([]);
@@ -147,7 +160,7 @@ function DashboardPanel({
             return (
               <div className="dashboard-slot" key={`${i}-${slot.gauge}`}>
                 {gauge ? (
-                  <SlotGauge kind={slot.kind} gauge={gauge} />
+                  <SlotGauge kind={slot.kind} gauge={gauge} theme={theme} />
                 ) : (
                   // Fail-open per item: a slot bound to a gauge the INI no
                   // longer defines renders neutral, never crashes the panel.
@@ -186,6 +199,7 @@ function DashboardPanel({
             <IndicatorLamp
               key={`${i}-${indicator.expr}`}
               indicator={indicator}
+              theme={theme}
             />
           ))}
         </div>
