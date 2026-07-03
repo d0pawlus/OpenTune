@@ -7,6 +7,7 @@
 //! shape.
 
 use crate::constants_parser::parse_constants;
+use crate::output_channels_parser::parse_output_channels;
 use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
 use crate::{
@@ -98,6 +99,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
     let ui = parse_ui(&preprocessed, &parsed.constants);
+    let output_channels = parse_output_channels(&preprocessed);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
     let comms = CommsSettings {
@@ -107,6 +109,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
 
     let mut diagnostics = parsed.diagnostics;
     diagnostics.extend(ui.diagnostics);
+    diagnostics.extend(output_channels.diagnostics);
 
     Ok(Definition {
         comms,
@@ -118,16 +121,10 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         tables: ui.tables,
         curves: ui.curves,
         diagnostics,
-        output_channels: parse_output_channels(&preprocessed),
+        output_channels: output_channels.channels,
         gauges: parse_gauges(&preprocessed),
         frontpage: parse_frontpage(&preprocessed),
     })
-}
-
-/// Stub for the Task 2 `[OutputChannels]` parser — always returns an empty
-/// list. Real parsing lands in Task 2.
-fn parse_output_channels(_ini_text: &str) -> Vec<OutputChannelDef> {
-    Vec::new()
 }
 
 /// Stub for the Task 3 `[GaugeConfigurations]` parser — always returns an

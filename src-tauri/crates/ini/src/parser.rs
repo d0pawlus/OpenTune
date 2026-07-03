@@ -10,7 +10,9 @@
 //! Scans the INI text line-by-line for the first `[MegaTune]` or
 //! `[TunerStudio]` section and extracts the comms-related keys. All other
 //! sections are skipped gracefully. The parse is intentionally minimal — full
-//! `[Constants]`/UI sections are M2 (see ROADMAP §M1).
+//! `[Constants]`/UI sections are M2 (see ROADMAP §M1). One key is the
+//! exception: `ochBlockSize` lives in `[OutputChannels]` (M3, Task 2), so it's
+//! read via a separate targeted scan — see [`extract_och_block_size`].
 
 use crate::{CommsSettings, Endianness, EnvelopeFormat, IniError, Result};
 
@@ -18,7 +20,8 @@ use crate::{CommsSettings, Endianness, EnvelopeFormat, IniError, Result};
 ///
 /// Looks for the first `[MegaTune]` or `[TunerStudio]` section and extracts
 /// every comms key defined there. Optional keys that are absent receive sensible
-/// defaults (documented per field on [`CommsSettings`]).
+/// defaults (documented per field on [`CommsSettings`]). The exception is
+/// `och_block_size`, read separately from `[OutputChannels]`.
 pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
     let kv = extract_comms_section(ini_text);
 
@@ -38,6 +41,7 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
     let inter_write_delay_ms = opt_u32(&kv, "interWriteDelay", 0)?;
     let endianness = opt_endianness(&kv)?;
     let envelope = opt_envelope(&kv)?;
+    let och_block_size = extract_och_block_size(ini_text);
 
     Ok(CommsSettings {
         signature,
@@ -53,9 +57,46 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
         inter_write_delay_ms,
         endianness,
         envelope,
-        // Task 2 fills this from the INI; M1/M2 parsing predates the field.
-        och_block_size: 0,
+        och_block_size,
     })
+}
+
+/// Read `ochBlockSize` from `[OutputChannels]` — a separate section from
+/// `[MegaTune]`/`[TunerStudio]` (where `ochGetCommand` lives), so this is a
+/// targeted scan rather than widening `extract_comms_section`'s section
+/// match (which would let `[OutputChannels]`'s own `ochGetCommand` line
+/// override the MegaTune one via last-wins). Defaults to `0` when absent,
+/// per [`CommsSettings::och_block_size`]'s documented default.
+fn extract_och_block_size(ini_text: &str) -> u32 {
+    let mut in_output_channels = false;
+
+    for raw_line in ini_text.lines() {
+        let line = raw_line.trim();
+
+        if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_output_channels = inner.trim() == "OutputChannels";
+            continue;
+        }
+
+        if !in_output_channels {
+            continue;
+        }
+
+        if let Some((k, v)) = line.split_once('=') {
+            if k.trim() == "ochBlockSize" {
+                let value = strip_inline_comment(v.trim()).trim();
+                if let Ok(n) = unquote(value).trim().parse::<u32>() {
+                    return n;
+                }
+            }
+        }
+    }
+
+    0
 }
 
 // ---------------------------------------------------------------------------

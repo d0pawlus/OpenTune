@@ -102,7 +102,7 @@ pub(crate) fn split_fields(value: &str) -> Vec<String> {
     fields
 }
 
-fn unquote(s: &str) -> String {
+pub(crate) fn unquote(s: &str) -> String {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         s[1..s.len() - 1].to_string()
@@ -125,7 +125,7 @@ fn parse_number(field: &str) -> Number {
     }
 }
 
-fn parse_scalar_type(s: &str) -> Option<ScalarType> {
+pub(crate) fn parse_scalar_type(s: &str) -> Option<ScalarType> {
     match s.trim() {
         "U08" => Some(ScalarType::U08),
         "S08" => Some(ScalarType::S08),
@@ -169,7 +169,7 @@ fn parse_shape(s: &str) -> Option<Shape> {
 /// Parse the `[lo:hi]` bit-range syntax (both bounds inclusive), per the
 /// real Speeduino data verified against `mapSample`/`nCylinders` (a
 /// 2-value field spans `[0:1]`; a 16-value field spans `[4:7]`).
-fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
+pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
     let inner = s.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
     let (lo, hi) = inner.split_once(':')?;
     Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))

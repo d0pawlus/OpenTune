@@ -29,6 +29,7 @@ mod expr;
 mod expr_parser;
 mod gauges;
 mod output_channels;
+mod output_channels_parser;
 mod parser;
 mod preprocessor;
 mod ui;
