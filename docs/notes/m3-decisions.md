@@ -131,6 +131,24 @@ gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w
   testowy dubluje okablowanie App, więc "uproszczenie" hooka z powrotem do
   `useEffect` przywróciłoby błąd bez czerwonego testu; test na poziomie App
   wymagałby mockowania IPC (decyzja odłożona).
+- **Finalny przegląd gałęzi (fable) — wnioski:** panel Dashboard odmontowywał
+  się na `Reconnecting`, choć backend celowo utrzymuje polling przez glitch —
+  zegary animowały się pod przyciskiem "Start live" (naprawione wspólnym
+  predykatem `isLinkAlive`; pierwsza poprawka była martwa w złożonej
+  aplikacji, bo TunePanel zerował współdzieloną `definition` — domknięte
+  testem integracyjnym montującym oba panele nad realnymi store'ami).
+  **Ryzyko I-2 (bilet, doprecyzowanie wpisu wyżej):** na okienkowym INI
+  reboot jest niewidoczny przez CAŁĄ nie-pollującą część sesji (użytkownik,
+  który nie wciska "Start live"), nie tylko "do pierwszego polla" — realny
+  TS polluje stale, OpenTune ma jawny start. Follow-up: reconnect z bazą 0
+  traktować jako możliwy reboot (tania weryfikacja odczytem strony) albo
+  niski keepalive secl. **NaN może wejść do kanałów** (F32 ze śmieciowych
+  bajtów, inf−inf w wyrażeniu) — kontrakt domknięty: serde→`null`, store
+  pomija + strażnik `isFinite`. **Field/diff/merge NIE są bramkowane
+  podczas reconnectu** — owner kolejkuje ich komendy za reconnectem
+  (bezpieczne, opóźnione); bramkowanie jak burn/undo/redo to follow-up.
+  Reboot w trakcie glitcha nie odświeża już wartości tune automatycznie
+  (cena "przeżycia glitcha" — notatka, nie defekt).
 - **Odłożone drobiazgi do finalnego review gałęzi:** nieaktualny doc-comment
   `events.rs` ("Not yet registered" — już zarejestrowane, propaguje do
   bindings.ts); brak bezpośredniego testu przewymiarowanego `%2c` (bezpieczne
