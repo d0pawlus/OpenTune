@@ -166,9 +166,12 @@ export function TunePanel({ locale }: { locale: Locale }) {
             {t("tune.badge.modified", locale)}
           </span>
         )}
-        {/* Wire-touching actions are connected-only: while `reconnecting`
-            the panel stays visible (see the component doc) but must not put
-            new traffic on a link that is being re-established. */}
+        {/* Burn/undo/redo are connected-only: while `reconnecting` the
+            panel stays visible (see the component doc) but these buttons
+            must not put new traffic on a link being re-established. Field
+            edits and diff/merge actions are NOT gated here — the owner
+            queues their commands behind the reconnect (safe, just delayed);
+            gating them too is a recorded follow-up. */}
         <div className="tune-actions">
           <button
             type="button"
