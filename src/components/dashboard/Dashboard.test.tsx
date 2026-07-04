@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { Dashboard } from "./Dashboard";
 import * as ipc from "../../ipc/bindings";
 import type { DefinitionDto, GaugeDto } from "../../ipc/bindings";
@@ -161,6 +167,51 @@ describe("Dashboard", () => {
     expect(
       await screen.findByRole("button", { name: "Start live" }),
     ).toBeTruthy();
+  });
+
+  it("stays mounted and keeps live state across a reconnect glitch", async () => {
+    // The bindings mock is module-level, so drop call history from the
+    // earlier start/stop test before counting calls here.
+    vi.mocked(ipc.commands.startRealtime).mockClear();
+    vi.mocked(ipc.commands.stopRealtime).mockClear();
+    render(<Dashboard locale="en" theme="default" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start live" }));
+    await screen.findByRole("button", { name: "Stop live" });
+
+    // Link glitch: the backend keeps realtime armed, so the panel must not
+    // unmount — gauges keep rendering the last values, live stays "on".
+    act(() => {
+      useConnectionStore.setState({
+        connectionState: { type: "reconnecting", attempt: 1 },
+      });
+    });
+    expect(screen.getByRole("button", { name: "Stop live" })).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Engine Speed" })).toBeTruthy();
+
+    // Recovery: same panel instance, so stopping is still a single click and
+    // no second startRealtime was issued.
+    act(() => {
+      useConnectionStore.setState({
+        connectionState: { type: "connected", signature: "sig", version: "1" },
+      });
+    });
+    expect(screen.getByRole("button", { name: "Stop live" })).toBeTruthy();
+    expect(ipc.commands.startRealtime).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Stop live" }));
+    await waitFor(() =>
+      expect(ipc.commands.stopRealtime).toHaveBeenCalledTimes(1),
+    );
+  });
+
+  it("unmounts the panel when the connection is lost for good", async () => {
+    const { container } = render(<Dashboard locale="en" theme="default" />);
+    await screen.findByRole("img", { name: "Engine Speed" });
+    act(() => {
+      useConnectionStore.setState({
+        connectionState: { type: "disconnected" },
+      });
+    });
+    expect(container.firstChild).toBeNull();
   });
 
   it("rebinds a slot in edit mode and persists via saveLayout", async () => {

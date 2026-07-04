@@ -103,8 +103,9 @@ fn parse_channel_line(name: &str, value: &str) -> Option<OutputChannelDef> {
 
 /// `name = { expr }` or `name = { expr }, "units"`.
 ///
-/// `split_fields` on the whole value handles the brace/quote-aware split,
-/// so `{ coolantRaw - 40 }, "C"` becomes `["{ coolantRaw - 40 }", "C"]`.
+/// Receives the text after the opening `{`: everything up to the first `}`
+/// (located with `find('}')`) is the expression, and an optional `, "units"`
+/// tail after the closing brace is unquoted into `units`.
 fn parse_computed(name: &str, after_brace: &str) -> Option<OutputChannelDef> {
     let closing = after_brace.find('}')?;
     let expr = after_brace[..closing].trim().to_string();

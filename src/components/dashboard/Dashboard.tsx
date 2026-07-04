@@ -44,15 +44,21 @@ function SlotGauge({
  * slots. The layout is persisted as JSON via the `save_layout`/`load_layout`
  * commands (app config dir).
  *
- * The connected panel is a separate component so that disconnecting unmounts
- * it — slot/live/edit state never leaks across connections.
+ * The panel is a separate component that stays mounted while `connected` or
+ * `reconnecting` — the backend deliberately keeps realtime polling armed
+ * through a link drop, so live/edit state and unsaved layout edits must
+ * survive a glitch (gauges keep showing the last received values). Only the
+ * terminal states (`disconnected`/`failed`) unmount it, so slot/live/edit
+ * state never leaks across connections.
  */
 export function Dashboard({ locale, theme }: { locale: Locale; theme: Theme }) {
   const connectionState = useConnectionStore((s) => s.connectionState);
-  const isConnected = connectionState?.type === "connected";
+  const isLinkAlive =
+    connectionState?.type === "connected" ||
+    connectionState?.type === "reconnecting";
   const definition = useTuneStore((s) => s.definition);
 
-  if (!isConnected || !definition) {
+  if (!isLinkAlive || !definition) {
     return null;
   }
   return (

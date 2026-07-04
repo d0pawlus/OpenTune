@@ -58,10 +58,10 @@ pub enum ConnectionStateEvent {
 
 /// The M3 realtime dashboard frame payload, emitted at up to ~30 Hz.
 ///
-/// Not yet registered with the event system — registration lands in Task 6
-/// alongside the commands that emit it. The shape is frozen here so
-/// downstream tasks (decode, polling loop, frontend gauges) build against a
-/// fixed contract.
+/// Registered in `collect_events!` (`lib.rs`) alongside the
+/// `start_realtime`/`stop_realtime` commands. The owner poll loop emits it,
+/// coalesced to ≤30 Hz, for as long as realtime is armed — arming persists
+/// across a link drop, so frames resume automatically after recovery.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Type, Event)]
 pub struct RealtimeFrameEvent {
     /// (channel name, physical value) pairs — the full decoded frame, ≤30 Hz.
