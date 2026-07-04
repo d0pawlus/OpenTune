@@ -49,9 +49,13 @@ describe("Connect component", () => {
       expect(heading).toBeTruthy();
     });
 
-    const select = screen.getByDisplayValue(
-      "COM3 (Arduino Uno)",
-    ) as HTMLSelectElement;
+    // The heading renders immediately regardless of the async port list, so
+    // the wait above doesn't guarantee listPorts() has resolved yet — wait
+    // for the option to actually appear instead of assuming it's already
+    // there.
+    const select = await waitFor(
+      () => screen.getByDisplayValue("COM3 (Arduino Uno)") as HTMLSelectElement,
+    );
     expect(select).toBeTruthy();
   });
 

@@ -83,7 +83,9 @@ describe("TuneDiff", () => {
 
     await waitFor(() => expect(mergeTune).toHaveBeenCalledWith(["reqFuel"]));
     // merge re-compares; diffTune was called for the initial compare and
-    // again after the merge.
-    expect(diffTune).toHaveBeenCalledTimes(2);
+    // again after the merge. The component awaits mergeTune before invoking
+    // compare(), so the second diffTune call lands strictly after the wait
+    // above resolved — assert it with its own waitFor.
+    await waitFor(() => expect(diffTune).toHaveBeenCalledTimes(2));
   });
 });

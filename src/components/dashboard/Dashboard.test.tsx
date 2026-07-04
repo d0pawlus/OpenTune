@@ -232,8 +232,13 @@ describe("Dashboard", () => {
         ]),
       ),
     );
-    // Edit mode closes after a successful save.
-    expect(screen.queryByLabelText("Bind gauge")).toBeNull();
+    // Edit mode closes after a successful save. The save handler awaits the
+    // saveLayout promise before calling setEditing(false), so this is a
+    // separate, later DOM update than the saveLayout call above — assert it
+    // with its own waitFor rather than assuming it's already flushed.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Bind gauge")).toBeNull(),
+    );
   });
 
   it("reorders slots with the move buttons", async () => {
