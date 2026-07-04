@@ -1,6 +1,6 @@
 # OpenTune
 
-> **Working title — name TBD.** A modern, open-source, cross-platform tuning
+> **OpenTune** A modern, open-source, cross-platform tuning
 > application for engine management ECUs. The goal is to be a first-class
 > replacement for TunerStudio, with native support for Apple Silicon macOS,
 > Windows, and Linux.
