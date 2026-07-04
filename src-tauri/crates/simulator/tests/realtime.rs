@@ -250,3 +250,76 @@ fn handshake_only_sim_answers_r_with_zero_fill() {
     let bytes = proto.read_output_channels(0, 8).unwrap();
     assert_eq!(bytes, vec![0; 8]);
 }
+
+// ── Auto-tick: production 'r' requests must advance wall-clock time ────────
+//
+// Bug report: after Connect (simulator) → "Start live", gauges jump once
+// then FREEZE — nothing ever calls `tick_engine` in the real app (it's a
+// test-only entry point), so every production `'r'` poll re-read the same
+// stale `och_block`. The fix: the ECU wrapper (`Pipe`) auto-ticks the engine
+// off the wall clock on every production `'r'` request, unless/until
+// `tick_engine` is called explicitly (which takes over and disables it
+// permanently, keeping every deterministic test above untouched).
+
+#[test]
+fn auto_tick_advances_engine_between_requests() {
+    let def = fixture_definition();
+    let sim = EcuSimulator::from_definition(&def);
+    let mut proto = MsProtocol::new(
+        client_comms(&def, EnvelopeFormat::Plain),
+        sim.client_transport(),
+    );
+
+    let first = proto
+        .read_output_channels(0, 16)
+        .expect("first read must succeed");
+
+    // Loop a few sleep+read rounds rather than asserting after a single
+    // sleep: the rpm noise (±10) changes every 50 ms engine step, and after
+    // ~1.5 s of wall-clock the STARTUP→WARMUP_IDLE transition slews rpm
+    // hard, so *some* round within this budget is guaranteed to differ.
+    // 15 × 120 ms ≈ 1.8 s total sleep, comfortably under the ~2 s budget.
+    let mut changed = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_millis(120));
+        let frame = proto
+            .read_output_channels(0, 16)
+            .expect("subsequent read must succeed");
+        if frame != first {
+            changed = true;
+            break;
+        }
+    }
+    assert!(
+        changed,
+        "production 'r' requests must auto-tick the engine off the wall clock — \
+         live gauges must not freeze after the first frame"
+    );
+}
+
+#[test]
+fn tick_engine_disables_auto_tick() {
+    let def = fixture_definition();
+    let sim = EcuSimulator::from_definition(&def);
+    // Any explicit tick — even a zero-duration one — hands time-keeping over
+    // to the caller and disables auto-tick permanently.
+    sim.tick_engine(Duration::ZERO);
+    let mut proto = MsProtocol::new(
+        client_comms(&def, EnvelopeFormat::Plain),
+        sim.client_transport(),
+    );
+
+    let first = proto
+        .read_output_channels(0, 16)
+        .expect("first read must succeed");
+    std::thread::sleep(Duration::from_millis(120));
+    let second = proto
+        .read_output_channels(0, 16)
+        .expect("second read must succeed");
+
+    assert_eq!(
+        first, second,
+        "once tick_engine is called explicitly, auto-tick must stay disabled — \
+         frames must not drift on the wall clock"
+    );
+}

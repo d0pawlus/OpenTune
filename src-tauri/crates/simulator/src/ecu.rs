@@ -43,6 +43,15 @@ struct Pipe {
     /// The animated model (M3 Task 5). `None` when built via
     /// [`EcuSimulator::new`], so the M1 handshake-only sim stays unchanged.
     engine: Option<SimEngine>,
+    /// Whether production `'r'` requests advance the engine off the wall
+    /// clock (see [`Pipe::auto_tick`]). Defaults `true`; permanently
+    /// disabled the moment [`EcuSimulator::tick_engine`] is called
+    /// explicitly, so deterministic tests keep driving simulated time
+    /// themselves.
+    auto_tick: bool,
+    /// Wall-clock timestamp of the last [`Pipe::auto_tick`] step, or `None`
+    /// before the first one (which then ticks by a ~zero `dt`).
+    last_auto_tick: Option<std::time::Instant>,
 }
 
 impl Pipe {
@@ -60,6 +69,8 @@ impl Pipe {
                 .unwrap_or_default(),
             first_och_done: false,
             engine,
+            auto_tick: true,
+            last_auto_tick: None,
         }
     }
 
@@ -80,6 +91,32 @@ impl Pipe {
             self.och_block.clear();
             self.och_block.extend_from_slice(engine.och_block());
         }
+    }
+
+    /// Advance the engine by the wall-clock time elapsed since the last
+    /// auto-tick, so production `'r'` polling — which has no other way to
+    /// move simulated time (see [`EcuSimulator::tick_engine`]'s doc) —
+    /// actually animates instead of replaying the same stale `och_block`
+    /// forever. No-op once [`EcuSimulator::tick_engine`] has been called
+    /// explicitly (`auto_tick == false`) or when there is no engine.
+    ///
+    /// No `dt` cap: an engine step is cheap fixed-point arithmetic over a
+    /// 50 ms quantum ([`crate::engine::SimEngine::tick`]), so even a large
+    /// gap between polls (e.g. after the process was suspended) is a
+    /// bounded number of steps, not a hang.
+    fn auto_tick(&mut self) {
+        if !self.auto_tick {
+            return;
+        }
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(self.last_auto_tick.unwrap_or(now));
+        engine.tick(dt);
+        self.och_block.clear();
+        self.och_block.extend_from_slice(engine.och_block());
+        self.last_auto_tick = Some(now);
     }
 }
 
@@ -294,6 +331,7 @@ fn respond_plain(cmd_bytes: &[u8], pipe: &mut Pipe) -> Vec<u8> {
         b'r' => match parse_och_window(cmd_bytes) {
             Some((offset, len)) => {
                 pipe.on_och_request();
+                pipe.auto_tick();
                 och_window(&pipe.och_block, offset, len)
             }
             None => Vec::new(),
@@ -348,6 +386,7 @@ fn respond_crc(payload: &[u8], pipe: &mut Pipe) -> Vec<u8> {
         b'r' => match parse_och_window(payload) {
             Some((offset, len)) => {
                 pipe.on_och_request();
+                pipe.auto_tick();
                 let mut v = vec![0x00];
                 v.extend(och_window(&pipe.och_block, offset, len));
                 v
@@ -403,13 +442,23 @@ impl EcuSimulator {
     }
 
     /// Advance the animated engine model by `dt` and refresh the realtime
-    /// (`'r'`) block snapshot. Deterministic — the model has no wall clock;
-    /// simulated time only moves here. No-op for sims built without a
-    /// definition ([`Self::new`]): they have no engine and keep answering
-    /// `'r'` with zero-fill.
+    /// (`'r'`) block snapshot. The engine itself is deterministic — it has
+    /// no wall clock, so *this call* is what moves its simulated time.
+    ///
+    /// In production, wall-clock time moves the engine automatically on
+    /// every `'r'` request instead (see [`Pipe::auto_tick`]) — there is no
+    /// other driver, since the real app never calls this test-only entry
+    /// point. Calling `tick_engine` explicitly, even once, hands
+    /// time-keeping over to the caller and **permanently disables**
+    /// auto-tick on this simulator, so a test that drives time by hand never
+    /// races the wall clock.
+    ///
+    /// No-op for sims built without a definition ([`Self::new`]): they have
+    /// no engine and keep answering `'r'` with zero-fill.
     pub fn tick_engine(&self, dt: Duration) {
         let mut guard = self.pipe.lock().unwrap();
         let p = &mut *guard;
+        p.auto_tick = false;
         if let Some(engine) = p.engine.as_mut() {
             engine.tick(dt);
             p.och_block.clear();
@@ -449,10 +498,18 @@ impl EcuSimulator {
     /// boot-scoped static, so a reboot starts a fresh "first request".
     /// `secl` itself is a separate M1 concern with its own
     /// [`Self::reset_secl`].
+    ///
+    /// Also clears the auto-tick clock (`last_auto_tick`) so the next
+    /// production `'r'` request after reboot ticks by a ~zero `dt` instead
+    /// of a huge one covering the whole time the "ECU" was down. This does
+    /// **not** re-enable auto-tick if [`Self::tick_engine`] had already
+    /// disabled it — a reboot doesn't hand time-keeping back to the wall
+    /// clock mid-test.
     pub fn reboot(&self) {
         let mut p = self.pipe.lock().unwrap();
         p.memory.reboot();
         p.first_och_done = false;
+        p.last_auto_tick = None;
     }
 
     pub fn flush(&self) {

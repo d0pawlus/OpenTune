@@ -29,9 +29,13 @@
 //!
 //! # Determinism
 //!
-//! No wall clock and no OS RNG: time advances only through
-//! [`SimEngine::tick`], and sensor noise comes from a fixed-seed xorshift —
-//! a given tick sequence always produces the same block bytes.
+//! No wall clock and no OS RNG *in the engine itself*: time advances only
+//! through [`SimEngine::tick`], and sensor noise comes from a fixed-seed
+//! xorshift — a given tick sequence always produces the same block bytes.
+//! The wall clock lives one layer up: [`crate::ecu`]'s `Pipe` feeds
+//! `tick` a real `dt` on every production `'r'` request (auto-tick) so the
+//! app's live gauges actually animate, while tests keep calling `tick`
+//! with hand-picked durations for exact, reproducible assertions.
 
 mod physics;
 
