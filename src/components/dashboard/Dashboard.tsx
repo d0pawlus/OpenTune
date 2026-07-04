@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { commands } from "../../ipc/bindings";
 import type { DefinitionDto, GaugeDto } from "../../ipc/bindings";
-import { useConnectionStore } from "../../stores/connection";
+import { isLinkAlive, useConnectionStore } from "../../stores/connection";
 import { useRealtimeStore } from "../../stores/realtime";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
@@ -44,21 +44,25 @@ function SlotGauge({
  * slots. The layout is persisted as JSON via the `save_layout`/`load_layout`
  * commands (app config dir).
  *
- * The panel is a separate component that stays mounted while `connected` or
- * `reconnecting` — the backend deliberately keeps realtime polling armed
- * through a link drop, so live/edit state and unsaved layout edits must
- * survive a glitch (gauges keep showing the last received values). Only the
- * terminal states (`disconnected`/`failed`) unmount it, so slot/live/edit
- * state never leaks across connections.
+ * The panel is a separate component that stays mounted while the link is
+ * alive per {@link isLinkAlive} (`connected` or `reconnecting`) — the backend
+ * deliberately keeps realtime polling armed through a link drop, so
+ * live/edit state and unsaved layout edits must survive a glitch (gauges
+ * keep showing the last received values). Only the terminal states
+ * (`disconnected`/`failed`) unmount it, so slot/live/edit state never leaks
+ * across connections.
+ *
+ * `TunePanel` shares the same `useTuneStore`-held `definition` and gates its
+ * own reset-on-disconnect logic with the same {@link isLinkAlive} predicate
+ * (rather than a stricter connected-only check) precisely so its store reset
+ * never fires mid-glitch and unmounts this panel out from under a live demo.
  */
 export function Dashboard({ locale, theme }: { locale: Locale; theme: Theme }) {
   const connectionState = useConnectionStore((s) => s.connectionState);
-  const isLinkAlive =
-    connectionState?.type === "connected" ||
-    connectionState?.type === "reconnecting";
+  const linkAlive = isLinkAlive(connectionState);
   const definition = useTuneStore((s) => s.definition);
 
-  if (!isLinkAlive || !definition) {
+  if (!linkAlive || !definition) {
     return null;
   }
   return (

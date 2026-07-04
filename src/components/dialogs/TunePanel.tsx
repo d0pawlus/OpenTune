@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { commands, events } from "../../ipc/bindings";
 import type { DefinitionDto, Value } from "../../ipc/bindings";
-import { useConnectionStore } from "../../stores/connection";
+import { isLinkAlive, useConnectionStore } from "../../stores/connection";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
@@ -28,10 +28,23 @@ function conditionExprs(def: DefinitionDto): string[] {
  * badge, and wires burn/undo/redo. Dirty state flows from the backend via the
  * `tune_dirty` event; field values and visibility are re-read from the backend
  * after every edit (single source of truth).
+ *
+ * `Dashboard` reads the same `useTuneStore`-held `definition`, so this panel's
+ * reset-on-disconnect effect must not fire on a mere `reconnecting` glitch —
+ * doing so would null `definition` out from under `Dashboard` and unmount it
+ * too. The load/reset effect and the render gate therefore use
+ * {@link isLinkAlive} (`connected` or `reconnecting`), matching `Dashboard`'s
+ * mount predicate: the panel stays visible through a glitch and only a true
+ * disconnect (`disconnected`/`failed`) resets the store. Wire-touching
+ * actions stay connected-only: the load/refresh sequence runs only when the
+ * link *becomes* alive (i.e. on connect — `reconnecting` only ever follows
+ * `connected`, so it never re-fires mid-glitch), and burn/undo/redo are
+ * disabled while merely reconnecting.
  */
 export function TunePanel({ locale }: { locale: Locale }) {
   const connectionState = useConnectionStore((s) => s.connectionState);
   const isConnected = connectionState?.type === "connected";
+  const linkAlive = isLinkAlive(connectionState);
 
   const definition = useTuneStore((s) => s.definition);
   const values = useTuneStore((s) => s.values);
@@ -65,12 +78,17 @@ export function TunePanel({ locale }: { locale: Locale }) {
     }
   }, []);
 
-  // Load definition + tune once connected. On disconnect we reset the store
-  // (an external system) and let the panel unmount its content; stale local
-  // `conditions` are harmless (the panel renders null) and are fully replaced
-  // by `refresh` on the next connect.
+  // Load definition + tune once the link comes alive. On a true disconnect
+  // we reset the store (an external system) and let the panel unmount its
+  // content; stale local `conditions` are harmless (the panel renders null)
+  // and are fully replaced by `refresh` on the next connect. Gating on
+  // `linkAlive` rather than `isConnected` means a `reconnecting` glitch
+  // neither resets the store nor re-fetches: `reconnecting` only ever
+  // follows `connected`, so becoming alive always means becoming connected,
+  // and staying alive through connected → reconnecting → connected leaves
+  // this effect untouched — definition/values/dirty simply survive the blip.
   useEffect(() => {
-    if (!isConnected) {
+    if (!linkAlive) {
       useTuneStore.getState().reset();
       return;
     }
@@ -97,7 +115,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
     return () => {
       cancelled = true;
     };
-  }, [isConnected, refresh]);
+  }, [linkAlive, refresh]);
 
   // Reflect backend dirty-state events into the store.
   useEffect(() => {
@@ -135,7 +153,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
     [definition, refresh],
   );
 
-  if (!isConnected || !definition) {
+  if (!linkAlive || !definition) {
     return null;
   }
 
@@ -148,23 +166,28 @@ export function TunePanel({ locale }: { locale: Locale }) {
             {t("tune.badge.modified", locale)}
           </span>
         )}
+        {/* Wire-touching actions are connected-only: while `reconnecting`
+            the panel stays visible (see the component doc) but must not put
+            new traffic on a link that is being re-established. */}
         <div className="tune-actions">
           <button
             type="button"
             onClick={() => runAndRefresh(() => commands.burnTune())}
-            disabled={!dirty}
+            disabled={!dirty || !isConnected}
           >
             {t("tune.burn", locale)}
           </button>
           <button
             type="button"
             onClick={() => runAndRefresh(() => commands.undoTune())}
+            disabled={!isConnected}
           >
             {t("tune.undo", locale)}
           </button>
           <button
             type="button"
             onClick={() => runAndRefresh(() => commands.redoTune())}
+            disabled={!isConnected}
           >
             {t("tune.redo", locale)}
           </button>
