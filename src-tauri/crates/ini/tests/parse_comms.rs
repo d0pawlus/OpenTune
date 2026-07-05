@@ -105,6 +105,38 @@ page = 1
 }
 
 #[test]
+fn megatune_value_wins_when_key_is_also_scattered_into_constants() {
+    // A synthetic both-declared case (never observed in the real file — see
+    // `parser::parse_comms`'s doc comment): `blockingFactor` appears in BOTH
+    // `[MegaTune]` and `[Constants]` with different values. The dedicated
+    // comms section must win over the scattered one, pinning the
+    // find_raw/extract_scattered_comms ordering fix (M4 Task 2).
+    let ini = r#"
+[MegaTune]
+   signature      = "speeduino 202504-dev"
+   queryCommand   = "Q"
+   versionInfo    = "S"
+   ochGetCommand  = "r"
+   pageReadCommand = "p%2i%2o%2c"
+   pageValueWrite = "M%2i%2o%2c%v"
+   burnCommand    = "b%2i"
+   blockingFactor = 251
+   blockReadTimeout = 2000
+
+[Constants]
+    pageSize = 128
+    blockingFactor = 121
+page = 1
+      reqFuel = scalar, U16, 0, "ms", 0.1, 0.0, 0.0, 6553.5, 1
+"#;
+    let comms = opentune_ini::parse_comms(ini).expect("must parse");
+    assert_eq!(
+        comms.blocking_factor, 251,
+        "the [MegaTune] value must win over the scattered [Constants] one"
+    );
+}
+
+#[test]
 fn parses_tuner_studio_section_alias() {
     // Some firmwares use [TunerStudio] instead of [MegaTune].
     let ini = "[TunerStudio]\n\

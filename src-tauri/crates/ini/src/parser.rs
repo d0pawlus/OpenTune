@@ -23,8 +23,18 @@ use crate::{CommsSettings, Endianness, EnvelopeFormat, IniError, Result};
 /// defaults (documented per field on [`CommsSettings`]). The exception is
 /// `och_block_size`, read separately from `[OutputChannels]`.
 pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
-    let mut kv = extract_comms_section(ini_text);
-    kv.extend(extract_scattered_comms(ini_text));
+    // Scattered `[Constants]`/`[OutputChannels]` pairs are collected FIRST and
+    // the primary `[MegaTune]`/`[TunerStudio]` section pairs are appended
+    // AFTER, so `find_raw`'s last-wins lookup (see its doc comment) resolves
+    // a key declared in both places to the primary-section value — matching
+    // real TunerStudio behaviour where the dedicated comms section is
+    // authoritative. Real speeduino.ini never actually declares any
+    // `SCATTERED_COMMS_KEYS` entry in `[MegaTune]`/`[TunerStudio]` (that's
+    // the whole reason Wall #1 exists), so this ordering is a no-op there;
+    // it only matters for a hypothetical/test file declaring both (see
+    // `tests/parse_comms.rs`'s pinning test).
+    let mut kv = extract_scattered_comms(ini_text);
+    kv.extend(extract_comms_section(ini_text));
 
     // Required fields
     let signature = require_string(&kv, "signature")?;
@@ -160,9 +170,13 @@ fn first_list_element(value: &str) -> &str {
     value.trim()
 }
 
-/// Collect allowlisted comms keys from `[Constants]` + `[OutputChannels]`,
-/// appended AFTER the primary-section pairs so first-wins keeps the
-/// `[MegaTune]`/`[TunerStudio]` value when both declare a key.
+/// Collect allowlisted comms keys from `[Constants]` + `[OutputChannels]`.
+///
+/// Collected BEFORE the primary-section pairs (see [`parse_comms`]) so
+/// `find_raw`'s last-wins lookup keeps the `[MegaTune]`/`[TunerStudio]`
+/// value when both declare a key — matching real TunerStudio behaviour
+/// (the dedicated comms section is authoritative over anything scattered
+/// into `[Constants]`).
 ///
 /// The real file also carries trailing `; comment` text on some of these
 /// lines (e.g. `blockingFactor = 251 ; Serial buffer is 257 bytes...`,
