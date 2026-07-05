@@ -23,13 +23,20 @@ use crate::{CommsSettings, Endianness, EnvelopeFormat, IniError, Result};
 /// defaults (documented per field on [`CommsSettings`]). The exception is
 /// `och_block_size`, read separately from `[OutputChannels]`.
 pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
-    let kv = extract_comms_section(ini_text);
+    let mut kv = extract_comms_section(ini_text);
+    kv.extend(extract_scattered_comms(ini_text));
 
     // Required fields
     let signature = require_string(&kv, "signature")?;
     let query_command = require_string(&kv, "queryCommand")?;
     let version_info = require_string(&kv, "versionInfo")?;
-    let och_get_command = require_string(&kv, "ochGetCommand")?;
+    // `ochGetCommand` is not in `SCATTERED_COMMS_KEYS` (it never lives in
+    // `[Constants]` in the real file); when `[MegaTune]`/`[TunerStudio]`
+    // lacks it entirely, fall back to the `[OutputChannels]` scanner rather
+    // than hard-erroring (`parse_definition`'s own override still applies
+    // afterwards and takes precedence when both exist).
+    let och_get_command = require_string(&kv, "ochGetCommand")
+        .or_else(|e| extract_och_get_command(ini_text).ok_or(e))?;
     let page_read_command = require_string(&kv, "pageReadCommand")?;
     let page_value_write = require_string(&kv, "pageValueWrite")?;
     let burn_command = require_string(&kv, "burnCommand")?;
@@ -116,6 +123,80 @@ fn extract_output_channels_value(ini_text: &str, key: &str) -> Option<String> {
     }
 
     None
+}
+
+// ---------------------------------------------------------------------------
+// Scattered comms keys (Wall #1) — real speeduino.ini @ 0832dc1d l.240-274
+// ---------------------------------------------------------------------------
+
+/// Comms keys the real speeduino.ini scatters into `[Constants]` (l.240-274 @
+/// 0832dc1d) instead of `[MegaTune]`/`[TunerStudio]`. Values there may be
+/// per-page comma lists (`"p%2i%2o%2c", "p%2i%2o%2c", ...`) — Speeduino uses
+/// identical templates for every page, so the first element is taken and a
+/// heterogeneous list is fine to ignore (recorded M4 decision).
+const SCATTERED_COMMS_KEYS: &[&str] = &[
+    "pageReadCommand",
+    "pageValueWrite",
+    "burnCommand",
+    "blockingFactor",
+    "blockReadTimeout",
+    "interWriteDelay",
+    "pageActivationDelay",
+    "messageEnvelopeFormat",
+];
+
+/// First element of a possibly comma-separated value, honoring double quotes
+/// (a comma inside `"..."` does not split). Returns the element verbatim
+/// (quotes intact) so the existing `require_*` unquoting applies unchanged.
+fn first_list_element(value: &str) -> &str {
+    let mut in_quotes = false;
+    for (i, ch) in value.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => return value[..i].trim(),
+            _ => {}
+        }
+    }
+    value.trim()
+}
+
+/// Collect allowlisted comms keys from `[Constants]` + `[OutputChannels]`,
+/// appended AFTER the primary-section pairs so first-wins keeps the
+/// `[MegaTune]`/`[TunerStudio]` value when both declare a key.
+///
+/// The real file also carries trailing `; comment` text on some of these
+/// lines (e.g. `blockingFactor = 251 ; Serial buffer is 257 bytes...`,
+/// `interWriteDelay = 10 ;Ignored when tsWriteBlocks is on`) — inline
+/// comments are stripped the same way `extract_comms_section` strips them
+/// (quote-aware, so a comma inside a quoted template survives) *before*
+/// splitting on the first top-level comma, or a single-value field like
+/// `blockingFactor` would carry its comment straight into `require_u32` and
+/// fail to parse as a number.
+fn extract_scattered_comms(ini_text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for raw in ini_text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with(';') {
+            continue;
+        }
+        if let Some(inner) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            in_section = matches!(inner.trim(), "Constants" | "OutputChannels");
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        if SCATTERED_COMMS_KEYS.contains(&key) {
+            let value = strip_inline_comment(value).trim();
+            out.push((key.to_string(), first_list_element(value).to_string()));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

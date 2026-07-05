@@ -23,13 +23,15 @@
 
 use crate::{ConstantDef, ConstantKind, IniError, Number, ScalarType, Shape};
 
-/// Per-page running `lastOffset` state.
+/// Per-page running `lastOffset` state: the start offset of the previous
+/// successfully-parsed field on this page (TS `lastOffset` semantics — every
+/// real use aliases the preceding field; see [`resolve_offset`]).
 ///
-/// An unrecognised constant `class` cannot be sized, so the caller
-/// (`constants_parser.rs`) cannot know how many bytes it occupies and must
-/// stop trusting the running counter for that page — [`Self::Poisoned`]
-/// records that. Resolving `lastOffset` while poisoned is refused (see
-/// [`resolve_offset`]) rather than silently returning the stale
+/// An unrecognised constant `class` can't be parsed at all, so the caller
+/// (`constants_parser.rs`) has no field to anchor the next `lastOffset` to
+/// and must stop trusting the running counter for that page —
+/// [`Self::Poisoned`] records that. Resolving `lastOffset` while poisoned is
+/// refused (see [`resolve_offset`]) rather than silently returning the stale
 /// pre-poison value, which would desync every later `lastOffset` constant
 /// onto a wrong-but-plausible offset. An explicit numeric offset is
 /// unaffected by the poison and, on success, re-anchors the page back to
@@ -138,7 +140,9 @@ pub(crate) fn parse_scalar_type(s: &str) -> Option<ScalarType> {
     }
 }
 
-/// Byte width of a scalar type, used to advance the `lastOffset` counter.
+/// Byte width of a scalar type, used to validate a field against its page's
+/// declared size (`constants_parser::validate_offset_within_page`). No
+/// longer used to advance the `lastOffset` counter — see [`OffsetCounter`].
 pub(crate) fn scalar_width(t: ScalarType) -> usize {
     match t {
         ScalarType::U08 | ScalarType::S08 => 1,
@@ -176,8 +180,9 @@ pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
 }
 
 /// Resolve an offset field: either a literal integer, or the `lastOffset`
-/// keyword, which resolves to the running per-page byte counter — unless
-/// that counter is [`OffsetCounter::Poisoned`], in which case resolution is
+/// keyword, which resolves to the start offset of the previous
+/// successfully-parsed field on this page (aliasing it) — unless that
+/// counter is [`OffsetCounter::Poisoned`], in which case resolution is
 /// refused (see [`OffsetCounter`]'s doc comment). A literal integer is
 /// always honored regardless of poison.
 fn resolve_offset(field: &str, running: &OffsetCounter) -> Option<OffsetResolution> {
@@ -219,7 +224,8 @@ pub(crate) enum ConstantLineResult {
 ///
 /// `page` is `None` for `[PcVariables]` entries (no offset field in that
 /// section's grammar). `running_offset` is the per-page `lastOffset`
-/// counter; it is advanced past the field's byte width on success.
+/// counter; on success it is set to this field's own start offset (TS
+/// `lastOffset` semantics — see [`OffsetCounter`]).
 ///
 /// Returns [`ConstantLineResult::UnknownClass`] for an unrecognised `class`
 /// so the caller can degrade gracefully with a `Diagnostic` instead of
@@ -239,8 +245,11 @@ pub(crate) fn parse_constant_line(
         ("scalar", Some(p)) => parse_scalar(name, &fields, p, running_offset)?,
         ("scalar", None) => FieldOutcome::Def(parse_scalar_no_offset(name, &fields)?),
         ("array", Some(p)) => parse_array(name, &fields, p, running_offset)?,
+        ("array", None) => FieldOutcome::Def(parse_array_no_offset(name, &fields)?),
         ("bits", Some(p)) => parse_bits(name, &fields, p, running_offset)?,
+        ("bits", None) => FieldOutcome::Def(parse_bits_no_offset(name, &fields)?),
         ("string", Some(p)) => parse_string(name, &fields, p, running_offset)?,
+        ("string", None) => FieldOutcome::Def(parse_string_no_offset(name, &fields)?),
         _ => return Ok(ConstantLineResult::UnknownClass),
     };
 
@@ -291,7 +300,7 @@ fn parse_scalar(
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(scalar_type));
+    *running_offset = OffsetCounter::Known(offset);
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -350,6 +359,121 @@ fn parse_scalar_no_offset(name: &str, fields: &[String]) -> crate::Result<Consta
     })
 }
 
+/// `[PcVariables]` array: `name = array, TYPE, [shape], units, scale, translate, low, high, digits`
+/// (no offset field). Discovered running the M4 golden gate (Wall #3): real
+/// speeduino.ini's `[PcVariables]` uses `array` extensively (e.g. `wueAFR`,
+/// `boardFuelOutputs`) — this was previously unhandled for the no-offset
+/// case (only `("scalar", None)` was wired). Trailing tokens beyond `digits`
+/// (Speeduino's `noMsqSave` flag on some entries) are ignored — this parser
+/// has no field for them and they don't change the numeric shape.
+fn parse_array_no_offset(name: &str, fields: &[String]) -> crate::Result<ConstantDef> {
+    let elem = fields
+        .get(1)
+        .and_then(|s| parse_scalar_type(s))
+        .ok_or_else(|| invalid(name, "unrecognised array element type"))?;
+    let shape = fields
+        .get(2)
+        .and_then(|s| parse_shape(s))
+        .ok_or_else(|| invalid(name, "unparseable array shape"))?;
+    let units = fields.get(3).map(|s| unquote(s)).unwrap_or_default();
+    let scale = fields
+        .get(4)
+        .map(|s| parse_number(s))
+        .unwrap_or(Number::Lit(1.0));
+    let translate = fields
+        .get(5)
+        .map(|s| parse_number(s))
+        .unwrap_or(Number::Lit(0.0));
+    let low = fields
+        .get(6)
+        .map(|s| parse_number(s))
+        .unwrap_or(Number::Lit(0.0));
+    let high = fields
+        .get(7)
+        .map(|s| parse_number(s))
+        .unwrap_or(Number::Lit(0.0));
+    let digits = fields
+        .get(8)
+        .and_then(|s| s.trim().parse::<u8>().ok())
+        .unwrap_or(0);
+
+    Ok(ConstantDef {
+        name: name.to_string(),
+        page: 0,
+        offset: 0,
+        kind: ConstantKind::Array { elem, shape },
+        scale,
+        translate,
+        units,
+        low,
+        high,
+        digits,
+    })
+}
+
+/// `[PcVariables]` bits: `name = bits, TYPE, [lo:hi], "option0", "option1", ...`
+/// (no offset field). Same Wall #3 discovery as [`parse_array_no_offset`] —
+/// real speeduino.ini's `[PcVariables]` uses `bits` extensively (e.g.
+/// `tsCanId`, `idleUnits`). A `$name`-style macro-list reference in place of
+/// a quoted option (e.g. `algorithmNames = bits, U08, [0:2],
+/// $loadSourceNames`) is captured verbatim as a single option string —
+/// `$name` macro-list expansion is out of scope (see `preprocessor.rs`'s
+/// documented limitation), so this degrades gracefully rather than erroring.
+fn parse_bits_no_offset(name: &str, fields: &[String]) -> crate::Result<ConstantDef> {
+    let storage = fields
+        .get(1)
+        .and_then(|s| parse_scalar_type(s))
+        .ok_or_else(|| invalid(name, "unrecognised bits storage type"))?;
+    let (bit_lo, bit_hi) = fields
+        .get(2)
+        .and_then(|s| parse_bit_range(s))
+        .ok_or_else(|| invalid(name, "unparseable bit range"))?;
+    let options: Vec<String> = fields.iter().skip(3).map(|s| unquote(s)).collect();
+
+    Ok(ConstantDef {
+        name: name.to_string(),
+        page: 0,
+        offset: 0,
+        kind: ConstantKind::Bits {
+            storage,
+            bit_lo,
+            bit_hi,
+            options,
+        },
+        scale: Number::Lit(1.0),
+        translate: Number::Lit(0.0),
+        units: String::new(),
+        low: Number::Lit(0.0),
+        high: Number::Lit(0.0),
+        digits: 0,
+    })
+}
+
+/// `[PcVariables]` string: `name = string, ENCODING, LENGTH` (no offset
+/// field — simpler than the with-offset `[Constants]` grammar, which
+/// inserts an offset before `LENGTH`). Same Wall #3 discovery — real
+/// speeduino.ini's `[PcVariables]` declares many `string` entries (e.g.
+/// `AUXin00Alias`, `prgm_out00Alias`).
+fn parse_string_no_offset(name: &str, fields: &[String]) -> crate::Result<ConstantDef> {
+    let len = fields
+        .get(2)
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .ok_or_else(|| invalid(name, "unparseable string length"))?;
+
+    Ok(ConstantDef {
+        name: name.to_string(),
+        page: 0,
+        offset: 0,
+        kind: ConstantKind::Text { len },
+        scale: Number::Lit(1.0),
+        translate: Number::Lit(0.0),
+        units: String::new(),
+        low: Number::Lit(0.0),
+        high: Number::Lit(0.0),
+        digits: 0,
+    })
+}
+
 /// `name = array, TYPE, offset, [shape], units, scale, translate, low, high, digits`
 fn parse_array(
     name: &str,
@@ -395,7 +519,7 @@ fn parse_array(
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(elem) * shape.rows * shape.cols);
+    *running_offset = OffsetCounter::Known(offset);
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -441,7 +565,7 @@ fn parse_bits(
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let options: Vec<String> = fields.iter().skip(4).map(|s| unquote(s)).collect();
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(storage));
+    *running_offset = OffsetCounter::Known(offset);
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -487,7 +611,7 @@ fn parse_string(
         .and_then(|s| s.trim().parse::<usize>().ok())
         .ok_or_else(|| invalid(name, "unparseable string length"))?;
 
-    *running_offset = OffsetCounter::Known(offset + len);
+    *running_offset = OffsetCounter::Known(offset);
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),

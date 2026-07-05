@@ -101,6 +101,27 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
                 endianness = parse_endianness(value);
                 continue;
             }
+            // TunerStudio metadata / comms keys living in [Constants] (real
+            // speeduino.ini l.240-274). Comms keys are consumed by
+            // `parse_comms`' scattered scan; the rest are recorded-deferred
+            // (m4-decisions) — neither is an unknown *constant*, so no
+            // diagnostic and no page-counter poison.
+            "pageIdentifier"
+            | "pageReadCommand"
+            | "pageValueWrite"
+            | "burnCommand"
+            | "blockingFactor"
+            | "blockReadTimeout"
+            | "interWriteDelay"
+            | "pageActivationDelay"
+            | "messageEnvelopeFormat"
+            | "crc32CheckCommand"
+            | "tableCrcCommand"
+            | "pageChunkWrite"
+            | "tsWriteBlocks"
+            | "delayAfterPortOpen"
+            | "readSdCompressed"
+            | "restrictSquirtRelationship" => continue,
             _ => {}
         }
 

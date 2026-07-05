@@ -70,6 +70,41 @@ fn returns_error_when_signature_is_absent() {
 }
 
 #[test]
+fn comms_keys_scattered_into_constants_and_output_channels() {
+    // Layout mirrors reference/speeduino.ini @ 0832dc1d l.4-10 + l.240-274 + l.5352-5353.
+    let ini = r#"
+[MegaTune]
+   queryCommand   = "Q"
+   signature      = "speeduino 202504-dev"
+   versionInfo    = "S"
+
+[Constants]
+    pageSize            = 128,   288
+    pageReadCommand     = "p%2i%2o%2c", "p%2i%2o%2c"
+    pageValueWrite      = "M%2i%2o%2c%v", "M%2i%2o%2c%v"
+    burnCommand         = "b%2i", "b%2i"
+    blockingFactor      = 121
+    blockReadTimeout    = 2000
+
+page = 1
+      reqFuel    = scalar, U16,  0, "ms",   0.1,  0.0,  0.0,  6553.5,  1
+
+[OutputChannels]
+  ochGetCommand    = "r\$tsCanId\x30%2o%2c"
+  ochBlockSize     =  139
+"#;
+    let comms = opentune_ini::parse_comms(ini).expect("scattered keys must resolve");
+    assert_eq!(comms.signature, "speeduino 202504-dev");
+    assert_eq!(comms.page_read_command, "p%2i%2o%2c"); // first list element
+    assert_eq!(comms.page_value_write, "M%2i%2o%2c%v");
+    assert_eq!(comms.burn_command, "b%2i");
+    assert_eq!(comms.blocking_factor, 121);
+    assert_eq!(comms.block_read_timeout_ms, 2000);
+    assert_eq!(comms.och_get_command, r"r\$tsCanId\x30%2o%2c");
+    assert_eq!(comms.och_block_size, 139);
+}
+
+#[test]
 fn parses_tuner_studio_section_alias() {
     // Some firmwares use [TunerStudio] instead of [MegaTune].
     let ini = "[TunerStudio]\n\
