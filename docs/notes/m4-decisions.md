@@ -191,3 +191,18 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   `Dashboard.test.tsx`, `DialogEngine.test.tsx`) potrzebowały jednoliniowej
   poprawki (`curves: []`) obok istniejącego `tables: []` — `DefinitionDto`
   ma `curves` jako required `Vec`, nie `Option`, symetrycznie z `tables`.
+
+- **`lambdaTargetTables` i `[WueAnalyze]` — świadomie odroczone** (to jest
+  wpis, do którego odsyłają doc-comments `ve_analyze.rs` i
+  `ve_analyze_parser.rs`; recenzja Task 2 wykryła, że odsyłacz wisiał bez
+  celu — domknięte tutaj). Klucz `lambdaTargetTables` (lista tabel celu
+  lambda/AFR obok `veAnalyzeMap`) jest cicho pomijany — zamrożony
+  `VeAnalyzeDef` reprezentuje pojedynczy mapping `veAnalyzeMap`, który w
+  gałęzi `#else` realnego pliku (nasz target: AFR, nie lambda) niesie
+  wszystko, czego M4 Task 11 (deterministyczny `ve_analyze`) potrzebuje.
+  `[WueAnalyze]` (analog dla warmup enrichment) nie jest parsowany w ogóle —
+  parser dopasowuje sekcję ścisłym `inner.trim() == "VeAnalyze"`, więc
+  `[WueAnalyze]` nie jest połykany (dowód: golden gate zielony bez wpisu w
+  allowliście dla kluczy `wueAnalyzeMap`). Oba do ewentualnego podjęcia,
+  gdy analiza WUE/lambda wejdzie do zakresu (post-M4); rozszerzenie
+  `VeAnalyzeDef` będzie wtedy addytywne.
