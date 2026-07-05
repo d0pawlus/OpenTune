@@ -10,8 +10,8 @@
 //! both the correct API boundary and what keeps the generated bindings valid.
 
 use opentune_ini::{
-    ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, FrontPageDef, GaugeDef,
-    IndicatorDef, MenuDef, Number, TableDef,
+    ConstantDef, ConstantKind, CurveAxis, CurveDef, Definition, DialogDef, FieldKind, FrontPageDef,
+    GaugeDef, IndicatorDef, MenuDef, Number, TableDef,
 };
 use opentune_model::{CellDiff, FieldDiff, Value};
 
@@ -28,6 +28,8 @@ pub struct DefinitionDto {
     pub constants: Vec<ConstantDto>,
     /// Table editors (rendered as a minimal grid in M2; full editor is M4).
     pub tables: Vec<TableDto>,
+    /// Curve (2-D) editors (M4).
+    pub curves: Vec<CurveDto>,
     /// `[GaugeConfigurations]` entries backing the dashboard (M3).
     pub gauges: Vec<GaugeDto>,
     /// `[FrontPage]` — the default dashboard layout (M3).
@@ -110,9 +112,40 @@ pub enum ConstantKindDto {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct TableDto {
     pub name: String,
+    pub title: String,
+    pub page: u32,
     pub x_bins: String,
+    /// Output channel driving the live X cursor ("" when the INI names none).
+    pub x_channel: String,
     pub y_bins: String,
+    pub y_channel: String,
     pub z: String,
+    pub xy_labels: Vec<String>,
+    pub up_down_label: Vec<String>,
+    pub help: String,
+}
+
+/// Curve axis bounds when literal (an `{expr}` bound resolves to `None` —
+/// the frontend falls back to data extents).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct AxisDto {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub divisions: u32,
+}
+
+/// A curve editor definition (M4).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CurveDto {
+    pub name: String,
+    pub title: String,
+    pub column_labels: Vec<String>,
+    pub x_axis: Option<AxisDto>,
+    pub y_axis: Option<AxisDto>,
+    pub x_bins: String,
+    pub x_channel: String,
+    pub y_bins: String,
+    pub gauge: String,
 }
 
 /// A gauge's display rules (title, unit label, thresholds, digits) — the UI
@@ -174,6 +207,7 @@ impl From<&Definition> for DefinitionDto {
             dialogs: def.dialogs.iter().map(DialogDto::from).collect(),
             constants: def.constants.iter().map(ConstantDto::from).collect(),
             tables: def.tables.iter().map(TableDto::from).collect(),
+            curves: def.curves.iter().map(CurveDto::from).collect(),
             gauges: def.gauges.iter().map(GaugeDto::from).collect(),
             frontpage: FrontPageDto::from(&def.frontpage),
         }
@@ -258,9 +292,42 @@ impl From<&TableDef> for TableDto {
     fn from(t: &TableDef) -> Self {
         Self {
             name: t.name.clone(),
+            title: t.title.clone(),
+            page: t.page,
             x_bins: t.x_bins.clone(),
+            x_channel: t.x_channel.clone(),
             y_bins: t.y_bins.clone(),
+            y_channel: t.y_channel.clone(),
             z: t.z.clone(),
+            xy_labels: t.xy_labels.clone(),
+            up_down_label: t.up_down_label.clone(),
+            help: t.help.clone(),
+        }
+    }
+}
+
+impl From<&CurveDef> for CurveDto {
+    fn from(c: &CurveDef) -> Self {
+        Self {
+            name: c.name.clone(),
+            title: c.title.clone(),
+            column_labels: c.column_labels.clone(),
+            x_axis: c.x_axis.as_ref().map(AxisDto::from),
+            y_axis: c.y_axis.as_ref().map(AxisDto::from),
+            x_bins: c.x_bins.clone(),
+            x_channel: c.x_channel.clone(),
+            y_bins: c.y_bins.clone(),
+            gauge: c.gauge.clone(),
+        }
+    }
+}
+
+impl From<&CurveAxis> for AxisDto {
+    fn from(a: &CurveAxis) -> Self {
+        Self {
+            min: lit(&a.min),
+            max: lit(&a.max),
+            divisions: a.divisions,
         }
     }
 }

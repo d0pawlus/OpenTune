@@ -15,44 +15,50 @@ use opentune_ini::parse_definition;
 const REAL_INI: &str = include_str!("fixtures/speeduino-real-0832dc1d.ini");
 
 /// Substrings identifying recorded-deferred constructs (M2/M4 decisions):
-/// dialog widgets with no frozen representation, menu grouping, and any
-/// further entries added ONLY together with an m4-decisions record.
+/// dialog widgets with no frozen representation, and any further entries
+/// added ONLY together with an m4-decisions record.
+///
+/// `groupMenu`/`groupChildMenu` were anticipated by the Task 1 brief (real
+/// file does use them, l.2014-2019) but are deliberately NOT listed here:
+/// `ui_parser.rs`'s `parse_menu_line` already tolerates them silently (no
+/// representable `MenuItem` target) and they never produce a `Diagnostic` —
+/// 0 matches, confirmed by running this gate (M4 Task 2 cleanup). A dead
+/// allowlist entry only hides a future real gap under a name that matches
+/// nothing, so it was dropped rather than kept "just in case".
 ///
 /// See `docs/notes/m4-decisions.md` for the one-line justification behind
-/// every entry below `groupChildMenu` (added running this gate for real;
-/// the four above were anticipated by the Task 1 brief and are exercised
-/// by real `[UserDefined]` `commandButton`/`settingSelector`/`groupMenu`/
-/// `groupChildMenu` lines, e.g. l.2014-2019, l.2689, l.3279).
+/// every entry below.
 const ALLOWED_DIAGNOSTICS: &[&str] = &[
     "commandButton",
     "settingSelector",
-    "groupMenu",
-    "groupChildMenu",
     // Dialog widgets with no frozen `FieldKind` representation (M2's
-    // `ui.rs` shape is frozen; Task 2+ scope to extend it).
+    // `ui.rs` shape is frozen; a future task's scope to extend it).
     "`settingOption`", // named preset consumed by settingSelector, not itself bindable
-    "indicator",       // status-light widget (also covers `indicatorPanel`)
-    "`text`",          // static help/informational text block
-    "`graphLine`",     // embedded live-graph series definition
-    "`liveGraph`",     // embedded live-graph widget container
-    "`help`",          // help-topic link, informational only
-    "`webHelp`",       // web help link, informational only
-    "`gauge`",         // embedded gauge widget referenced inside a dialog panel
+    // Split from a single bare `indicator` substring (M4 Task 2 cleanup):
+    // the bare form could accidentally swallow an unrelated future
+    // `[Constants]` diagnostic naming a `...Indicator...` constant. These
+    // two precise, backtick-delimited forms are disjoint (an
+    // `indicatorPanel` keyword's detail never also contains the exact
+    // substring `` `indicator` ``) and together still cover all 7 real-file
+    // occurrences (6× `indicator`, 1× `indicatorPanel`, l.3195-3201).
+    "`indicator`",      // status-light widget
+    "`indicatorPanel`", // status-light widget GROUP container
+    "`text`",           // static help/informational text block
+    "`graphLine`",      // embedded live-graph series definition
+    "`liveGraph`",      // embedded live-graph widget container
+    "`help`",           // help-topic link, informational only
+    "`webHelp`",        // web help link, informational only
+    "`gauge`",          // embedded gauge widget referenced inside a dialog panel
     // Pre-existing M2 degrade path (not a new gap): a label-only
     // `displayOnlyField` used as an inline dialog comment/spacer, with no
     // bound constant name (real file l.2962, l.3442).
     "displayOnlyField has no bound constant name",
-    // Curve axis names resolve only against `[Constants]`
-    // (`parse_ui(&preprocessed, &parsed.constants)`); `wueAFR`/
-    // `wueRecommended` are `[PcVariables]`-scoped (warmup analyzer curves,
-    // real file l.4913/l.4921). Widening axis resolution to also search
-    // `pc_variables` is Task 2+ grammar scope, not a Task 1 wall.
-    "`wueAFR`",
-    "`wueRecommended`",
     // Real-file quirk: `systemTempGauge`'s Fahrenheit branch (l.5262) is
     // missing the commas between `systemTemp`, `"System Temp"`, and `"F"`
-    // — an upstream INI typo, not a parser gap. Same tolerance spirit as
-    // the `blockingFactor` `[121, 251]` assertion above.
+    // — an upstream INI typo, not a parser gap, and out of M4 Task 2's
+    // [TableEditor]/[CurveEditor]/[VeAnalyze] grammar scope
+    // (`gauges_parser.rs` untouched). Same tolerance spirit as the
+    // `blockingFactor` `[121, 251]` assertion above.
     "`systemTempGauge`",
 ];
 
@@ -101,6 +107,25 @@ fn real_speeduino_ini_parses_diagnostic_clean() {
     );
     assert!(!def.tables.is_empty() && !def.curves.is_empty());
     assert!(!def.gauges.is_empty());
+
+    // Task 2: full table/curve grammar against the real file.
+    let ve = def.table("veTable1Tbl").expect("veTable1Tbl");
+    assert_eq!(ve.page, 2);
+    assert_eq!(
+        (ve.x_channel.as_str(), ve.y_channel.as_str()),
+        ("rpm", "fuelLoad")
+    );
+    assert_eq!(ve.title, "VE Table");
+    assert_eq!(ve.grid_orient, vec![250.0, 0.0, 340.0]);
+    assert_eq!(ve.z, "veTable");
+    let dwell = def.curve("dwell_correction_curve").expect("dwell curve");
+    assert!(!dwell.title.is_empty());
+    assert!(dwell.x_axis.is_some() && dwell.y_axis.is_some());
+    // Task 2: [VeAnalyze] binding (the #else / AFR branch wins by default).
+    let va = def.ve_analyze.as_ref().expect("[VeAnalyze]");
+    assert_eq!(va.maps[0].table, "veTable1Tbl");
+    assert_eq!(va.maps[0].lambda_channel, "afr");
+    assert!(va.filters.len() >= 9, "got {}", va.filters.len());
 
     // Diagnostic-clean modulo the recorded allowlist.
     let unexpected: Vec<_> = def

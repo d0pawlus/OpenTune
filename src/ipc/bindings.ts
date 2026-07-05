@@ -94,6 +94,16 @@ export type AppInfo = {
 	version: string,
 };
 
+/**
+ *  Curve axis bounds when literal (an `{expr}` bound resolves to `None` —
+ *  the frontend falls back to data extents).
+ */
+export type AxisDto = {
+	min: number | null,
+	max: number | null,
+	divisions: number,
+};
+
 /**  IPC projection of [`opentune_model::CellDiff`]. */
 export type CellDiffDto = {
 	index: number,
@@ -169,6 +179,19 @@ export type ConstantKindDto =
 /**  A fixed-length text field. */
 "Text";
 
+/**  A curve editor definition (M4). */
+export type CurveDto = {
+	name: string,
+	title: string,
+	column_labels: string[],
+	x_axis: AxisDto | null,
+	y_axis: AxisDto | null,
+	x_bins: string,
+	x_channel: string,
+	y_bins: string,
+	gauge: string,
+};
+
 /**  The UI-facing projection of a [`Definition`]. */
 export type DefinitionDto = {
 	/**  The firmware signature, for display. */
@@ -181,6 +204,8 @@ export type DefinitionDto = {
 	constants: ConstantDto[],
 	/**  Table editors (rendered as a minimal grid in M2; full editor is M4). */
 	tables: TableDto[],
+	/**  Curve (2-D) editors (M4). */
+	curves: CurveDto[],
 	/**  `[GaugeConfigurations]` entries backing the dashboard (M3). */
 	gauges: GaugeDto[],
 	/**  `[FrontPage]` — the default dashboard layout (M3). */
@@ -315,9 +340,17 @@ export type RealtimeFrameEvent = {
 /**  A table editor definition (bin/cell constant references). */
 export type TableDto = {
 	name: string,
+	title: string,
+	page: number,
 	x_bins: string,
+	/**  Output channel driving the live X cursor ("" when the INI names none). */
+	x_channel: string,
 	y_bins: string,
+	y_channel: string,
 	z: string,
+	xy_labels: string[],
+	up_down_label: string[],
+	help: string,
 };
 
 /**

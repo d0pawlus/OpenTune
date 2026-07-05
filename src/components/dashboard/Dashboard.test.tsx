@@ -45,6 +45,7 @@ const definition = (overrides?: Partial<DefinitionDto>): DefinitionDto => ({
   dialogs: [],
   constants: [],
   tables: [],
+  curves: [],
   gauges: [
     gauge("rpmGauge", "rpm", "Engine Speed"),
     gauge("cltGauge", "clt", "Coolant"),

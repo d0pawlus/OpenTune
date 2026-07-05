@@ -179,6 +179,9 @@ mod binding_gen {
             "DefinitionDto",
             "DialogDto",
             "ConstantKindDto",
+            "CurveDto",
+            "AxisDto",
+            "x_channel",
         ] {
             assert!(
                 contents.contains(needle),

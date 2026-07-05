@@ -71,7 +71,8 @@ dopisane do `ALLOWED_DIAGNOSTICS` (`tests/real_ini.rs`) z uzasadnieniem:
 - **`settingOption`** (39×) — nazwany preset konsumowany przez
   `settingSelector`, sam nie jest bindowalnym polem; brak zamrożonego
   `FieldKind`. Task 2+ gramatyka.
-- **`indicator`** (6×, obejmuje też `indicatorPanel` przez podciąg) — widget
+- **`indicator`** (7×: 6× `indicator` + 1× `indicatorPanel`, ta druga ujęta
+  przez podciąg — poprawka licznika w Task 2, wcześniej błędnie 6×) — widget
   lampki stanu (kolor wł./wył.); brak zamrożonego `FieldKind`.
 - **`` `text` ``** (4×) — statyczny blok tekstu pomocniczego w dialogu.
 - **`` `graphLine` ``** (3×) — definicja serii dla wbudowanego live-graph.
@@ -95,6 +96,8 @@ dopisane do `ALLOWED_DIAGNOSTICS` (`tests/real_ini.rs`) z uzasadnieniem:
   rozpoznawania osi krzywych/tabel o `pc_variables` to gramatyka Task 2+,
   nie ściana Task 1. `Definition::constant` też celowo nie przeszukuje
   `pc_variables` (osobna przestrzeń nazw, udokumentowane w `definition.rs`).
+  **Rozwiązane w Task 2** — patrz sekcja "Task 2" poniżej; te dwa wpisy
+  usunięte z `ALLOWED_DIAGNOSTICS` (już nie matchują niczego).
 - **`` `systemTempGauge` ``** — realny błąd w górnym pliku: gałąź Fahrenheit
   (l.5262) `systemTempGauge = systemTemp     "System Temp"         "F", ...`
   ma brakujące przecinki między nazwą kanału, tytułem i jednostką (literówka
@@ -108,3 +111,83 @@ dopisane do `ALLOWED_DIAGNOSTICS` (`tests/real_ini.rs`) z uzasadnieniem:
   golden-gate test + ten dokument. `git add -A` z briefu pominięte świadomie —
   w drzewie roboczym leżała niezwiązana, wcześniejsza zmiana w `package.json`
   (`allowScripts`) spoza zakresu tego zadania; dodawane tylko konkretne pliki.
+
+## Task 2 — pełna gramatyka `[TableEditor]`/`[CurveEditor]` + `[VeAnalyze]`
+
+Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
+(resolutions z Task 1 review), zwinięty do Task 2:
+
+- **`find_raw`/scattered-comms fix (osobny commit `fix(ini):` PRZED
+  `feat(ini):`)** — `find_raw` jest last-wins, ale `extract_scattered_comms`
+  była doklejana PO parach z sekcji głównej, więc przy kluczu zadeklarowanym
+  w obu miejscach scattered wygrywałby — sprzecznie z komentarzem
+  twierdzącym "first-wins keeps the MegaTune value". Wcześniej nieosiągalne
+  (realny plik nigdy nie deklaruje żadnego z 8 `SCATTERED_COMMS_KEYS` w
+  `[MegaTune]`/`[TunerStudio]` — zweryfikowane grepem, stąd zmiana
+  bezpieczna/no-op na golden gate). Naprawione: `extract_scattered_comms`
+  budowane PIERWSZE, potem `extend`-owane parami z sekcji głównej, żeby
+  last-wins trafiał na wartość `[MegaTune]`/`[TunerStudio]`. Przypięte nowym
+  testem `megatune_value_wins_when_key_is_also_scattered_into_constants`
+  (`tests/parse_comms.rs`) z jawnie różnymi wartościami w obu miejscach.
+
+- **Cross-reference tabel/krzywych rozszerzony o `[PcVariables]`** —
+  `ui_table_curve_parser.rs`'s `is_known_constant` sprawdza teraz OBA
+  `constants` i `pc_variables` (wcześniej tylko `constants`, przekazywane
+  przez `parse_ui`/`definition.rs`). To usuwa dokładnie 2 wpisy z golden-gate
+  allowlisty: `` `wueAFR` ``/`` `wueRecommended` `` (potwierdzone: obie nazwy
+  są w `[PcVariables]`, l.71/75 realnego pliku; po zmianie 0 diagnostyk dla
+  tych dwóch krzywych). `` `systemTempGauge` `` (1 diagnostyka
+  `[GaugeConfigurations]`) POZOSTAJE — to literówka górnego pliku (brakujące
+  przecinki, l.5262), `gauges_parser.rs` poza zakresem plików Task 2, nie
+  naprawiane tutaj.
+
+- **`groupMenu`/`groupChildMenu` usunięte z allowlisty** — zweryfikowane
+  uruchomieniem golden gate z tymczasowym dumpem diagnostyk: 0 dopasowań.
+  `ui_parser.rs`'s `parse_menu_line` już ciche je toleruje (brak
+  reprezentowalnego celu pod zamrożonym `MenuItem`); wpisy w allowliście
+  były martwe od początku (Task 1 przewidział je z brief 1.7, ale menu
+  parser konsumuje je bez diagnostyki).
+
+- **Bare `indicator` rozbity na `` `indicator` ``/`` `indicatorPanel` ``** —
+  te dwie precyzyjne, otoczone backtickami formy są rozłączne (detal dla
+  `indicatorPanel` nigdy nie zawiera dokładnego podciągu `` `indicator` ``)
+  i razem nadal pokrywają wszystkie 7 realnych wystąpień (6× `indicator` +
+  1× `indicatorPanel`, l.3195-3201). Poprawiony też literówka licznika w
+  sekcji powyżej (6× → 7×; `indicatorPanel` był już liczony przez podciąg,
+  ale suma była błędnie podana jako 6 zamiast 7).
+
+- **Widening resolution nie dotyczy `Definition::constant()`** —
+  `is_known_constant` w `ui_table_curve_parser.rs` to lokalna, wyłącznie
+  diagnostyczna pomoc; publiczne `Definition::constant()`/`pc_variables`
+  jako osobna przestrzeń nazw pozostają bez zmian (`definition.rs`).
+
+- **`warmup_analyzer_curve` — multi-series curve, nie do przedstawienia pod
+  zamrożonym `CurveDef`** (real file l.4915-4923): drugi `yBins =
+  wueRecommended` (po `yBins = wueRates`) plus dwa `lineLabel = "..."` —
+  legenda dla dwuseriowej krzywej (bieżąca WUE vs. rekomendowana z
+  analizatora). Zamrożony `CurveDef` ma jeden slot `y_bins`/brak pola na
+  serie/legendy. Zdecydowano: NIE przerabiać zamrożonego kształtu.
+  `lineLabel` cicho ignorowany (brak celu — ten sam duch co `topicHelp` w
+  `[CurveEditor]`, CurveDef nie ma pola `help`); drugi `yBins` po prostu
+  nadpisuje pierwszy (last-wins, jak każdy inny atrybut pojedynczej
+  wartości w tym module) — `y_bins` tej krzywej ostatecznie = `wueRecommended`,
+  nie `wueRates`. Zero nowych diagnostyk (zgodne z golden gate). Zgłoszone
+  do kontrolera jako ograniczenie warte rozważenia w przyszłym zadaniu, gdy
+  `[TableEditor]`/`[CurveEditor]` będą renderowane (Tasks 5/6): jeśli
+  multi-series ma znaczenie funkcjonalne, `CurveDef` będzie wymagał
+  rozszerzenia (poza zakresem Task 2 — kształty są zamrożone).
+
+- **Port-note (`ui_table_curve_parser.rs`) rozszerzony** o pełny zestaw pól
+  hyper-tuner (`Table`/`Curve` z `config.ts:153-176`), `© 2021 Piotr
+  Rogowski`, i notatkę że `x_channel`/`y_channel` to nasze rozszerzenie
+  (hyper-tuner capturuje 2. token `xBins`/`yBins` ale nigdy go nie używa).
+
+- **DTO/bindings** — `TableDto` rozszerzone (`title`, `page`, `x_channel`,
+  `y_channel`, `xy_labels`, `up_down_label`, `help`; `grid_height`/
+  `grid_orient`/`map3d_id` świadomie NIE projektowane — nieużywane przez
+  frontend); nowe `AxisDto`/`CurveDto`; `DefinitionDto.curves` (Vec, nie
+  Option — jak `tables`). Bindings.ts się zmienił (spodziewane); 3 istniejące
+  frontendowe fixtures (`App.integration.test.tsx`,
+  `Dashboard.test.tsx`, `DialogEngine.test.tsx`) potrzebowały jednoliniowej
+  poprawki (`curves: []`) obok istniejącego `tables: []` — `DefinitionDto`
+  ma `curves` jako required `Vec`, nie `Option`, symetrycznie z `tables`.

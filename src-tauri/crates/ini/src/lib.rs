@@ -39,6 +39,7 @@ mod ui_parser;
 mod ui_table_curve_parser;
 mod ui_tokens;
 mod ve_analyze;
+mod ve_analyze_parser;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};

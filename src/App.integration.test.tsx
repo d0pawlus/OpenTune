@@ -41,6 +41,7 @@ const definition: DefinitionDto = {
   ],
   constants: [],
   tables: [],
+  curves: [],
   gauges: [
     {
       name: "rpmGauge",

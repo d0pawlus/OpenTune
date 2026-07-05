@@ -11,6 +11,7 @@ use crate::gauges_parser::parse_gauges;
 use crate::output_channels_parser::parse_output_channels;
 use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
+use crate::ve_analyze_parser::parse_ve_analyze;
 use crate::{
     CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, FrontPageDef, GaugeDef, IniError,
     MenuDef, OutputChannelDef, TableDef, VeAnalyzeDef,
@@ -111,9 +112,10 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
 
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
-    let ui = parse_ui(&preprocessed, &parsed.constants);
+    let ui = parse_ui(&preprocessed, &parsed.constants, &parsed.pc_variables);
     let output_channels = parse_output_channels(&preprocessed);
     let gauges = parse_gauges(&preprocessed, &output_channels.channels);
+    let ve_analyze = parse_ve_analyze(&preprocessed);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
     // `[OutputChannels]` may declare its own `ochGetCommand` (the windowed
@@ -131,6 +133,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     diagnostics.extend(ui.diagnostics);
     diagnostics.extend(output_channels.diagnostics);
     diagnostics.extend(gauges.diagnostics);
+    diagnostics.extend(ve_analyze.diagnostics);
 
     Ok(Definition {
         comms,
@@ -145,7 +148,6 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         output_channels: output_channels.channels,
         gauges: gauges.gauges,
         frontpage: gauges.frontpage,
-        // Task 2 fills the `[VeAnalyze]` parser.
-        ve_analyze: None,
+        ve_analyze: ve_analyze.def,
     })
 }
