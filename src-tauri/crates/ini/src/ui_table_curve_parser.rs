@@ -37,9 +37,19 @@ pub(crate) fn parse_table_line(
             };
             tables.push(TableDef {
                 name: name.clone(),
+                map3d_id: String::new(),
+                title: String::new(),
+                page: 0,
                 x_bins: String::new(),
+                x_channel: String::new(),
                 y_bins: String::new(),
+                y_channel: String::new(),
                 z: String::new(),
+                xy_labels: Vec::new(),
+                grid_height: 0.0,
+                grid_orient: Vec::new(),
+                up_down_label: Vec::new(),
+                help: String::new(),
             });
         }
         "xBins" => set_table_bin(value, tables, constants, diagnostics, TableBin::X),
@@ -106,8 +116,15 @@ pub(crate) fn parse_curve_line(
             };
             curves.push(CurveDef {
                 name: name.clone(),
+                title: String::new(),
+                column_labels: Vec::new(),
+                x_axis: None,
+                y_axis: None,
                 x_bins: String::new(),
+                x_channel: String::new(),
                 y_bins: String::new(),
+                gauge: String::new(),
+                size: Vec::new(),
             });
         }
         "xBins" => set_curve_bin(value, curves, constants, diagnostics, true),

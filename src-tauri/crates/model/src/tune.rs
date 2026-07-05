@@ -170,6 +170,13 @@ impl Tune {
         Ok(())
     }
 
+    /// Set flat row-major cells of a named array constant. ONE undo [`Edit`]
+    /// per call (a paste/smooth gesture is one undo step). Validates every
+    /// index/value before touching any byte.
+    pub fn set_cells(&mut self, _name: &str, _cells: &[(u32, f64)]) -> Result<(), ModelError> {
+        todo!("M4 Task 3")
+    }
+
     /// Undo the most recent edit. Returns `false` if there was nothing to
     /// undo.
     ///

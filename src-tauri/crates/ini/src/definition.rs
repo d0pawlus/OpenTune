@@ -13,7 +13,7 @@ use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
 use crate::{
     CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, FrontPageDef, GaugeDef, IniError,
-    MenuDef, OutputChannelDef, TableDef,
+    MenuDef, OutputChannelDef, TableDef, VeAnalyzeDef,
 };
 use std::collections::HashSet;
 
@@ -62,6 +62,8 @@ pub struct Definition {
     /// `[FrontPage]` — the default dashboard layout. Empty `Vec`s when the INI
     /// declares no `[FrontPage]`.
     pub frontpage: FrontPageDef,
+    /// `[VeAnalyze]` binding; `None` when the INI declares none.
+    pub ve_analyze: Option<VeAnalyzeDef>,
 }
 
 impl Definition {
@@ -76,6 +78,16 @@ impl Definition {
     /// Look up an output channel by name (mirrors [`Definition::constant`]).
     pub fn output_channel(&self, name: &str) -> Option<&OutputChannelDef> {
         self.output_channels.iter().find(|c| c.name() == name)
+    }
+
+    /// Look up a table editor by name (mirrors [`Definition::constant`]).
+    pub fn table(&self, name: &str) -> Option<&TableDef> {
+        self.tables.iter().find(|t| t.name == name)
+    }
+
+    /// Look up a curve editor by name (mirrors [`Definition::constant`]).
+    pub fn curve(&self, name: &str) -> Option<&CurveDef> {
+        self.curves.iter().find(|c| c.name == name)
     }
 }
 
@@ -133,5 +145,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         output_channels: output_channels.channels,
         gauges: gauges.gauges,
         frontpage: gauges.frontpage,
+        // Task 2 fills the `[VeAnalyze]` parser.
+        ve_analyze: None,
     })
 }

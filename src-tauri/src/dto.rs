@@ -358,6 +358,59 @@ impl From<CellDiff> for CellDiffDto {
     }
 }
 
+// ── M4: table cell edits / capture / VE analysis (Task 0 seam, Tasks 3/8/11) ─
+
+/// One flat cell edit for [`crate::owner::Command::SetCells`] — command
+/// *input*, hence `Deserialize` in addition to the usual `Serialize`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct CellEditDto {
+    pub index: u32,
+    pub value: f64,
+}
+
+/// The realtime-capture ring buffer's status (Task 8).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CaptureStatusDto {
+    pub capturing: bool,
+    pub sample_count: u32,
+    pub duration_ms: f64,
+    pub dropped: u32,
+}
+
+/// IPC projection of `opentune_analysis::CellResult` (Task 11 wires the
+/// conversion — `opentune-analysis` is not yet a dependency of this crate).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CellResultDto {
+    pub current: f64,
+    pub proposed: f64,
+    pub delta_pct: f64,
+    pub hit_weight: f64,
+    pub sample_count: u32,
+    pub confidence: f64,
+}
+
+/// IPC projection of `opentune_analysis::FilterCount` (Task 11 wires the
+/// conversion).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct FilterCountDto {
+    pub id: String,
+    pub label: String,
+    pub count: u32,
+}
+
+/// IPC projection of `opentune_analysis::VeAnalysisReport` (Task 11 wires
+/// the conversion), naming the table it corrects.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct VeAnalysisReportDto {
+    pub table: String,
+    pub x_len: u32,
+    pub y_len: u32,
+    pub cells: Vec<CellResultDto>,
+    pub filtered: Vec<FilterCountDto>,
+    pub total_samples: u32,
+    pub used_samples: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

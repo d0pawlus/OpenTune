@@ -11,7 +11,7 @@ use opentune_ini::{
     CommsSettings, ConstantDef, ConstantKind, Definition, Endianness, EnvelopeFormat, FrontPageDef,
     Number, PageDef, ScalarType,
 };
-use opentune_model::Tune;
+use opentune_model::{ModelError, Tune};
 
 fn hand_built_comms() -> CommsSettings {
     CommsSettings {
@@ -65,6 +65,7 @@ fn hand_built_definition() -> Definition {
             gauge_slots: Vec::new(),
             indicators: Vec::new(),
         },
+        ve_analyze: None,
     }
 }
 
@@ -83,4 +84,12 @@ fn new_tune_zeroes_pages_sized_from_definition() {
     let bytes = tune.page_bytes(1);
     assert_eq!(bytes.len(), def.pages[0].size);
     assert!(bytes.iter().all(|&b| b == 0));
+}
+
+#[test]
+#[allow(clippy::type_complexity)]
+fn set_cells_signature_is_pinned() {
+    // M4 Task 0: pins the cell-write seam without invoking the `todo!()`
+    // stub body (Task 3 implements it).
+    let _: fn(&mut Tune, &str, &[(u32, f64)]) -> Result<(), ModelError> = Tune::set_cells;
 }

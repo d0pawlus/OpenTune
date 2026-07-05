@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(test)]
 use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
-use crate::dto::{DefinitionDto, FieldDiffDto};
+use crate::dto::{CaptureStatusDto, CellEditDto, DefinitionDto, FieldDiffDto, VeAnalysisReportDto};
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use ops::{build_session, link_drop};
 
@@ -89,6 +89,30 @@ pub enum Command {
     },
     StopRealtime {
         reply: Reply<()>,
+    },
+    /// Set flat cells of a named table's array constant (M4 Task 3).
+    SetCells {
+        name: String,
+        cells: Vec<CellEditDto>,
+        reply: Reply<TuneDirtyEvent>,
+    },
+    /// Start the realtime-capture ring buffer for VE analysis (M4 Task 8).
+    StartCapture {
+        reply: Reply<()>,
+    },
+    /// Stop capturing and return the final status (M4 Task 8).
+    StopCapture {
+        reply: Reply<CaptureStatusDto>,
+    },
+    /// Report the capture ring buffer's current status (M4 Task 8).
+    CaptureStatus {
+        reply: Reply<CaptureStatusDto>,
+    },
+    /// Run the deterministic VE analysis engine against the current capture
+    /// for a named table (M4 Task 11).
+    RunVeAnalyze {
+        table: String,
+        reply: Reply<VeAnalysisReportDto>,
     },
     /// Test-only: hand back the live simulator so tests can drive secl /
     /// reboot scenarios (same access the M2 session tests used directly).
@@ -271,6 +295,24 @@ impl Owner {
                 self.polling = false;
                 self.poller = None;
                 let _ = reply.send(Ok(()));
+            }
+            // M4 Task 0: seams frozen, handlers stubbed until their task
+            // (Task 3 / Task 8 / Task 11). Each still sends exactly one
+            // reply, per the M3 rule.
+            Command::SetCells { reply, .. } => {
+                let _ = reply.send(Err("not implemented (M4)".to_string()));
+            }
+            Command::StartCapture { reply } => {
+                let _ = reply.send(Err("not implemented (M4)".to_string()));
+            }
+            Command::StopCapture { reply } => {
+                let _ = reply.send(Err("not implemented (M4)".to_string()));
+            }
+            Command::CaptureStatus { reply } => {
+                let _ = reply.send(Err("not implemented (M4)".to_string()));
+            }
+            Command::RunVeAnalyze { reply, .. } => {
+                let _ = reply.send(Err("not implemented (M4)".to_string()));
             }
             #[cfg(test)]
             Command::DebugSimulator { reply } => {

@@ -229,6 +229,7 @@ mod tests {
                 gauge_slots: Vec::new(),
                 indicators: Vec::new(),
             },
+            ve_analyze: None,
         }
     }
 

@@ -5,6 +5,8 @@
 //! sections of a TunerStudio-class INI. `visible`/`enable` expressions are
 //! kept as raw strings and evaluated later by the Task 2 `expr` evaluator.
 
+use crate::Number;
+
 /// A top-level menu, containing an ordered list of items.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct MenuDef {
@@ -61,17 +63,48 @@ pub enum FieldKind {
     Gap,
 }
 
-/// A 2-D or 3-D table editor definition (e.g. a fuel or ignition map).
+/// A 2-D/3-D table editor definition. Port shape: hyper-tuner/types
+/// `Table` (config.ts:153-166, MIT © Piotr Rogowski). Bins stay lazy string
+/// names resolved against `[Constants]` by the consumer.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct TableDef {
-    /// The table's display/internal name.
+    /// editor id, e.g. "veTable1Tbl"
     pub name: String,
-    /// The name of the constant providing the X-axis bin values.
+    /// 3-D map id, e.g. "veTable1Map" ("" when absent)
+    pub map3d_id: String,
+    /// display title ("" when absent)
+    pub title: String,
+    /// page number from the table header (0 when absent)
+    pub page: u32,
+    /// X-axis bin constant name
     pub x_bins: String,
-    /// The name of the constant providing the Y-axis bin values.
+    /// live-cursor output channel (2nd xBins token; "" when absent)
+    pub x_channel: String,
+    /// Y-axis bin constant name
     pub y_bins: String,
-    /// The name of the constant providing the Z (cell) values.
+    /// live-cursor output channel (2nd yBins token; "" when absent)
+    pub y_channel: String,
+    /// cell (Z) array constant name
     pub z: String,
+    /// `xyLabels = "RPM", "Fuel Load: "` (empty when absent)
+    pub xy_labels: Vec<String>,
+    /// `gridHeight` (0.0 when absent)
+    pub grid_height: f64,
+    /// `gridOrient = 250, 0, 340` (empty when absent)
+    pub grid_orient: Vec<f64>,
+    /// `upDownLabel = "(RICHER)", "(LEANER)"`
+    pub up_down_label: Vec<String>,
+    /// `topicHelp` URL ("" when absent)
+    pub help: String,
+}
+
+/// One `xAxis`/`yAxis` curve attribute: `min, max, gridDivisions`. Min/max may
+/// be `{ expr }` in real INIs (e.g. under `#if LAMBDA`) → captured as `Number`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CurveAxis {
+    pub min: Number,
+    pub max: Number,
+    pub divisions: u32,
 }
 
 /// A 2-D curve editor definition (e.g. a warmup enrichment curve).
@@ -79,10 +112,23 @@ pub struct TableDef {
 pub struct CurveDef {
     /// The curve's display/internal name.
     pub name: String,
+    /// `curve = name, "title"` ("" when absent)
+    pub title: String,
+    /// `columnLabel = "Temp", "Duty %"`
+    pub column_labels: Vec<String>,
+    pub x_axis: Option<CurveAxis>,
+    pub y_axis: Option<CurveAxis>,
     /// The name of the constant providing the X-axis values.
     pub x_bins: String,
-    /// The name of the constant providing the Y-axis values.
+    /// live-cursor channel (2nd xBins token; "")
+    pub x_channel: String,
+    /// The name of the constant providing the Y-axis values (the editable
+    /// data array).
     pub y_bins: String,
+    /// referenced gauge name ("" when absent)
+    pub gauge: String,
+    /// `size = 400, 400` (empty when absent)
+    pub size: Vec<f64>,
 }
 
 /// A note about part of the INI that was skipped or could not be fully

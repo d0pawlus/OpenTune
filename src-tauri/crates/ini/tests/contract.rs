@@ -8,9 +8,9 @@
 //! types directly rather than calling the `todo!()` parsers.
 
 use opentune_ini::{
-    CommsSettings, ConstantDef, ConstantKind, Definition, DialogDef, DialogField, Endianness,
-    EnvelopeFormat, FieldKind, FrontPageDef, GaugeDef, IndicatorDef, IniError, MenuDef, MenuItem,
-    Number, OutputChannelDef, PageDef, ScalarType,
+    CommsSettings, ConstantDef, ConstantKind, CurveAxis, CurveDef, Definition, DialogDef,
+    DialogField, Endianness, EnvelopeFormat, FieldKind, FrontPageDef, GaugeDef, IndicatorDef,
+    IniError, MenuDef, MenuItem, Number, OutputChannelDef, PageDef, ScalarType, TableDef,
 };
 
 /// A representative Speeduino comms block, field names mirroring the real INI.
@@ -111,8 +111,38 @@ fn hand_built_definition() -> Definition {
                 enable: None,
             }],
         }],
-        tables: vec![],
-        curves: vec![],
+        tables: vec![TableDef {
+            name: "veTable1Tbl".to_string(),
+            map3d_id: "veTable1Map".to_string(),
+            title: "VE Table".to_string(),
+            page: 2,
+            x_bins: "rpmBins".to_string(),
+            x_channel: "rpm".to_string(),
+            y_bins: "fuelLoadBins".to_string(),
+            y_channel: String::new(),
+            z: "veTable".to_string(),
+            xy_labels: vec!["RPM".to_string(), "Fuel Load: ".to_string()],
+            grid_height: 2.0,
+            grid_orient: vec![250.0, 0.0, 340.0],
+            up_down_label: vec!["(RICHER)".to_string(), "(LEANER)".to_string()],
+            help: String::new(),
+        }],
+        curves: vec![CurveDef {
+            name: "warmupEnrichCurve".to_string(),
+            title: "Warmup Enrichment".to_string(),
+            column_labels: vec!["Coolant".to_string(), "Enrich %".to_string()],
+            x_axis: Some(CurveAxis {
+                min: Number::Lit(-40.0),
+                max: Number::Lit(215.0),
+                divisions: 4,
+            }),
+            y_axis: None,
+            x_bins: "wueBins".to_string(),
+            x_channel: String::new(),
+            y_bins: "wueRates".to_string(),
+            gauge: "cltGauge".to_string(),
+            size: vec![400.0, 400.0],
+        }],
         diagnostics: vec![],
         output_channels: vec![OutputChannelDef::Scalar {
             name: "map".to_string(),
@@ -149,6 +179,7 @@ fn hand_built_definition() -> Definition {
                 on_fg: "black".to_string(),
             }],
         },
+        ve_analyze: None,
     }
 }
 
@@ -232,6 +263,44 @@ fn definition_gauges_and_frontpage_are_reachable() {
     assert_eq!(def.frontpage.indicators[0].on_bg, "green");
 }
 
+// ── M4: table/curve editor definitions (extended shape) contract ───────────
+
+#[test]
+fn definition_table_finds_hand_built_table_and_x_channel_page() {
+    let def = hand_built_definition();
+    let table = def.table("veTable1Tbl").expect("veTable1Tbl must be found");
+    assert_eq!(table.x_channel, "rpm");
+    assert_eq!(table.page, 2);
+}
+
+#[test]
+fn definition_table_returns_none_for_unknown_name() {
+    let def = hand_built_definition();
+    assert!(def.table("does_not_exist").is_none());
+}
+
+#[test]
+fn definition_curve_round_trips_x_axis() {
+    let def = hand_built_definition();
+    let curve = def
+        .curve("warmupEnrichCurve")
+        .expect("warmupEnrichCurve must be found");
+    assert_eq!(
+        curve.x_axis,
+        Some(CurveAxis {
+            min: Number::Lit(-40.0),
+            max: Number::Lit(215.0),
+            divisions: 4,
+        })
+    );
+}
+
+#[test]
+fn definition_curve_returns_none_for_unknown_name() {
+    let def = hand_built_definition();
+    assert!(def.curve("does_not_exist").is_none());
+}
+
 #[test]
 fn parse_definition_defaults_m3_sections_to_empty() {
     // The M3 section parsers are stubs (Tasks 2–3 fill them); until then a
@@ -254,4 +323,5 @@ blockReadTimeout = 2000
     assert!(def.gauges.is_empty());
     assert!(def.frontpage.gauge_slots.is_empty());
     assert!(def.frontpage.indicators.is_empty());
+    assert!(def.ve_analyze.is_none(), "Task 2 fills [VeAnalyze]");
 }

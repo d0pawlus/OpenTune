@@ -38,6 +38,7 @@ mod ui_dialog_parser;
 mod ui_parser;
 mod ui_table_curve_parser;
 mod ui_tokens;
+mod ve_analyze;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, Definition, PageDef};
@@ -47,8 +48,9 @@ pub use output_channels::OutputChannelDef;
 pub use parser::parse_comms;
 pub use preprocessor::preprocess;
 pub use ui::{
-    CurveDef, Diagnostic, DialogDef, DialogField, FieldKind, MenuDef, MenuItem, TableDef,
+    CurveAxis, CurveDef, Diagnostic, DialogDef, DialogField, FieldKind, MenuDef, MenuItem, TableDef,
 };
+pub use ve_analyze::{AnalyzeFilterDef, FilterOp, VeAnalyzeDef, VeAnalyzeMapDef};
 
 /// Byte/field order of multi-byte values, taken from the INI `endianness` key.
 ///
