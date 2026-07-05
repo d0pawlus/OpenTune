@@ -56,6 +56,18 @@ pub enum ConnectionStateEvent {
     },
 }
 
+/// The M3 realtime dashboard frame payload, emitted at up to ~30 Hz.
+///
+/// Registered in `collect_events!` (`lib.rs`) alongside the
+/// `start_realtime`/`stop_realtime` commands. The owner poll loop emits it,
+/// coalesced to ≤30 Hz, for as long as realtime is armed — arming persists
+/// across a link drop, so frames resume automatically after recovery.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Type, Event)]
+pub struct RealtimeFrameEvent {
+    /// (channel name, physical value) pairs — the full decoded frame, ≤30 Hz.
+    pub channels: Vec<(String, f64)>,
+}
+
 impl From<opentune_protocol::ConnectionState> for ConnectionStateEvent {
     fn from(state: opentune_protocol::ConnectionState) -> Self {
         use opentune_protocol::ConnectionState;

@@ -12,7 +12,7 @@
 //! wire *shape* against that reference and against Speeduino `comms.cpp`
 //! directly, as `opentune-protocol`'s Task 5 already did).
 
-use opentune_ini::{CommsSettings, Definition, Endianness, EnvelopeFormat, PageDef};
+use opentune_ini::{CommsSettings, Definition, Endianness, EnvelopeFormat, FrontPageDef, PageDef};
 use opentune_protocol::{MsProtocol, Protocol};
 use opentune_simulator::EcuSimulator;
 
@@ -31,6 +31,7 @@ fn plain_comms() -> CommsSettings {
         inter_write_delay_ms: 0,
         endianness: Endianness::Little,
         envelope: EnvelopeFormat::Plain,
+        och_block_size: 0,
     }
 }
 
@@ -52,6 +53,12 @@ fn definition_with_pages(pages: Vec<PageDef>) -> Definition {
         tables: Vec::new(),
         curves: Vec::new(),
         diagnostics: Vec::new(),
+        output_channels: Vec::new(),
+        gauges: Vec::new(),
+        frontpage: FrontPageDef {
+            gauge_slots: Vec::new(),
+            indicators: Vec::new(),
+        },
     }
 }
 

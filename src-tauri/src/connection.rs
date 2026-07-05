@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Connection state manager — testable core, decoupled from AppHandle.
 //!
-//! The live connection is stored as `tauri::State<ConnectionStore>` where
-//! `ConnectionStore = Arc<Mutex<Option<ActiveConnection>>>`. Commands borrow
-//! the Arc; tests pass a Vec-collecting emit closure directly.
+//! The live [`Session`] is owned exclusively by the §9 owner task
+//! ([`crate::owner`]); this module provides the pieces it is built from:
+//! [`ActiveConnection`], the INI helpers, and the connect functions. Tests
+//! pass a Vec-collecting emit closure directly.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use opentune_ini::{parse_comms, parse_definition, CommsSettings, Definition};
 use opentune_model::Tune;
@@ -38,12 +39,13 @@ pub enum ActiveConnection {
 
 // ── Session: the single owner of connection + definition + tune ──────────────
 
-/// Everything a live tuning session owns, held under one mutex so **all**
-/// hardware/page access is serialized (ARCHITECTURE §9 — serial is inherently
-/// single-conversation). The M1 [`ActiveConnection`] is the sole owner of the
-/// transport; the immutable [`Definition`] (`Arc`) and the owned [`Tune`] live
-/// alongside it, so a `set_value`/`burn`/`undo` never touches the wire outside
-/// this lock. `tune` is `None` until [`Session::load_tune`] reads the pages.
+/// Everything a live tuning session owns, held exclusively by the §9 owner
+/// task ([`crate::owner`]) so **all** hardware/page access is serialized
+/// through its command channel (serial is inherently single-conversation).
+/// The M1 [`ActiveConnection`] is the sole owner of the transport; the
+/// immutable [`Definition`] (`Arc`) and the owned [`Tune`] live alongside it,
+/// so a `set_value`/`burn`/`undo` never touches the wire outside the owner.
+/// `tune` is `None` until [`Session::load_tune`] reads the pages.
 pub struct Session {
     /// The live connection — sole owner of the transport.
     pub conn: ActiveConnection,
@@ -56,9 +58,6 @@ pub struct Session {
     /// file-based `.msq` snapshots are M6.
     pub snapshot: Option<Tune>,
 }
-
-/// Tauri managed state type — the whole session behind one mutex.
-pub type SessionStore = Arc<Mutex<Option<Session>>>;
 
 // ── Source discriminant (IPC-visible) ────────────────────────────────────────
 
@@ -185,62 +184,6 @@ pub fn connect_serial(
     Ok(ActiveConnection::Serial { manager: mgr })
 }
 
-/// Drop the simulator link, then drive `reconnect_collect_states` on a
-/// background thread. Each emitted state is forwarded to `emit`; the session
-/// (with its definition + tune preserved intact) is stored back via `store`
-/// on completion.
-///
-/// Returns immediately — the reconnect runs in the background. Only the
-/// connection half of the session is reconnected; the reconnect *logic* is
-/// M1's, unchanged — the definition and tune are simply threaded through.
-pub fn simulate_link_drop_async(
-    session: Session,
-    store: SessionStore,
-    emit: impl Fn(ConnectionState) + Send + 'static,
-) {
-    std::thread::spawn(move || {
-        let Session {
-            conn,
-            def,
-            tune,
-            snapshot,
-        } = session;
-        match conn {
-            ActiveConnection::Sim {
-                mut manager,
-                simulator,
-            } => {
-                // Drop the link; reconnect logic will restore it via the
-                // factory (each `client_transport()` call opens a fresh
-                // transport on the same shared Pipe, which is in the
-                // `dropped=true` state here). We restore the link just before
-                // the first reconnect attempt so the simulator actually answers.
-                simulator.set_link_dropped(true);
-                // Restore immediately so the first reconnect attempt succeeds.
-                simulator.set_link_dropped(false);
-
-                let states = manager.reconnect_collect_states();
-                for s in states {
-                    emit(s);
-                }
-                if let Ok(mut guard) = store.lock() {
-                    *guard = Some(Session {
-                        conn: ActiveConnection::Sim { manager, simulator },
-                        def,
-                        tune,
-                        snapshot,
-                    });
-                }
-            }
-            ActiveConnection::Serial { .. } => {
-                emit(ConnectionState::Failed {
-                    reason: "simulate_link_drop is only available in simulator mode".to_owned(),
-                });
-            }
-        }
-    });
-}
-
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -263,6 +206,7 @@ mod tests {
             inter_write_delay_ms: 10,
             endianness: Endianness::Little,
             envelope: EnvelopeFormat::Plain,
+            och_block_size: 0,
         }
     }
 
@@ -279,6 +223,12 @@ mod tests {
             tables: Vec::new(),
             curves: Vec::new(),
             diagnostics: Vec::new(),
+            output_channels: Vec::new(),
+            gauges: Vec::new(),
+            frontpage: opentune_ini::FrontPageDef {
+                gauge_slots: Vec::new(),
+                indicators: Vec::new(),
+            },
         }
     }
 

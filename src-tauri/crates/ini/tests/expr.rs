@@ -360,3 +360,106 @@ fn bare_equals_sign_is_a_syntax_error() {
     // `=` alone is not in the grammar (only `==`).
     assert!(eval("1 = 2", &no_vars).is_err());
 }
+
+// ---------------------------------------------------------------------
+// 3.4/3.5 (M3 Task 3) — bitwise `&` and `<<`
+//
+// Real indicators/computed channels use them:
+// `syncStatus = { halfSync + (sync << 1) }`, `{ sd_status & 1 }`.
+// Precedence is standard C: shift binds tighter than comparison; `&` sits
+// between equality and `&&`. Values are f64 cast to i64 and back.
+// ---------------------------------------------------------------------
+
+/// Lookup for the real-INI bitwise expressions above.
+fn bit_lookup(name: &str) -> Option<f64> {
+    match name {
+        "sync" => Some(1.0),
+        "halfSync" => Some(1.0),
+        "sd_status" => Some(3.0),
+        _ => None,
+    }
+}
+
+#[test]
+fn eval_supports_bitwise_and_and_shift() {
+    let lookup = |n: &str| bit_lookup(n);
+    assert_eq!(eval("halfSync + (sync << 1)", &lookup).unwrap(), 3.0);
+    assert_eq!(eval("sd_status & 1", &lookup).unwrap(), 1.0);
+}
+
+#[test]
+fn shift_left_is_left_associative() {
+    // Right-associative evaluation would give `1 << (1 << 2)` = 16.
+    assert_eq!(eval("1 << 1 << 2", &no_vars).unwrap(), 8.0);
+}
+
+#[test]
+fn addition_binds_tighter_than_shift() {
+    // C precedence: `(1 + 1) << 2` = 8. If `<<` bound tighter: `1 + (1 << 2)` = 5.
+    assert_eq!(eval("1 + 1 << 2", &no_vars).unwrap(), 8.0);
+}
+
+#[test]
+fn shift_binds_tighter_than_comparison() {
+    // C precedence: `(1 << 2) < 8` = 1. If `<` bound tighter: `1 << (2 < 8)` = 2.
+    assert_eq!(eval("1 << 2 < 8", &no_vars).unwrap(), 1.0);
+    // C precedence: `2 == (1 << 1)` = 1. If `==` bound tighter: `(2 == 1) << 1` = 0.
+    assert_eq!(eval("2 == 1 << 1", &no_vars).unwrap(), 1.0);
+}
+
+#[test]
+fn shift_lexes_distinctly_from_less_and_less_equal() {
+    // `<` and `<=` must still tokenize when `<<` exists in the grammar.
+    assert_eq!(eval("1 < 2", &no_vars).unwrap(), 1.0);
+    assert_eq!(eval("2 <= 2", &no_vars).unwrap(), 1.0);
+}
+
+#[test]
+fn bitand_binds_looser_than_equality() {
+    // C precedence: `2 & (2 == 2)` = `2 & 1` = 0.
+    // If `&` bound tighter than `==`: `(2 & 2) == 2` = 1.
+    assert_eq!(eval("2 & 2 == 2", &no_vars).unwrap(), 0.0);
+}
+
+#[test]
+fn bitand_binds_tighter_than_logical_and() {
+    // C precedence: `2 & (2 && 4)`? No — `&` is TIGHTER: `(2 & 2) && 4` = 1.
+    // If `&` bound looser than `&&`: `2 & (2 && 4)` = `2 & 1` = 0.
+    assert_eq!(eval("2 & 2 && 4", &no_vars).unwrap(), 1.0);
+}
+
+#[test]
+fn single_ampersand_does_not_consume_logical_and() {
+    // `&&` must keep its logical meaning (`2 && 4` = 1), not degrade into
+    // bitwise `2 & (&4)` (a syntax error) or `2 & 4` (= 0).
+    assert_eq!(eval("2 && 4", &no_vars).unwrap(), 1.0);
+}
+
+#[test]
+fn bitwise_ops_truncate_fractional_operands() {
+    // f64 -> i64 casts truncate toward zero: `2.9 & 3` = `2 & 3` = 2.
+    assert_eq!(eval("2.9 & 3", &no_vars).unwrap(), 2.0);
+}
+
+#[test]
+fn bitand_evaluates_eagerly_like_other_operators() {
+    // Same eager-evaluation contract as `&&`/`||`: an unknown variable on
+    // the right of `&` surfaces even though the left side is 0.
+    let err = eval("0 & bogusVar", &no_vars).unwrap_err();
+    assert_eq!(err, ExprError::UnknownVar("bogusVar".to_string()));
+}
+
+#[test]
+fn out_of_range_shift_count_is_a_math_error() {
+    // i64 shifts are only defined for counts 0..=63; degrade loudly like
+    // division by zero instead of panicking or wrapping silently.
+    assert_eq!(eval("1 << 64", &no_vars).unwrap_err(), ExprError::Math);
+    assert_eq!(eval("1 << -1", &no_vars).unwrap_err(), ExprError::Math);
+}
+
+#[test]
+fn eval_bool_supports_indicator_style_bitwise_expr() {
+    let lookup = |n: &str| bit_lookup(n);
+    assert!(eval_bool("sd_status & 1", &lookup).unwrap());
+    assert!(!eval_bool("sd_status & 4", &lookup).unwrap());
+}

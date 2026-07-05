@@ -1,0 +1,113 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.dashboard {
+  --hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: 2rem;
+  padding: var(--space-md);
+  border: 1px solid var(--hairline);
+  border-radius: 0.5rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.dashboard-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.dashboard-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* Live toggle reads as a stateful control, not a one-shot action. */
+.dashboard-actions button[aria-pressed="true"] {
+  background: color-mix(in oklch, var(--color-accent) 18%, transparent);
+  font-weight: 600;
+}
+
+.dashboard-error {
+  margin: 0.5rem 0 0;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+}
+
+.dashboard-empty {
+  margin: var(--space-md) 0 0;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.dashboard-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem;
+  border-radius: 0.5rem;
+  transition: background var(--duration-normal) ease;
+}
+
+.dashboard-slot:hover {
+  background: color-mix(in oklch, var(--color-text) 4%, transparent);
+}
+
+/* Fail-open tile for a slot bound to a gauge the INI no longer defines. */
+.dashboard-slot-missing {
+  display: grid;
+  place-items: center;
+  min-height: 6rem;
+  width: 100%;
+  border: 1px dashed var(--hairline);
+  border-radius: 0.5rem;
+  font-size: 1.5rem;
+  opacity: 0.5;
+}
+
+.gauge-binder {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.gauge-binder select {
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--hairline);
+  border-radius: 0.3rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.8rem;
+  max-width: 8rem;
+}
+
+.gauge-binder button {
+  padding: 0.2rem 0.5rem;
+}
+
+.dashboard-indicators {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--hairline);
+}
+
+.dashboard-indicators .gauge-canvas {
+  border-radius: 0.4rem;
+}

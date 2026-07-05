@@ -7,10 +7,13 @@
 //! shape.
 
 use crate::constants_parser::parse_constants;
+use crate::gauges_parser::parse_gauges;
+use crate::output_channels_parser::parse_output_channels;
 use crate::preprocessor::preprocess;
 use crate::ui_parser::parse_ui;
 use crate::{
-    CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, IniError, MenuDef, TableDef,
+    CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, FrontPageDef, GaugeDef, IniError,
+    MenuDef, OutputChannelDef, TableDef,
 };
 use std::collections::HashSet;
 
@@ -51,6 +54,14 @@ pub struct Definition {
     pub curves: Vec<CurveDef>,
     /// Notes on INI sections that were skipped or could not be fully parsed.
     pub diagnostics: Vec<Diagnostic>,
+    /// `[OutputChannels]` entries. Realtime frames (M3) decode against these.
+    /// Look up by name via [`Definition::output_channel`].
+    pub output_channels: Vec<OutputChannelDef>,
+    /// `[GaugeConfigurations]` entries backing the default dashboard.
+    pub gauges: Vec<GaugeDef>,
+    /// `[FrontPage]` — the default dashboard layout. Empty `Vec`s when the INI
+    /// declares no `[FrontPage]`.
+    pub frontpage: FrontPageDef,
 }
 
 impl Definition {
@@ -60,6 +71,11 @@ impl Definition {
     /// is a separate namespace and is not searched here.
     pub fn constant(&self, name: &str) -> Option<&ConstantDef> {
         self.constants.iter().find(|c| c.name == name)
+    }
+
+    /// Look up an output channel by name (mirrors [`Definition::constant`]).
+    pub fn output_channel(&self, name: &str) -> Option<&OutputChannelDef> {
+        self.output_channels.iter().find(|c| c.name() == name)
     }
 }
 
@@ -84,15 +100,25 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
     let ui = parse_ui(&preprocessed, &parsed.constants);
+    let output_channels = parse_output_channels(&preprocessed);
+    let gauges = parse_gauges(&preprocessed, &output_channels.channels);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
+    // `[OutputChannels]` may declare its own `ochGetCommand` (the windowed
+    // template TunerStudio actually sends); it overrides the bare
+    // `[MegaTune]`/`[TunerStudio]` value when present (M3 Task 6 blocker a).
+    let och_get_command = crate::parser::extract_och_get_command(&preprocessed)
+        .unwrap_or_else(|| comms.och_get_command.clone());
     let comms = CommsSettings {
         endianness,
+        och_get_command,
         ..comms
     };
 
     let mut diagnostics = parsed.diagnostics;
     diagnostics.extend(ui.diagnostics);
+    diagnostics.extend(output_channels.diagnostics);
+    diagnostics.extend(gauges.diagnostics);
 
     Ok(Definition {
         comms,
@@ -104,5 +130,8 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         tables: ui.tables,
         curves: ui.curves,
         diagnostics,
+        output_channels: output_channels.channels,
+        gauges: gauges.gauges,
+        frontpage: gauges.frontpage,
     })
 }

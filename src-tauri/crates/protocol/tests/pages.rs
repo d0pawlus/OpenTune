@@ -109,6 +109,7 @@ fn envelope_comms() -> CommsSettings {
         inter_write_delay_ms: 0,
         endianness: Endianness::Little,
         envelope: EnvelopeFormat::MsEnvelope10,
+        och_block_size: 0,
     }
 }
 

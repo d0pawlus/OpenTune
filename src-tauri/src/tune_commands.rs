@@ -1,172 +1,125 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! M2 tune commands — thin IPC wrappers over [`Session`] operations.
+//! M2 tune commands — thin async senders into the §9 owner task.
 //!
-//! Each command locks the single session mutex, delegates to the co-located
-//! [`Session`] (which owns the connection, definition, and tune), and — for
-//! mutating ops — emits a [`TuneDirtyEvent`] so the frontend badge reflects the
-//! backend's single source of truth. No command touches the transport directly.
+//! Each command builds a oneshot reply channel, sends the matching
+//! [`Command`] to the owner (the single owner of connection + definition +
+//! tune), and awaits the result. The owner itself emits [`TuneDirtyEvent`]
+//! after every mutating op, so the frontend badge reflects the backend's
+//! single source of truth; no command touches the transport or any state.
+//!
+//! [`TuneDirtyEvent`]: crate::events::TuneDirtyEvent
 
 use opentune_model::Value;
-use tauri::{AppHandle, State};
-use tauri_specta::Event as _;
+use tauri::State;
 
-use crate::connection::SessionStore;
 use crate::dto::{DefinitionDto, FieldDiffDto};
-
-const NOT_CONNECTED: &str = "not connected";
+use crate::owner::{request, Command, OwnerHandle};
 
 /// Return the parsed firmware definition (menus, dialogs, constants, …) for
 /// the frontend to render the data-driven UI against.
 #[tauri::command]
 #[specta::specta]
-pub fn get_definition(state: State<'_, SessionStore>) -> Result<DefinitionDto, String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
-    Ok(session.definition())
+pub async fn get_definition(owner: State<'_, OwnerHandle>) -> Result<DefinitionDto, String> {
+    request(&owner, |reply| Command::GetDefinition { reply }).await
 }
 
-/// Read all declared pages from the ECU into a fresh tune. Emits the (clean)
-/// dirty state.
+/// Read all declared pages from the ECU into a fresh tune. The owner emits
+/// the (clean) dirty state.
 #[tauri::command]
 #[specta::specta]
-pub fn load_tune(state: State<'_, SessionStore>, app: AppHandle) -> Result<(), String> {
-    let event = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.load_tune()?
-    };
-    let _ = event.emit(&app);
-    Ok(())
+pub async fn load_tune(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::LoadTune { reply })
+        .await
+        .map(|_| ())
 }
 
 /// Read the current physical values of the named constants (for field render).
 #[tauri::command]
 #[specta::specta]
-pub fn get_values(
+pub async fn get_values(
     names: Vec<String>,
-    state: State<'_, SessionStore>,
+    owner: State<'_, OwnerHandle>,
 ) -> Result<Vec<Value>, String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
-    session.read_values(&names)
+    request(&owner, |reply| Command::GetValues { names, reply }).await
 }
 
-/// Set a constant and write the changed bytes live to the ECU. Emits the new
-/// dirty state on success.
+/// Set a constant and write the changed bytes live to the ECU. The owner
+/// emits the new dirty state on success.
 #[tauri::command]
 #[specta::specta]
-pub fn set_value(
+pub async fn set_value(
     name: String,
     value: Value,
-    state: State<'_, SessionStore>,
-    app: AppHandle,
+    owner: State<'_, OwnerHandle>,
 ) -> Result<(), String> {
-    let event = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.set_value(&name, value)?
-    };
-    let _ = event.emit(&app);
-    Ok(())
+    request(&owner, |reply| Command::SetValue { name, value, reply })
+        .await
+        .map(|_| ())
 }
 
-/// Burn every dirty page to flash. Emits the cleared dirty state.
+/// Burn every dirty page to flash. The owner emits the cleared dirty state.
 #[tauri::command]
 #[specta::specta]
-pub fn burn_tune(state: State<'_, SessionStore>, app: AppHandle) -> Result<(), String> {
-    let event = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.burn()?
-    };
-    let _ = event.emit(&app);
-    Ok(())
+pub async fn burn_tune(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::Burn { reply })
+        .await
+        .map(|_| ())
 }
 
 /// Undo the most recent edit, writing the reverted bytes to the ECU.
 #[tauri::command]
 #[specta::specta]
-pub fn undo_tune(state: State<'_, SessionStore>, app: AppHandle) -> Result<(), String> {
-    let event = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.undo()?
-    };
-    let _ = event.emit(&app);
-    Ok(())
+pub async fn undo_tune(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::Undo { reply })
+        .await
+        .map(|_| ())
 }
 
 /// Redo the most recently undone edit, writing the re-applied bytes to the ECU.
 #[tauri::command]
 #[specta::specta]
-pub fn redo_tune(state: State<'_, SessionStore>, app: AppHandle) -> Result<(), String> {
-    let event = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        session.redo()?
-    };
-    let _ = event.emit(&app);
-    Ok(())
+pub async fn redo_tune(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::Redo { reply })
+        .await
+        .map(|_| ())
 }
 
 /// Evaluate `visible`/`enable` expressions against the current tune values.
 /// Fails open (a broken expression yields `true`).
 #[tauri::command]
 #[specta::specta]
-pub fn eval_conditions(
+pub async fn eval_conditions(
     exprs: Vec<String>,
-    state: State<'_, SessionStore>,
+    owner: State<'_, OwnerHandle>,
 ) -> Result<Vec<bool>, String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
-    session.eval_conditions(&exprs)
+    request(&owner, |reply| Command::EvalConditions { exprs, reply }).await
 }
 
 /// Snapshot the current tune as the diff/merge baseline (the "other" side).
 #[tauri::command]
 #[specta::specta]
-pub fn snapshot_tune(state: State<'_, SessionStore>) -> Result<(), String> {
-    let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-    session.snapshot_tune()
+pub async fn snapshot_tune(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::SnapshotTune { reply }).await
 }
 
 /// Diff the current tune against the snapshot baseline taken by
 /// `snapshot_tune`.
 #[tauri::command]
 #[specta::specta]
-pub fn diff_tune(state: State<'_, SessionStore>) -> Result<Vec<FieldDiffDto>, String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    let session = guard.as_ref().ok_or_else(|| NOT_CONNECTED.to_string())?;
-    session.diff_tune()
+pub async fn diff_tune(owner: State<'_, OwnerHandle>) -> Result<Vec<FieldDiffDto>, String> {
+    request(&owner, |reply| Command::DiffTune { reply }).await
 }
 
 /// Merge the picked constants from the snapshot baseline into the current
 /// tune, writing each accepted pick live to the ECU.
 ///
-/// `merge_tune` applies picks one at a time (see `session_diff.rs`) and can
-/// abort mid-batch when a later pick's write fails, after earlier picks
-/// already committed and dirtied the tune. The dirty event is emitted from
-/// `Session::current_dirty_event` — read *after* the merge attempt,
-/// regardless of its `Ok`/`Err` result — so the badge always reflects the
-/// tune's actual state at the end of the command instead of silently
-/// under-reporting a partial merge as still clean.
+/// The owner emits the tune's *actual* dirty state after the merge attempt —
+/// regardless of `Ok`/`Err` — because a merge can abort mid-batch after
+/// earlier picks already committed (M2 behavior, preserved).
 #[tauri::command]
 #[specta::specta]
-pub fn merge_tune(
-    picks: Vec<String>,
-    state: State<'_, SessionStore>,
-    app: AppHandle,
-) -> Result<(), String> {
-    let (result, event) = {
-        let mut guard = state.lock().map_err(|e| e.to_string())?;
-        let session = guard.as_mut().ok_or_else(|| NOT_CONNECTED.to_string())?;
-        let result = session.merge_tune(&picks);
-        let event = session.current_dirty_event();
-        (result, event)
-    };
-    if let Some(event) = event {
-        let _ = event.emit(&app);
-    }
-    result.map(|_| ())
+pub async fn merge_tune(picks: Vec<String>, owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::MergeTune { picks, reply })
+        .await
+        .map(|_| ())
 }

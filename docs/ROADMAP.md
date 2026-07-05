@@ -91,16 +91,25 @@ Goal: full configuration editing — the core of a tuning tool.
 burn to flash, undo/redo — then diff against a saved tune and merge in selected
 changes.
 
-## M3 — Real-time dashboard ⬜
+## M3 — Real-time dashboard ✅
 
 Goal: live gauges — the other half of day-to-day tuning.
 
-- ⬜ `realtime`: polling loop, output-channel decoding, throttled events.
-- ⬜ `simulator`: animated, correlated realtime channels.
-- ⬜ Frontend **gauge dashboard**: canvas gauges, bindable to channels, editable
-  layout saved with the project.
+- ✅ `realtime`: polling loop (25 Hz owner tick), output-channel decoding
+  (fail-open per channel), throttled events (≤30 Hz coalesced
+  `RealtimeFrameEvent`).
+- ✅ `simulator`: animated, correlated realtime channels (ported
+  `EngineSimulator` state machine, MIT) behind windowed `'r'`/0x30 reads.
+- ✅ Frontend **gauge dashboard**: hand-rolled canvas gauges (rAF off React
+  reconciliation), bindable to channels, editable layout persisted to the
+  app config dir. Dashboard and tune store survive link glitches.
+- ✅ ARCHITECTURE §9 owner-task/command-channel migration (closes the M2
+  deviation); reboot-vs-glitch reconnect semantics incl. the secl
+  false-reboot fix.
 
-**Demo:** a live, configurable dashboard driven by the simulator (and real ECUs).
+**Demo:** a live, configurable dashboard driven by the simulator, surviving a
+simulated link drop (owner-level E2E; real-ECU serial polling deferred to the
+M3-serial follow-up — see `docs/notes/m3-decisions.md`).
 
 ## M4 — Table editors & auto-tune ⬜
 

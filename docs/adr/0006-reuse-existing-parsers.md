@@ -99,3 +99,23 @@ unsupported `bitStringValue`/`table` function-call forms) enumerated from
 real `speeduino.ini` files — not as a line-by-line port. No code or algorithm
 was copied. See the module doc comment in `expr.rs` for the same rationale
 recorded alongside the implementation.
+
+### Note (2026-07-03) — write-fresh exception: `[GaugeConfigurations]` / `[FrontPage]` parser
+
+Task 3 of M3 (`src-tauri/crates/ini/src/gauges_parser.rs`) is a second
+**deliberate, recorded exception** to the port-first default.
+
+`hyper-tuner/ini`'s section switch ends at `[Datalog]` (`src/ini.ts`,
+~lines 146-190) — it parses neither `[GaugeConfigurations]` nor
+`[FrontPage]`, so there is nothing to port. The grammar truth-source is
+the real `speeduino.ini` (noisymime/speeduino @ 63fd68e9, GPL-3),
+consulted as a **reference corpus only** (no parser code exists there to
+copy); the exact lines exercised are preserved, trimmed, in the
+`tests/fixtures/speeduino-gauges.ini` golden fixture. The same rationale
+is recorded in the module doc of `gauges_parser.rs` and the test header
+of `tests/gauges.rs`.
+
+The bitwise `&`/`<<` extension to `ini::expr` (same task) inherits the
+Task 2 write-fresh decision above — the operator set was again confirmed
+against real INI usage (`{ sd_status & 1 }`,
+`{ halfSync + (sync << 1) }`), with standard C precedence.

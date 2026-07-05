@@ -96,6 +96,13 @@ pub fn expand_template(template: &str, params: &TemplateParams<'_>) -> Result<Ve
         } else if rest.starts_with(b"$tsCanId") {
             out.push(params.can_id);
             i += "$tsCanId".len();
+        } else if rest.starts_with(b"\\$") {
+            // INI string escape: `\$tsCanId` in real INI source (backslash
+            // keeps the `$` literal at INI level) must expand identically to
+            // `$tsCanId` — drop the backslash and let the next iteration
+            // handle the `$` (placeholder or literal). Without this, the
+            // stray 0x5C byte made an 8-byte 'r' request out of a 7-byte one.
+            i += 1;
         } else if rest.starts_with(b"\\x") {
             if rest.len() < 4 {
                 return Err(ProtocolError::MalformedTemplate(format!(
@@ -231,6 +238,47 @@ impl<T: Transport> MsProtocol<T> {
         self.send_page_command(&command, 0, MAX_PAGE_RESPONSE)?;
         Ok(())
     }
+
+    /// [`crate::Protocol::read_output_channels`] for the generic MS/TS engine.
+    ///
+    /// Expands `ochGetCommand` (e.g. `"r$tsCanId\x30%2o%2c"`) with the given
+    /// `offset`/`len` window and sends it via [`MsProtocol::send_page_command`].
+    ///
+    /// Response shape differs by framing (`case 'r'`, comms.cpp:359-374):
+    /// - **Plain** (`comms_legacy.cpp`): `len` raw bytes, no status prefix —
+    ///   no length prefix to distrust, so a short physical reply surfaces as
+    ///   a transport timeout rather than silent truncation.
+    /// - **`MsEnvelope10`** (`comms.cpp`): `[SERIAL_RC_OK, block bytes...]`,
+    ///   status byte stripped here. Unlike [`Self::do_read_page`], a payload
+    ///   shorter than `len` is **not** an error — the INI's declared
+    ///   `ochBlockSize` can disagree with the firmware's actual frame size, so
+    ///   this returns exactly the envelope's own bytes (`rest.to_vec()`).
+    pub(crate) fn do_read_output_channels(&mut self, offset: u16, len: u16) -> Result<Vec<u8>> {
+        let template = self.comms.och_get_command.clone();
+        let envelope = self.comms.envelope;
+        let params = TemplateParams {
+            page: 0,
+            offset,
+            count: len,
+            value: &[],
+            can_id: 0,
+        };
+        let command = expand_template(&template, &params)?;
+        let response = self.send_page_command(&command, len as usize, MAX_PAGE_RESPONSE)?;
+
+        let data = match envelope {
+            EnvelopeFormat::Plain => response,
+            EnvelopeFormat::MsEnvelope10 => {
+                let (_status, rest) = response.split_first().ok_or_else(|| {
+                    ProtocolError::MalformedResponse(
+                        "empty output-channels response (expected a status byte)".to_string(),
+                    )
+                })?;
+                rest.to_vec()
+            }
+        };
+        Ok(data)
+    }
 }
 
 /// Sleep for `ms` milliseconds, skipping the syscall entirely when `ms == 0`
@@ -284,6 +332,25 @@ mod tests {
         };
         let out = expand_template("r$tsCanId\\x30%2o%2c", &params).unwrap();
         assert_eq!(out, vec![b'r', 0x00, 0x30, 0x05, 0x00, 0x0A, 0x00]);
+    }
+
+    #[test]
+    fn backslash_dollar_tscanid_expands_identically_to_dollar_tscanid() {
+        // Templates parsed from *real INI text* carry the INI's string escape:
+        // `ochGetCommand = "r\$tsCanId\x30%2o%2c"` — a backslash before `$`.
+        // It must expand byte-identically to the unescaped `$tsCanId` form
+        // (M3 Task 6 blocker b): exactly the 7-byte plain 'r' request, not an
+        // 8-byte one with a stray 0x5C.
+        let params = TemplateParams {
+            page: 0,
+            offset: 5,
+            count: 10,
+            value: &[],
+            can_id: 0,
+        };
+        let out = expand_template(r"r\$tsCanId\x30%2o%2c", &params).unwrap();
+        assert_eq!(out, vec![b'r', 0x00, 0x30, 0x05, 0x00, 0x0A, 0x00]);
+        assert_eq!(out.len(), 7, "no stray 0x5C byte from the INI escape");
     }
 
     #[test]

@@ -11,17 +11,16 @@ export const commands = {
 	/**
 	 *  Connect to an ECU (simulator or serial).
 	 * 
-	 *  Emits `ConnectionStateEvent` transitions over IPC as the connection
-	 *  progresses. Returns `Ok(())` once the initial handshake succeeds.
+	 *  The owner emits `ConnectionStateEvent` transitions over IPC as the
+	 *  connection progresses. Resolves `Ok(())` once the handshake succeeds.
 	 */
 	connect: (source: ConnectSource) => typedError<null, string>(__TAURI_INVOKE("connect", { source })),
-	/**  Disconnect from the ECU and emit `Disconnected`. */
+	/**  Disconnect from the ECU; the owner emits `Disconnected`. */
 	disconnect: () => typedError<null, string>(__TAURI_INVOKE("disconnect")),
 	/**
-	 *  Simulator-only: drop the link and drive the reconnect loop.
-	 * 
-	 *  Returns immediately; the reconnect runs on a background thread, emitting
-	 *  `Reconnecting{attempt}` states until `Connected` or `Failed`.
+	 *  Simulator-only: drop the link and drive the reconnect loop. The owner
+	 *  emits `Reconnecting{attempt}` states until `Connected` or `Failed`, and
+	 *  re-reads the tune when the reconnect detected an ECU reboot.
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 	/**
@@ -30,18 +29,18 @@ export const commands = {
 	 */
 	getDefinition: () => typedError<DefinitionDto, string>(__TAURI_INVOKE("get_definition")),
 	/**
-	 *  Read all declared pages from the ECU into a fresh tune. Emits the (clean)
-	 *  dirty state.
+	 *  Read all declared pages from the ECU into a fresh tune. The owner emits
+	 *  the (clean) dirty state.
 	 */
 	loadTune: () => typedError<null, string>(__TAURI_INVOKE("load_tune")),
 	/**  Read the current physical values of the named constants (for field render). */
 	getValues: (names: string[]) => typedError<Value[], string>(__TAURI_INVOKE("get_values", { names })),
 	/**
-	 *  Set a constant and write the changed bytes live to the ECU. Emits the new
-	 *  dirty state on success.
+	 *  Set a constant and write the changed bytes live to the ECU. The owner
+	 *  emits the new dirty state on success.
 	 */
 	setValue: (name: string, value: Value) => typedError<null, string>(__TAURI_INVOKE("set_value", { name, value })),
-	/**  Burn every dirty page to flash. Emits the cleared dirty state. */
+	/**  Burn every dirty page to flash. The owner emits the cleared dirty state. */
 	burnTune: () => typedError<null, string>(__TAURI_INVOKE("burn_tune")),
 	/**  Undo the most recent edit, writing the reverted bytes to the ECU. */
 	undoTune: () => typedError<null, string>(__TAURI_INVOKE("undo_tune")),
@@ -63,21 +62,29 @@ export const commands = {
 	 *  Merge the picked constants from the snapshot baseline into the current
 	 *  tune, writing each accepted pick live to the ECU.
 	 * 
-	 *  `merge_tune` applies picks one at a time (see `session_diff.rs`) and can
-	 *  abort mid-batch when a later pick's write fails, after earlier picks
-	 *  already committed and dirtied the tune. The dirty event is emitted from
-	 *  `Session::current_dirty_event` — read *after* the merge attempt,
-	 *  regardless of its `Ok`/`Err` result — so the badge always reflects the
-	 *  tune's actual state at the end of the command instead of silently
-	 *  under-reporting a partial merge as still clean.
+	 *  The owner emits the tune's *actual* dirty state after the merge attempt —
+	 *  regardless of `Ok`/`Err` — because a merge can abort mid-batch after
+	 *  earlier picks already committed (M2 behavior, preserved).
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
+	/**
+	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
+	 *  ≤30 Hz as `RealtimeFrameEvent`s).
+	 */
+	startRealtime: () => typedError<null, string>(__TAURI_INVOKE("start_realtime")),
+	/**  Stop the realtime poll loop. */
+	stopRealtime: () => typedError<null, string>(__TAURI_INVOKE("stop_realtime")),
+	/**  Persist the dashboard layout JSON to the app config dir. */
+	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
+	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
+	loadLayout: () => typedError<string | null, string>(__TAURI_INVOKE("load_layout")),
 };
 
 /** Events */
 export const events = {
 	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
+	realtimeFrameEvent: makeEvent<RealtimeFrameEvent>("realtime-frame-event"),
 	tuneDirtyEvent: makeEvent<TuneDirtyEvent>("tune-dirty-event"),
 };
 
@@ -174,6 +181,10 @@ export type DefinitionDto = {
 	constants: ConstantDto[],
 	/**  Table editors (rendered as a minimal grid in M2; full editor is M4). */
 	tables: TableDto[],
+	/**  `[GaugeConfigurations]` entries backing the dashboard (M3). */
+	gauges: GaugeDto[],
+	/**  `[FrontPage]` — the default dashboard layout (M3). */
+	frontpage: FrontPageDto,
 };
 
 /**  A dialog and its fields. */
@@ -216,8 +227,56 @@ export type FieldKindDto =
 /**  A layout spacer. */
 "Gap";
 
+/**  `[FrontPage]` — the default dashboard layout. */
+export type FrontPageDto = {
+	/**  `gauge1..gauge8` → gauge names, in slot order. */
+	gauge_slots: string[],
+	/**  Boolean indicator lamps shown alongside the gauges. */
+	indicators: IndicatorDto[],
+};
+
+/**
+ *  A gauge's display rules (title, unit label, thresholds, digits) — the UI
+ *  projection of [`GaugeDef`]. Numeric bounds follow the [`ConstantDto`]
+ *  convention: a literal projects to `Some`, an `{ expr }` bound to `None`
+ *  (the gauge falls back to a neutral zone for `None` thresholds).
+ */
+export type GaugeDto = {
+	/**  Gauge id referenced by `FrontPageDto::gauge_slots`. */
+	name: string,
+	/**  The output-channel name it displays (keys the realtime frame map). */
+	channel: string,
+	title: string,
+	/**  The unit label shown in the UI (e.g. "RPM", "kPa"). */
+	units: string,
+	low: number | null,
+	high: number | null,
+	lo_danger: number | null,
+	lo_warn: number | null,
+	hi_warn: number | null,
+	hi_danger: number | null,
+	/**  Decimal digits for the live value readout. */
+	value_digits: number,
+	/**  Decimal digits for scale labels. */
+	label_digits: number,
+	/**  `gaugeCategory`, for grouping menus. */
+	category: string,
+};
+
 export type Heartbeat = {
 	seq: number,
+};
+
+/**  One `[FrontPage]` `indicator` entry (colors are named colors, verbatim). */
+export type IndicatorDto = {
+	/**  Bare bit-channel name or comparison; evaluated against realtime frames. */
+	expr: string,
+	off_label: string,
+	on_label: string,
+	off_bg: string,
+	off_fg: string,
+	on_bg: string,
+	on_fg: string,
 };
 
 /**  A top-level menu. */
@@ -238,6 +297,19 @@ export type PortInfoDto = {
 	vid: number | null,
 	pid: number | null,
 	product: string | null,
+};
+
+/**
+ *  The M3 realtime dashboard frame payload, emitted at up to ~30 Hz.
+ * 
+ *  Registered in `collect_events!` (`lib.rs`) alongside the
+ *  `start_realtime`/`stop_realtime` commands. The owner poll loop emits it,
+ *  coalesced to ≤30 Hz, for as long as realtime is armed — arming persists
+ *  across a link drop, so frames resume automatically after recovery.
+ */
+export type RealtimeFrameEvent = {
+	/**  (channel name, physical value) pairs — the full decoded frame, ≤30 Hz. */
+	channels: ([string, number | null])[],
 };
 
 /**  A table editor definition (bin/cell constant references). */

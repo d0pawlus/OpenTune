@@ -42,8 +42,10 @@
 //! ```text
 //! expr       := or_expr
 //! or_expr    := and_expr ( "||" and_expr )*
-//! and_expr   := compare ( "&&" compare )*
-//! compare    := additive ( ("==" | "!=" | "<=" | ">=" | "<" | ">") additive )*
+//! and_expr   := bitand ( "&&" bitand )*
+//! bitand     := compare ( "&" compare )*
+//! compare    := shift ( ("==" | "!=" | "<=" | ">=" | "<" | ">") shift )*
+//! shift      := additive ( "<<" additive )*
 //! additive   := term ( ("+" | "-") term )*
 //! term       := unary ( ("*" | "/") unary )*
 //! unary      := "!" unary | "-" unary | primary
@@ -52,6 +54,14 @@
 //!
 //! Booleans are represented as `f64`: `1.0` for true, `0.0` for false (any
 //! non-zero value is truthy on input, per [`eval_bool`]).
+//!
+//! The bitwise operators `&` and `<<` (M3 Task 3 — real indicators and
+//! computed channels use them: `{ sd_status & 1 }`,
+//! `{ halfSync + (sync << 1) }`) operate on the `f64` values cast through
+//! `i64` and back; their precedence follows standard C (shift binds
+//! tighter than comparison; `&` sits between equality and `&&`). `|`, `^`,
+//! and `>>` are not in the grammar — they have not appeared in the real
+//! INI corpus surveyed.
 //!
 //! `&&` and `||` are evaluated **eagerly** — both sides are always
 //! evaluated, unlike C/Rust's short-circuiting `&&`/`||`. This is a
@@ -84,8 +94,9 @@ pub enum ExprError {
     /// `bitStringValue(...)`, `table(...)`). Carries the function name.
     #[error("unsupported function: `{0}`")]
     UnsupportedFn(String),
-    /// A runtime arithmetic error (currently: division by zero).
-    #[error("arithmetic error (division by zero)")]
+    /// A runtime arithmetic error (division by zero, or a `<<` shift count
+    /// outside `0..=63`).
+    #[error("arithmetic error (division by zero or out-of-range shift)")]
     Math,
     /// Parsing recursed past the depth cap (e.g. pathologically nested
     /// parentheses).

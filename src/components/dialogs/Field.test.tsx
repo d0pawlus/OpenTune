@@ -38,15 +38,82 @@ describe("Field", () => {
     expect(screen.getByText("ms")).toBeTruthy();
   });
 
-  it("emits a Scalar value on scalar edit", () => {
+  it("does not emit while typing (no ECU write per keystroke)", () => {
     const onChange = vi.fn();
     render(
       <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
     );
-    fireEvent.change(screen.getByLabelText("reqFuel"), {
-      target: { value: "20" },
-    });
+    const input = screen.getByLabelText("reqFuel") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "20" } });
+    expect(onChange).not.toHaveBeenCalled();
+    // The draft is held locally while typing.
+    expect(input.value).toBe("20");
+  });
+
+  it("emits the drafted Scalar on blur", () => {
+    const onChange = vi.fn();
+    render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText("reqFuel");
+    fireEvent.change(input, { target: { value: "20" } });
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledWith({ Scalar: 20 });
+  });
+
+  it("emits the drafted Scalar on Enter", () => {
+    const onChange = vi.fn();
+    render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText("reqFuel");
+    fireEvent.change(input, { target: { value: "42" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith({ Scalar: 42 });
+  });
+
+  it("does not emit on blur when the value is unchanged", () => {
+    const onChange = vi.fn();
+    render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
+    );
+    fireEvent.blur(screen.getByLabelText("reqFuel"));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("reverts an emptied draft on blur instead of writing", () => {
+    const onChange = vi.fn();
+    render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText("reqFuel") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input.value).toBe("12.5");
+  });
+
+  it("resets the draft when the backend value prop changes", () => {
+    const { rerender } = render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={() => {}} />,
+    );
+    rerender(
+      <Field constant={scalar} value={{ Scalar: 99 }} onChange={() => {}} />,
+    );
+    expect((screen.getByLabelText("reqFuel") as HTMLInputElement).value).toBe(
+      "99",
+    );
+  });
+
+  it("renders — instead of 0 for a null scalar (fail-open NaN sentinel)", () => {
+    render(
+      <Field constant={scalar} value={{ Scalar: null }} onChange={() => {}} />,
+    );
+    const input = screen.getByLabelText("reqFuel") as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("—");
   });
 
   it("renders a bits constant as a select with its named options", () => {

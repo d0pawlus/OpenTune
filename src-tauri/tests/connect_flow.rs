@@ -32,6 +32,7 @@ fn plain_comms() -> CommsSettings {
         inter_write_delay_ms: 10,
         endianness: Endianness::Little,
         envelope: EnvelopeFormat::Plain,
+        och_block_size: 0,
     }
 }
 
