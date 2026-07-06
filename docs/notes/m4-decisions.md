@@ -248,3 +248,73 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
 - **Staging jak w Task 1** — `git add -A` z briefu pominięte; w drzewie nadal
   leży niezwiązana zmiana `package.json` (`allowScripts`), dodawane tylko
   konkretne pliki zadania + zregenerowany `src/ipc/bindings.ts`.
+
+## Task 4 — Frontend table-editing core: selection, ops, TSV, heatmap
+
+- **WRITE FRESH potwierdzone** (ADR-0006) — hypertuner-cloud (MIT) to
+  read-only viewer bez selection/ops/clipboard do zapożyczenia; LibreTune
+  (GPL-2) tylko do studiowania semantyki. Cztery moduły
+  (`selection.ts`/`tableOps.ts`/`tsv.ts`/`heatmap.ts`) napisane od zera wg
+  pinów briefu, zero portowanego kodu.
+- **Interpolate = bilinear zakotwiczony na rogach** — cztery rogi rect
+  pozostają nietknięte, reszta rekonstruowana z nich (`fr`/`fc` jako ułamki
+  0..1 wzdłuż wiersza/kolumny); 1×N/N×1 degeneruje się do liniowej (h=0 lub
+  w=0 → odpowiedni ułamek = 0); pojedyncza komórka to no-op (`h===0 &&
+  w===0` na wejściu). Decyzja niepisana wprost w briefie ale spójna z jego
+  duchem: jeśli którykolwiek róg jest nie-skończony, `interpolateRect`
+  zwraca `[]` całościowo (nie da się zakotwiczyć na NaN) — bezpieczny
+  fail-closed zamiast częściowej interpolacji z jednym rogiem "zgadywanym".
+- **Smooth = jeden przebieg jądra 3×3 (środek 4, krawędź 2, róg 1) z
+  przycięciem okna i renormalizacją** — sąsiedzi poza granicami siatki są
+  po prostu pomijani (nie traktowani jako 0), a `weight` sumuje tylko wagi
+  faktycznie użytych sąsiadów, więc dzielnik renormalizuje się do
+  rzeczywistego rozmiaru okna (potwierdzone przypadkiem testowym z rogu
+  siatki: dzielnik 9 zamiast 16). Sąsiedzi są czytani z całej siatki
+  (niezależnie od `rect`), zapisy trafiają wyłącznie do komórek wewnątrz
+  `rect` — spike poza zaznaczeniem nigdy nie jest nadpisywany, ale nadal
+  wpływa (jako odczyt) na wygładzanie sąsiadującej komórki w zaznaczeniu.
+- **Sentinel NaN/null — "nigdy edytowane, nigdy nie kontrybuują"
+  zaimplementowane jednolicie we wszystkich pięciu operacjach** —
+  `editable = Number.isFinite`; `scaleRect`/`stepRect` filtrują nie-skończone
+  komórki z wyniku (nie emitują dla nich `CellEdit`); `setEqualRect` pomija
+  je i przy liczeniu średniej, i przy zapisie (dodatkowo: gdy WSZYSTKIE
+  komórki zaznaczenia są nie-skończone, zwraca `[]` zamiast `NaN` —
+  przypadek brzegowy nieopisany w briefie, rozstrzygnięty na rzecz
+  fail-closed); `smoothRect` pomija nie-skończony środek całkowicie (bez
+  edita) i nie-skończonych sąsiadów w sumie ważonej; `interpolateRect`
+  pomija nie-skończone komórki niebędące rogami (kontynuuje pętlę) oraz
+  całościowo odrzuca rect z nie-skończonym rogiem (patrz wyżej).
+- **`CellEdit.index` = ten sam row-major flat index co `CellEditDto.index`
+  z Task 3** — `idx(g,r,c) = r*g.cols+c`, identyczne z `cellIndices`
+  (selection.ts) i z tym, czego oczekuje `set_cells` po stronie Rusta;
+  żadnego mapowania pośredniego, Task 5 może przekazać `CellEdit[]`
+  bezpośrednio jako payload komendy.
+- **TSV: `toTsv`/`parseTsv` — puste/nieliczbowe komórki i przecinek jako
+  separator dziesiętny** — `toTsv` renderuje nie-skończone wartości jako
+  pusty string (nie `"NaN"`), żeby wklejenie z powrotem nie psuło
+  `parseTsv`; `parseTsv` akceptuje przecinek PL-locale (`replace(",", ".")`
+  przed `Number(...)`) i odrzuca CAŁY blok (`null`), jeśli którakolwiek
+  komórka się nie parsuje — brief określał to wprost. Decyzja dodatkowa:
+  pojedynczy końcowy pusty wiersz (typowy artefakt kopiowania z arkusza
+  kończącego się `\n`) jest cichy odrzucany przed parsowaniem, żeby nie
+  tworzyć widmowego pustego wiersza na końcu wklejanego bloku.
+- **`pasteEdits` przycina tylko do granic siatki, nie filtruje
+  nie-skończonych komórek docelowych** — brief mówi wyłącznie "clipped to
+  grid"; wklejenie na nie-skończoną komórkę docelową nadpisuje ją (paste
+  jest jawną akcją użytkownika, inaczej niż smooth/interpolate, które
+  działają automatycznie na całym zaznaczeniu) — rozstrzygnięcie przyjęte
+  jako spójne z resztą briefu, który nigdzie nie każe blokować paste na
+  NaN.
+- **Heatmap: `heatColor`/`heatRgb` dzielą jeden `hueOf` po jednym `heatT`**
+  — `hue = round(220*(1-t))` (220°=niebieski przy t=0, 0°=czerwony przy
+  t=1), stała saturacja/lightness 70%/55% zgodnie z briefem;
+  `heatRgb` konwertuje TEN SAM hue przez standardowy 15-liniowy
+  `hslToRgb` (h w stopniach, s/l w 0..1), więc `heatColor` (CSS) i
+  `heatRgb` (three.js vertex colors) są gwarantowane spójne kolorystycznie
+  — jedno źródło prawdy (`hueOf`), nie dwie niezależne implementacje skali.
+  Zdegenerowany zakres (`lo >= hi`) zwraca `t=0.5` (środek skali) zamiast
+  dzielenia przez zero.
+- **Staging jak w Task 1/2/3** — `git add -A` z briefu pominięte (dirty
+  `package.json`/`allowScripts` nadal niezwiązane z tym zadaniem); dodane
+  tylko `src/components/table-editor/*` + ten wpis w
+  `docs/notes/m4-decisions.md`.
