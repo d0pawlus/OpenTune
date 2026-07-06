@@ -63,8 +63,8 @@ foundation Tasks 3–4 build on.
 - Produces:
   - `pub fn tune_to_msq(tune: &Tune) -> String` — serialize the whole tune to `.msq` XML.
   - `pub fn load_msq_into(tune: &mut Tune, xml: &str) -> Result<MsqReport, MsqError>` — parse `.msq`, validate signature vs the tune's definition, apply every constant by name.
-  - `pub struct MsqReport { pub applied: usize, pub skipped: Vec<String> }`
-  - `pub enum MsqError { Xml(String), SignatureMismatch { expected: String, found: String }, BadValue { name: String, detail: String } }` (derive `Debug`, `thiserror::Error`).
+  - `pub struct MsqReport { pub applied: usize, pub skipped: Vec<String>, pub failed: Vec<(String, String)> }` — a load never aborts on a per-constant problem: unknown constants go to `skipped`, value/range/label failures to `failed` (name, reason). The tune is always left fully defined.
+  - `pub enum MsqError { Xml(String), SignatureMismatch { expected: String, found: String } }` (derive `Debug`, `thiserror::Error`). The **only** hard error is the whole-file signature guard.
 
 - [ ] **Step 1: Add crate dependencies**
 
@@ -232,9 +232,37 @@ fn scalar_array_bits_text_round_trip() {
     let report = load_msq_into(&mut fresh, &xml).unwrap();
     assert_eq!(report.applied, 3);
     assert!(report.skipped.is_empty());
+    assert!(report.failed.is_empty());
     assert_eq!(fresh.get("crankingRPM").unwrap(), Value::Scalar(40.0));
     assert_eq!(fresh.get("veTable").unwrap(), Value::Array(vec![10.0, 20.0, 30.0, 40.0]));
     assert_eq!(fresh.get("algorithm").unwrap(), Value::Enum(1));
+}
+
+#[test]
+fn bad_bit_label_is_collected_not_fatal() {
+    // A real .msq may carry a bit-field label the INI's parsed options don't
+    // match exactly. That one constant must fail into the report, not abort
+    // the whole load — the good constants still apply.
+    let good = tune(vec![
+        scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
+        bits_on("algorithm", 8, &["Speed Density", "Alpha-N"]),
+    ]);
+    // Serialize a valid tune, then corrupt only the bit-field's label text.
+    let xml = {
+        let mut t = good;
+        t.set("crankingRPM", Value::Scalar(40.0)).unwrap();
+        t.set("algorithm", Value::Enum(1)).unwrap();
+        tune_to_msq(&t).replace(">Alpha-N<", ">Nope-Not-An-Option<")
+    };
+    let mut fresh = tune(vec![
+        scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
+        bits_on("algorithm", 8, &["Speed Density", "Alpha-N"]),
+    ]);
+    let report = load_msq_into(&mut fresh, &xml).unwrap();
+    assert_eq!(report.applied, 1); // crankingRPM applied
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].0, "algorithm");
+    assert_eq!(fresh.get("crankingRPM").unwrap(), Value::Scalar(40.0));
 }
 
 #[test]
@@ -284,14 +312,16 @@ pub enum MsqError {
     Xml(String),
     #[error("tune signature mismatch: file is for {found:?}, definition is {expected:?}")]
     SignatureMismatch { expected: String, found: String },
-    #[error("bad value for {name}: {detail}")]
-    BadValue { name: String, detail: String },
 }
 
 #[derive(Debug, Default)]
 pub struct MsqReport {
     pub applied: usize,
+    /// Constants in the file that the definition doesn't declare.
     pub skipped: Vec<String>,
+    /// Constants that parsed to a value the model rejected (out of range,
+    /// unknown bit label, unparseable number). `(name, reason)`.
+    pub failed: Vec<(String, String)>,
 }
 
 /// Serialize the whole tune to `.msq` XML.
@@ -338,19 +368,22 @@ pub fn load_msq_into(tune: &mut Tune, xml: &str) -> Result<MsqReport, MsqError> 
     }
     let mut report = MsqReport::default();
     for (name, text) in parsed.constants {
-        let Some(c) = tune.definition().constant(&name) else {
-            report.skipped.push(name);
-            continue;
+        // Resolve the value in a scope that ends the immutable `definition()`
+        // borrow before the mutable `tune.set` below (no clone of the kind).
+        let resolved = match tune.definition().constant(&name) {
+            Some(c) => Some(text_to_value(&text, &c.kind)),
+            None => None,
         };
-        let value = text_to_value(&text, &c.kind).map_err(|detail| MsqError::BadValue {
-            name: name.clone(),
-            detail,
-        })?;
-        tune.set(&name, value).map_err(|e| MsqError::BadValue {
-            name: name.clone(),
-            detail: e.to_string(),
-        })?;
-        report.applied += 1;
+        match resolved {
+            None => report.skipped.push(name),
+            Some(Ok(value)) => match tune.set(&name, value) {
+                Ok(()) => report.applied += 1,
+                Err(e) => report.failed.push((name, e.to_string())),
+            },
+            // Per-constant failure is collected, never fatal — the rest of the
+            // file still applies and the tune stays fully defined.
+            Some(Err(detail)) => report.failed.push((name, detail)),
+        }
     }
     Ok(report)
 }
@@ -671,8 +704,8 @@ In `poll_frame` (the realtime path), guard the `protocol_for(conn, ...)` call th
 
 Then grep for any other site that builds or matches a `Session`/`conn` and wrap in `Some(...)`:
 
-Run: `grep -rn "conn: ActiveConnection\|conn:.*ActiveConnection::\|Session {" src-tauri/src`
-Fix each existing site (including any current `session.rs` tests that build a sim `Session`) to use `conn: Some(...)`.
+Run: `grep -rn "conn: ActiveConnection\|conn:.*ActiveConnection::\|Session {" src-tauri/src src-tauri/tests`
+Fix each existing site (including any `session.rs` unit tests **and** `src-tauri/tests/*` integration tests that build a sim `Session`) to use `conn: Some(...)`. (The full `cargo test` in Step 6 compiles the integration tests, so a missed site surfaces there — but grep both trees now so it isn't a surprise.)
 
 - [ ] **Step 6: Run the tests — verify pass, plus the whole suite**
 
@@ -815,22 +848,24 @@ Add a `reset_session` helper and the two async methods to `impl Owner`:
     }
 
     async fn new_tune(&mut self, ini_path: String) -> Result<DefinitionDto, String> {
-        self.reset_session();
+        // Build FIRST — a bad INI must not wipe the user's current session.
         let session = tokio::task::spawn_blocking(move || ops::build_offline_session(&ini_path))
             .await
             .map_err(|e| format!("new_tune panicked: {e}"))??;
         let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
         self.session = Some(session);
         Ok(dto)
     }
 
     async fn open_tune(&mut self, ini_path: String, msq_path: String) -> Result<DefinitionDto, String> {
-        self.reset_session();
+        // Build FIRST — a bad INI/.msq must not wipe the user's current session.
         let session =
             tokio::task::spawn_blocking(move || ops::build_offline_session_from_msq(&ini_path, &msq_path))
                 .await
                 .map_err(|e| format!("open_tune panicked: {e}"))??;
         let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
         self.session = Some(session);
         Ok(dto)
     }
@@ -970,6 +1005,8 @@ Expected: FAIL — `attach_connection` / `write_all_to_ecu` undefined.
 ```
 
 > NOTE: confirm `Protocol::write(&mut self, page: u16, offset: u16, bytes: &[u8])` signature (from `write_deltas`, `proto.write(*page, offset, bytes)`); `0` is the page-start offset. Against the simulator this succeeds; against serial it returns `SERIAL_UNSUPPORTED` (expected — scope boundary #1).
+>
+> BLOCKING-FACTOR CAVEAT: this writes a whole page in one `proto.write` — a new access pattern (M2 only ever wrote small deltas). A page may exceed `comms.blocking_factor` (251). The Step 1 test against the simulator confirms the sim accepts it; **if the sim rejects an oversized write, chunk the page into `blocking_factor`-sized spans** (`for chunk_offset in (0..len).step_by(blocking_factor) { proto.write(page, chunk_offset, &bytes[..]) }`). Regardless: when real serial write lands (lifting `SERIAL_UNSUPPORTED`), it **must** chunk by `blocking_factor` — leave a one-line comment saying so.
 
 - [ ] **Step 4: Implement `attach_connection` + `verify_signature` in `owner_ops.rs`**
 
@@ -1474,5 +1511,6 @@ git commit -m "feat(app): offline entry panel + write-to-ECU button"
 ## Self-review notes
 
 - **Spec coverage:** `.msq` read/write (Task 1) · optional-conn editing (Task 2) · new/open/save (Task 3) · attach + push + both signature guards (Tasks 1 & 4) · dialog plugin + store + gating (Task 5) · UI + write button (Task 6). `.msq`↔INI guard = Task 1 `SignatureMismatch`; tune↔ECU guard = Task 4 `verify_signature`. Simulator-only push = scope boundary honored (Task 4 note). `hasTune` realized as `definition !== null` + `offline` flag (deviation recorded in Task 5 insight).
-- **Open confirmations for the implementer (flagged inline):** exact `Definition`/`CommsSettings` field set; `quick-xml` 0.36 trim API; `ConnectionManager` state accessor name; `Dashboard` link-gating; capabilities permission string; `App.tsx` layout.
+- **Robustness:** `load_msq_into` never aborts mid-apply — unknown constants → `skipped`, bad values/labels → `failed`; only a whole-file signature mismatch is fatal (Task 1, `bad_bit_label_is_collected_not_fatal` test). This matters because real `.msq` bit-field labels may not byte-match the INI's parsed options.
+- **Open confirmations for the implementer (flagged inline):** exact `Definition`/`CommsSettings` field set; `quick-xml` 0.36 trim API; `ConnectionManager` state accessor name; whole-page write vs `blocking_factor` (Task 4 caveat — verify against the sim); `Dashboard` link-gating; capabilities permission string; `App.tsx` layout.
 
