@@ -40,6 +40,8 @@ export const commands = {
 	 *  emits the new dirty state on success.
 	 */
 	setValue: (name: string, value: Value) => typedError<null, string>(__TAURI_INVOKE("set_value", { name, value })),
+	/**  Write individual cells of an array constant (a table-editor gesture). */
+	setCells: (name: string, cells: CellEditDto[]) => typedError<null, string>(__TAURI_INVOKE("set_cells", { name, cells })),
 	/**  Burn every dirty page to flash. The owner emits the cleared dirty state. */
 	burnTune: () => typedError<null, string>(__TAURI_INVOKE("burn_tune")),
 	/**  Undo the most recent edit, writing the reverted bytes to the ECU. */
@@ -109,6 +111,15 @@ export type CellDiffDto = {
 	index: number,
 	a: number | null,
 	b: number | null,
+};
+
+/**
+ *  One flat cell edit for [`crate::owner::Command::SetCells`] — command
+ *  *input*, hence `Deserialize` in addition to the usual `Serialize`.
+ */
+export type CellEditDto = {
+	index: number,
+	value: number | null,
 };
 
 /**  Which ECU to connect to; deserialized from the frontend command payload. */

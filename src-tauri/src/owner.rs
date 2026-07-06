@@ -258,6 +258,17 @@ impl Owner {
                 self.emit_dirty(&r);
                 let _ = reply.send(r);
             }
+            Command::SetCells { name, cells, reply } => {
+                let r = self
+                    .with_session(move |s| {
+                        let cells: Vec<(u32, f64)> =
+                            cells.iter().map(|c| (c.index, c.value)).collect();
+                        s.set_cells(&name, &cells)
+                    })
+                    .await;
+                self.emit_dirty(&r);
+                let _ = reply.send(r);
+            }
             Command::Burn { reply } => {
                 let r = self.with_session(Session::burn).await;
                 self.emit_dirty(&r);
@@ -297,11 +308,8 @@ impl Owner {
                 let _ = reply.send(Ok(()));
             }
             // M4 Task 0: seams frozen, handlers stubbed until their task
-            // (Task 3 / Task 8 / Task 11). Each still sends exactly one
-            // reply, per the M3 rule.
-            Command::SetCells { reply, .. } => {
-                let _ = reply.send(Err("not implemented (M4)".to_string()));
-            }
+            // (Task 8 / Task 11). Each still sends exactly one reply, per
+            // the M3 rule.
             Command::StartCapture { reply } => {
                 let _ = reply.send(Err("not implemented (M4)".to_string()));
             }

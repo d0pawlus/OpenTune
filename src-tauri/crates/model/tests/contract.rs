@@ -11,7 +11,7 @@ use opentune_ini::{
     CommsSettings, ConstantDef, ConstantKind, Definition, Endianness, EnvelopeFormat, FrontPageDef,
     Number, PageDef, ScalarType,
 };
-use opentune_model::{ModelError, Tune};
+use opentune_model::Tune;
 
 fn hand_built_comms() -> CommsSettings {
     CommsSettings {
@@ -86,10 +86,6 @@ fn new_tune_zeroes_pages_sized_from_definition() {
     assert!(bytes.iter().all(|&b| b == 0));
 }
 
-#[test]
-#[allow(clippy::type_complexity)]
-fn set_cells_signature_is_pinned() {
-    // M4 Task 0: pins the cell-write seam without invoking the `todo!()`
-    // stub body (Task 3 implements it).
-    let _: fn(&mut Tune, &str, &[(u32, f64)]) -> Result<(), ModelError> = Tune::set_cells;
-}
+// The M4 Task 0 `set_cells` signature pin lived here while the body was a
+// `todo!()` stub; Task 3 implemented it, and the real behaviour tests in
+// `tests/tune.rs` (`set_cells_*`) exercise that exact signature.

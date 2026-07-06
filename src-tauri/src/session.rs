@@ -146,6 +146,28 @@ impl Session {
         Ok(dirty_event(tune))
     }
 
+    /// Write individual table cells live: validate on a clone, push only the
+    /// changed byte span to the ECU, then commit. One call = one undo step.
+    pub fn set_cells(
+        &mut self,
+        name: &str,
+        cells: &[(u32, f64)],
+    ) -> Result<TuneDirtyEvent, String> {
+        let Session {
+            conn, def, tune, ..
+        } = self;
+        let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+
+        let mut probe = tune.clone();
+        probe.set_cells(name, cells).map_err(fmt_model_err)?;
+        let deltas = page_deltas(tune, &probe, &def.pages);
+
+        write_deltas(conn, &def.comms, &deltas)?;
+
+        tune.set_cells(name, cells).map_err(fmt_model_err)?;
+        Ok(dirty_event(tune))
+    }
+
     /// Undo the most recent edit, writing the reverted bytes to the ECU. An
     /// undo that does not reach the wire would be a lie, so on write failure we
     /// `redo` to keep the tune consistent with the ECU.
@@ -428,6 +450,93 @@ page = 1
         assert!(err.contains("out of range"), "got: {err}");
         // Nothing written, tune stays clean.
         assert_eq!(&ecu_page(&s, 1)[0..2], &[0, 0]);
+        assert!(!s.tune.as_ref().unwrap().is_dirty());
+    }
+
+    /// A session over an inline INI that declares a 2-D array constant —
+    /// the bundled sample INI has none (M4 Task 3 fixture).
+    fn array_session() -> Session {
+        let ini = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   blockReadTimeout     = 2000
+   blockingFactor       = 121
+   endianness           = little
+   ochGetCommand        = "A"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+
+[Constants]
+    endianness      = little
+    nPages          = 1
+    pageSize        = 64
+
+page = 1
+      veTable = array,  U08,  0, [4x8], "%",  1.0, 0.0, 0.0, 255.0,  0
+      reqFuel = scalar, U16, 32,        "ms", 0.1, 0.0, 0.0, 6553.5, 1
+"#;
+        let def = Arc::new(load_definition_from_str(ini).expect("array INI parses"));
+        let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
+        Session {
+            conn,
+            def,
+            tune: None,
+            snapshot: None,
+        }
+    }
+
+    #[test]
+    fn set_cells_reaches_the_wire_as_one_contiguous_span() {
+        let mut s = array_session();
+        s.load_tune().unwrap();
+
+        // One gesture: two adjacent cells plus one far cell.
+        let before = s.tune.clone().unwrap();
+        let ev = s
+            .set_cells("veTable", &[(0, 5.0), (1, 7.0), (12, 9.0)])
+            .expect("set_cells");
+        assert!(ev.dirty, "a cell gesture dirties the tune");
+        assert_eq!(ev.dirty_pages, vec![1]);
+
+        // (a) the session tune reflects the edited cells...
+        let Value::Array(cells) = s.tune.as_ref().unwrap().get("veTable").unwrap() else {
+            panic!("veTable is an array");
+        };
+        assert_eq!((cells[0], cells[1], cells[12]), (5.0, 7.0, 9.0));
+
+        // ...and the bytes reached ECU RAM (scale 1.0 → raw == physical).
+        let page = ecu_page(&s, 1);
+        assert_eq!((page[0], page[1], page[12]), (5, 7, 9));
+
+        // (b) the wire span is exactly first_changed..=last_changed — ONE
+        // contiguous span. The far cell stretches it: the documented
+        // trade-off of `page_deltas`, where the untouched bytes in between
+        // are rewritten with identical values.
+        let deltas = page_deltas(&before, s.tune.as_ref().unwrap(), &s.def.pages);
+        assert_eq!(deltas.len(), 1, "one page, one span");
+        let (page_no, start, bytes) = &deltas[0];
+        assert_eq!((*page_no, *start), (1, 0));
+        assert_eq!(bytes.len(), 13, "spans cell 0 through cell 12 inclusive");
+        assert_eq!(bytes[..2], [5, 7]);
+        assert_eq!(bytes[12], 9);
+        assert!(
+            bytes[2..12].iter().all(|&b| b == 0),
+            "in-between bytes rewritten with identical (unchanged) values"
+        );
+    }
+
+    #[test]
+    fn set_cells_rejected_gesture_leaves_wire_and_tune_untouched() {
+        let mut s = array_session();
+        s.load_tune().unwrap();
+        // Cell 1 is out of range (high = 255) → the whole gesture fails
+        // on the validation clone, before any wire I/O.
+        let err = s.set_cells("veTable", &[(0, 5.0), (1, 999.0)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {err}");
+        assert_eq!(&ecu_page(&s, 1)[0..2], &[0, 0], "nothing written");
         assert!(!s.tune.as_ref().unwrap().is_dirty());
     }
 

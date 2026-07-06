@@ -206,3 +206,45 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   allowliście dla kluczy `wueAnalyzeMap`). Oba do ewentualnego podjęcia,
   gdy analiza WUE/lambda wejdzie do zakresu (post-M4); rozszerzenie
   `VeAnalyzeDef` będzie wtedy addytywne.
+
+## Task 3 — `set_cells`: zapis komórek per-gest (model → session → owner → IPC)
+
+- **Decode-modify-set zamiast równoległej ścieżki bajtowej** —
+  `Tune::set_cells` dekoduje całą tablicę (`get`), nakłada komórki gestu i
+  re-enkoduje przez istniejące `Tune::set`. Dzięki temu walidacja zakresów
+  (per-element `low`/`high` z `encode_scalar` → `ModelError::OutOfRange`),
+  dirty-tracking i undo są współdzielone verbatim z M2 — zero nowej logiki
+  kodeka, zero ryzyka dywergencji. Walidacja indeksów (out-of-bounds →
+  `TypeMismatch`) i typu (skalar → `TypeMismatch`) dzieje się PRZED dotknięciem
+  jakiegokolwiek bajtu; odrzucony gest nie zostawia śladu.
+- **Jeden gest = jeden `Edit` = jeden krok undo** — cała paczka komórek
+  (paste/smooth/multi-select w przyszłym edytorze tabel) przechodzi przez
+  jedno wywołanie `set`, więc `undo()` cofa cały gest atomowo. Pusty gest
+  (`&[]`) to świadomy no-op (`Ok`), bez wpisu undo.
+- **Trade-off ciągłego spanu zaakceptowany** — `page_deltas` (session.rs)
+  diffuje strony do JEDNEGO ciągłego spanu `first_changed..=last_changed`;
+  odległa komórka rozciąga span i bajty pomiędzy są przepisywane identycznymi
+  wartościami. Dla realnych gestów edytora (sąsiadujące komórki) span jest
+  minimalny; koszt gorszego przypadku to nadmiarowe bajty na wire przy
+  identycznej zawartości — przypięte testem
+  `set_cells_reaches_the_wire_as_one_contiguous_span` jako udokumentowane
+  zachowanie, nie bug.
+- **`Session::set_cells` lustrzane wobec `set_value`** — walidacja na klonie,
+  wire przed commitem, `TuneDirtyEvent` z modelu; arm `SetCells` w ownerze w
+  kształcie arma `SetValue` (`with_session` + `emit_dirty` + dokładnie jedna
+  odpowiedź). `CellEditDto { index: u32, value: f64 }` mapowane na `(u32, f64)`
+  na granicy ownera — krotki pozostają wewnętrzne dla Rusta (specta 0.0.12
+  nie zniesie usize/u64 przez IPC).
+- **Fixture testowe 4x8 zamiast 16x16 z briefu** — wspólne fixture modelu
+  (`tests/common/mod.rs`) ma strony 64-bajtowe; pełne 16x16 U08 (256 B) się
+  nie mieści. Zachowania pod testem (multi-cell, bounds, range, jeden krok
+  undo) są niezależne od kształtu; indeks 17 pozostaje ważny, 9999 poza
+  zakresem — asercje briefu weszły verbatim. INI sesyjnego testu deklaruje
+  analogiczny `veTable = array, U08, 0, [4x8]` (bundlowany sample INI nie ma
+  żadnej tablicy).
+- **Pin sygnatury z Task 0 usunięty z `contract.rs`** — istniał wyłącznie po
+  to, by przypiąć seam bez wywoływania `todo!()`; realne testy zachowania
+  (`tests/tune.rs::set_cells_*`) ćwiczą teraz dokładnie tę sygnaturę.
+- **Staging jak w Task 1** — `git add -A` z briefu pominięte; w drzewie nadal
+  leży niezwiązana zmiana `package.json` (`allowScripts`), dodawane tylko
+  konkretne pliki zadania + zregenerowany `src/ipc/bindings.ts`.
