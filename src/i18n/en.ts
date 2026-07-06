@@ -41,6 +41,7 @@ export const en = {
   "table.help": "Help",
   "table.clipboardError": "Clipboard unavailable",
   "table.noValues": "Table values not loaded yet",
+  "curve.preview": "Curve preview",
   "diff.title": "Diff",
   "diff.snapshot": "Snapshot baseline",
   "diff.compare": "Compare",

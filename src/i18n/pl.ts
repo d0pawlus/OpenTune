@@ -42,6 +42,7 @@ export const pl: Record<keyof typeof en, string> = {
   "table.help": "Pomoc",
   "table.clipboardError": "Schowek niedostępny",
   "table.noValues": "Wartości tabeli jeszcze nie wczytane",
+  "curve.preview": "Podgląd krzywej",
   "diff.title": "Różnice",
   "diff.snapshot": "Zapisz stan odniesienia",
   "diff.compare": "Porównaj",

@@ -476,6 +476,73 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   już od Taska 5 (`definition.curves.length > 0`); ten Task wypełnia tylko
   zawartość, żaden nowy JSX w nawigacji.
 
+- **Bug złapany przez test komponentu, nie przez inspekcję: kolejność
+  hooków** — pierwsza wersja miała drugi `useEffect` (kursor rAF) PO
+  wczesnym `return` gałęzi "wartości jeszcze niewczytane". Przy pierwszym
+  renderze (`yArray` jeszcze `null`) React woła tylko 1 efekt przed
+  returnem; po zapisaniu wartości przez fetch efekt store'u wywołuje
+  ponowny render, `yArray` już istnieje, funkcja przechodzi dalej i woła
+  DRUGI efekt po raz pierwszy w tym renderze → "Rendered more hooks than
+  during the previous render." `CurveEditor.test.tsx`'s pierwszy test
+  złapał to natychmiast (real DOM render + fetch przez zamockowane IPC).
+  Naprawione przeniesieniem obliczenia `xr` (i wszystkiego, czego ten hook
+  potrzebuje: `xArray`/`xs`) ORAZ samego efektu rAF NAD wczesny return —
+  wszystkie hooki wołane bezwarunkowo w każdym renderze, zgodnie z regułami
+  Reacta. `TableEditor.tsx` nie miał tego problemu (Task 5 nie dokłada
+  żadnego hooka po swoim wczesnym returnie) — to defekt specyficzny dla
+  Taska 6, nieprzewidziany przez szkielet briefu.
+
+- **`heatLo`/`heatHi` przekazywane do `TableGrid` = `yr.min`/`yr.max`** —
+  `TableGrid` (zamrożony w Tasku 5) wymaga tych dwóch propsów do
+  `heatColor`; krzywa nie ma odpowiednika `zConst.low/high` z tabeli w
+  sensownej postaci innej niż sama oś Y, więc ponownie użyty jest DOKŁADNIE
+  ten sam `yr` (z `axisRange(curve.y_axis, ys)`), który i tak zasila
+  podgląd SVG — jedno źródło prawdy dla "zakresu Y", nie druga niezależna
+  heurystyka. Degenerację (`min === max`) `heatColor`/`heatT` już
+  obsługują (Task 4, zwraca t=0.5).
+
+- **Scale (toolbar-only w Tasku 5) świadomie nieosiągalny w edytorze
+  krzywych** — brief nie tworzy `CurveToolbar`, a `scaleRect` w Tasku 5
+  jest wołany WYŁĄCZNIE z przycisku toolbara (brak skrótu klawiszowego);
+  bez toolbara operacja jest więc nieużywalna z klawiatury. Pozostała
+  reszta "tej samej powierzchni klawiaturowej" (strzałki/Tab/Ctrl+A/Enter/
+  Esc/type-to-edit/+−/=/// s/Ctrl+C/V) działa bez zmian. Zgłoszone jako
+  świadomy brak, nie przeoczenie.
+
+- **Podział pliku pod limit 400 linii: `binValues.ts`** — cztery drobne,
+  czyste funkcje odczytu `ConstantDto`/`Value` (`arrayLength`/`arrayOf`/
+  `labelsOf`/`numericOf`, odpowiedniki prywatnych helperów `TableEditor.tsx`
+  `arrayShape`/`binLabels`) wydzielone do osobnego modułu w
+  `src/components/curve-editor/`, żeby `CurveEditor.tsx` (kontener) zmieścił
+  się pod limitem (wyszło 376 linii). Nie eksportowane z `TableEditor.tsx`
+  (ten task go nie dotyka — poza zakresem plików briefu) — stąd osobna,
+  niewielka duplikacja logiki zamiast współdzielenia z Task 5, zaakceptowana
+  świadomie; przetestowane osobno (`binValues.test.ts`).
+
+- **`polylinePoints` — brak formatowania (`toFixed`) współrzędnych** —
+  przypięty przez brief string `"10,90 190,10"` to gołe liczby całkowite;
+  `toFixed(n)` dałoby `"10.00,90.00"` i złamałoby asercję. Współrzędne
+  niecałkowite (typowy przypadek) renderują się z pełną precyzją
+  zmiennoprzecinkową w atrybucie `points` — tanie, SVG i tak je zaokrągla
+  wizualnie, brief nie wymaga zaokrąglania.
+
+- **`axisRange`: pojedyncza `null`-owa granica traktowana jak obie
+  `null`** — brief mówi "falls back ... when bounds are null" (liczba
+  mnoga); przyjęto, że TYLKO gdy OBA `min` i `max` są nie-`null` wygrywa
+  oś literalna, w przeciwnym razie (zero, jedna lub obie granice `null`)
+  pada fallback na finite extents danych. Przypięte osobnym przypadkiem
+  testowym w `curveMath.test.ts` ("does not fall back when only one bound
+  is literal").
+
+- **`cursorFraction`/`polylinePoints` — zdegenerowany zakres (`max <= min`)
+  nie dzieli przez zero** — `cursorFraction` zwraca `null` (kursor chowa
+  się zamiast przypinać do krawędzi lub rzucać `NaN`);
+  `polylinePoints`/wewnętrzny `fractionOf` zwraca `0.5` (środek), lustrzane
+  wobec `heatmap.ts`'s `heatT` (Task 4). Żaden z dwóch przypadków nie jest
+  dosłownie przypięty przez brief (który testuje tylko przypadki
+  skończone/w zakresie) — rozstrzygnięcie kontrolera na rzecz "nigdy
+  NaN/Infinity w renderowanym SVG", przetestowane jawnie.
+
 - **Staging jak w Task 1-5** — `git add -A` z briefu pominięte (dirty
   `package.json`/`allowScripts` nadal poza zakresem); dwa commity: fold-in
   `fix(ini):` (parser + oba testy + ten wpis i update nagłówka modułu),

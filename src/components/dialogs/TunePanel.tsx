@@ -7,6 +7,7 @@ import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
 import { TableEditor } from "../table-editor/TableEditor";
+import { CurveEditor } from "../curve-editor/CurveEditor";
 import { TuneDiff } from "../diff/TuneDiff";
 import "./dialogs.css";
 
@@ -235,7 +236,8 @@ export function TunePanel({ locale }: { locale: Locale }) {
             </nav>
           )}
 
-          {/* Renders nothing until Task 6 — the sim INI has no curves yet. */}
+          {/* Renders nothing against the bundled sim INI (no curves yet);
+              content is `CurveEditor` (Task 6) below. */}
           {definition.curves.length > 0 && (
             <nav className="tune-menu" aria-label={t("curve.navLabel", locale)}>
               {definition.curves.map((curve) => (
@@ -258,6 +260,8 @@ export function TunePanel({ locale }: { locale: Locale }) {
         <div className="tune-content">
           {activeTable ? (
             <TableEditor locale={locale} />
+          ) : activeCurve ? (
+            <CurveEditor locale={locale} />
           ) : activeDialog ? (
             <DialogEngine
               definition={definition}
