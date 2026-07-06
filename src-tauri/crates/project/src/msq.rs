@@ -62,12 +62,22 @@ pub fn tune_to_msq(tune: &Tune) -> String {
 pub fn load_msq_into(tune: &mut Tune, xml: &str) -> Result<MsqReport, MsqError> {
     let expected = tune.definition().comms.signature.clone();
     let parsed = parse_constants(xml)?;
-    if let Some(found) = &parsed.signature {
-        if found != &expected {
+    // Fail closed: the signature guard is the one mandatory hard error on
+    // load. A file with NO `<versionInfo signature>` is rejected too — we
+    // never apply an unsigned/unknown-provenance tune unchecked.
+    match parsed.signature.as_deref() {
+        Some(found) if found == expected => {}
+        Some(found) => {
             return Err(MsqError::SignatureMismatch {
                 expected,
-                found: found.clone(),
-            });
+                found: found.to_string(),
+            })
+        }
+        None => {
+            return Err(MsqError::SignatureMismatch {
+                expected,
+                found: "(no versionInfo signature)".to_string(),
+            })
         }
     }
     let mut report = MsqReport::default();

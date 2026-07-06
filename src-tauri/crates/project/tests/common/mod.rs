@@ -65,6 +65,21 @@ pub fn array_on(name: &str, offset: usize, rows: usize, cols: usize) -> Constant
     }
 }
 
+pub fn text_on(name: &str, offset: usize, len: usize) -> ConstantDef {
+    ConstantDef {
+        name: name.to_string(),
+        page: 1,
+        offset,
+        kind: ConstantKind::Text { len },
+        scale: Number::Lit(1.0),
+        translate: Number::Lit(0.0),
+        units: String::new(),
+        low: Number::Lit(0.0),
+        high: Number::Lit(0.0),
+        digits: 0,
+    }
+}
+
 pub fn bits_on(name: &str, offset: usize, options: &[&str]) -> ConstantDef {
     ConstantDef {
         name: name.to_string(),

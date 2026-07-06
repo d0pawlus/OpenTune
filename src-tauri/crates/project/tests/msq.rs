@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 mod common;
 
-use common::{array_on, bits_on, scalar, tune, SIGNATURE};
+use common::{array_on, bits_on, scalar, text_on, tune, SIGNATURE};
 use opentune_ini::ScalarType;
 use opentune_model::Value;
 use opentune_project::msq::{load_msq_into, tune_to_msq, MsqError};
@@ -12,11 +12,14 @@ fn scalar_array_bits_text_round_trip() {
         scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
         array_on("veTable", 4, 2, 2),
         bits_on("algorithm", 8, &["Speed Density", "Alpha-N", "MAP"]),
+        text_on("tuneName", 16, 8),
     ]);
     t.set("crankingRPM", Value::Scalar(40.0)).unwrap();
     t.set("veTable", Value::Array(vec![10.0, 20.0, 30.0, 40.0]))
         .unwrap();
     t.set("algorithm", Value::Enum(1)).unwrap(); // "Alpha-N"
+    t.set("tuneName", Value::Text("MyTune".to_string()))
+        .unwrap();
 
     let xml = tune_to_msq(&t);
     assert!(xml.contains(&format!("signature=\"{SIGNATURE}\"")));
@@ -26,9 +29,10 @@ fn scalar_array_bits_text_round_trip() {
         scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
         array_on("veTable", 4, 2, 2),
         bits_on("algorithm", 8, &["Speed Density", "Alpha-N", "MAP"]),
+        text_on("tuneName", 16, 8),
     ]);
     let report = load_msq_into(&mut fresh, &xml).unwrap();
-    assert_eq!(report.applied, 3);
+    assert_eq!(report.applied, 4);
     assert!(report.skipped.is_empty());
     assert!(report.failed.is_empty());
     assert_eq!(fresh.get("crankingRPM").unwrap(), Value::Scalar(40.0));
@@ -37,6 +41,58 @@ fn scalar_array_bits_text_round_trip() {
         Value::Array(vec![10.0, 20.0, 30.0, 40.0])
     );
     assert_eq!(fresh.get("algorithm").unwrap(), Value::Enum(1));
+    assert_eq!(
+        fresh.get("tuneName").unwrap(),
+        Value::Text("MyTune".to_string())
+    );
+}
+
+#[test]
+fn unknown_constant_is_skipped_not_fatal() {
+    // A .msq may name a constant the loaded Definition doesn't declare
+    // (different firmware build). It goes to `skipped`, never aborts the
+    // load, and the constants the definition DOES declare still apply.
+    let mut t = tune(vec![scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0)]);
+    t.set("crankingRPM", Value::Scalar(40.0)).unwrap();
+    // Inject a constant the fresh tune's definition has no knowledge of.
+    let xml = tune_to_msq(&t).replace(
+        "  </page>",
+        "    <constant name=\"doesNotExistInDef\">1</constant>\n  </page>",
+    );
+
+    let mut fresh = tune(vec![scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0)]);
+    let report = load_msq_into(&mut fresh, &xml).unwrap();
+    assert_eq!(report.applied, 1); // crankingRPM still applied
+    assert!(report.failed.is_empty());
+    assert_eq!(report.skipped, vec!["doesNotExistInDef".to_string()]);
+    assert_eq!(fresh.get("crankingRPM").unwrap(), Value::Scalar(40.0));
+}
+
+#[test]
+fn out_of_range_value_is_collected_in_failed() {
+    // A value that parses fine but lands outside the constant's [low, high]
+    // is rejected by `tune.set` (ModelError::OutOfRange) and collected into
+    // `failed` — a distinct path from the bad-bit-label test, which fails
+    // inside `text_to_value` before `set` is ever reached.
+    let mut t = tune(vec![
+        scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
+        scalar("boostLimit", ScalarType::U08, 1, 1.0, 255.0),
+    ]);
+    t.set("crankingRPM", Value::Scalar(40.0)).unwrap();
+    t.set("boostLimit", Value::Scalar(200.0)).unwrap();
+    // 999 parses as a scalar but exceeds high=255 → OutOfRange on `set`.
+    let xml = tune_to_msq(&t).replace(">200<", ">999<");
+
+    let mut fresh = tune(vec![
+        scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
+        scalar("boostLimit", ScalarType::U08, 1, 1.0, 255.0),
+    ]);
+    let report = load_msq_into(&mut fresh, &xml).unwrap();
+    assert_eq!(report.applied, 1); // crankingRPM applied
+    assert!(report.skipped.is_empty());
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(report.failed[0].0, "boostLimit");
+    assert_eq!(fresh.get("crankingRPM").unwrap(), Value::Scalar(40.0));
 }
 
 #[test]
