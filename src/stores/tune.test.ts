@@ -4,10 +4,12 @@ import { useTuneStore } from "./tune";
 import * as ipc from "../ipc/bindings";
 import type { TuneDirtyEvent, Value } from "../ipc/bindings";
 
-// Mock the IPC module: the store calls `commands.setValue` for live writes.
+// Mock the IPC module: the store calls `commands.setValue`/`setCells` for
+// live writes.
 vi.mock("../ipc/bindings", () => ({
   commands: {
     setValue: vi.fn(),
+    setCells: vi.fn(),
   },
 }));
 
@@ -76,5 +78,97 @@ describe("tune store", () => {
     ).rejects.toThrow("boom");
 
     expect("newConst" in useTuneStore.getState().values).toBe(false);
+  });
+
+  it("mergeValues patches without dropping existing keys", () => {
+    useTuneStore.setState({ values: { reqFuel: { Scalar: 12.5 } } });
+
+    useTuneStore.getState().mergeValues({ crankRPM: { Scalar: 300 } });
+
+    expect(useTuneStore.getState().values).toEqual({
+      reqFuel: { Scalar: 12.5 },
+      crankRPM: { Scalar: 300 },
+    });
+  });
+
+  it("setCells optimistically patches values[name].Array at the edit indices", async () => {
+    useTuneStore.setState({
+      values: { veTable: { Array: [10, 20, 30, 40] } },
+    });
+    vi.mocked(ipc.commands.setCells).mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
+
+    const pending = useTuneStore
+      .getState()
+      .setCells("veTable", [{ index: 1, value: 99 }]);
+    // Optimistic: the patched array is present before the command resolves.
+    expect(useTuneStore.getState().values.veTable).toEqual({
+      Array: [10, 99, 30, 40],
+    });
+    await pending;
+
+    expect(ipc.commands.setCells).toHaveBeenCalledWith("veTable", [
+      { index: 1, value: 99 },
+    ]);
+    expect(useTuneStore.getState().values.veTable).toEqual({
+      Array: [10, 99, 30, 40],
+    });
+  });
+
+  it("setCells restores the previous array when the command errors, and rethrows", async () => {
+    useTuneStore.setState({
+      values: { veTable: { Array: [10, 20, 30, 40] } },
+    });
+    vi.mocked(ipc.commands.setCells).mockResolvedValue({
+      status: "error",
+      error: "index 1: value 99 is out of range",
+    });
+
+    await expect(
+      useTuneStore.getState().setCells("veTable", [{ index: 1, value: 99 }]),
+    ).rejects.toThrow("out of range");
+
+    // Rolled back to the prior array.
+    expect(useTuneStore.getState().values.veTable).toEqual({
+      Array: [10, 20, 30, 40],
+    });
+  });
+
+  it("setActiveTable clears activeDialog and activeCurve", () => {
+    useTuneStore.setState({ activeDialog: "engine", activeCurve: "curve1" });
+
+    useTuneStore.getState().setActiveTable("veTable1Tbl");
+
+    expect(useTuneStore.getState().activeTable).toBe("veTable1Tbl");
+    expect(useTuneStore.getState().activeDialog).toBeNull();
+    expect(useTuneStore.getState().activeCurve).toBeNull();
+  });
+
+  it("setActiveDialog clears activeTable and activeCurve", () => {
+    useTuneStore.setState({
+      activeTable: "veTable1Tbl",
+      activeCurve: "curve1",
+    });
+
+    useTuneStore.getState().setActiveDialog("engine");
+
+    expect(useTuneStore.getState().activeDialog).toBe("engine");
+    expect(useTuneStore.getState().activeTable).toBeNull();
+    expect(useTuneStore.getState().activeCurve).toBeNull();
+  });
+
+  it("setActiveCurve clears activeDialog and activeTable", () => {
+    useTuneStore.setState({
+      activeDialog: "engine",
+      activeTable: "veTable1Tbl",
+    });
+
+    useTuneStore.getState().setActiveCurve("curve1");
+
+    expect(useTuneStore.getState().activeCurve).toBe("curve1");
+    expect(useTuneStore.getState().activeDialog).toBeNull();
+    expect(useTuneStore.getState().activeTable).toBeNull();
   });
 });

@@ -1,0 +1,126 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.table-editor {
+  --te-hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: var(--space-md);
+  color: var(--color-text);
+}
+
+.te-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.te-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.te-hint {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.te-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.te-scale {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.te-scale input {
+  width: 4.5rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--te-hairline);
+  border-radius: 0.3rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.te-error {
+  margin: 0.5rem 0 0;
+  color: oklch(55% 0.2 25);
+  font-size: 0.85rem;
+}
+
+/* The single keyboard surface: wide tables scroll inside their container
+   (overflow-x: auto), never the page. */
+.te-surface {
+  margin-top: var(--space-md);
+  overflow-x: auto;
+  outline: none;
+}
+
+.te-surface:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent);
+  border-radius: 0.2rem;
+}
+
+.te-grid {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+}
+
+.te-grid th {
+  padding: 0.25rem 0.45rem;
+  font-weight: 600;
+  font-size: 0.75rem;
+  opacity: 0.85;
+  text-align: right;
+}
+
+.te-grid td {
+  padding: 0.25rem 0.45rem;
+  border: 1px solid var(--te-hairline);
+  text-align: right;
+  min-width: 3rem;
+  cursor: cell;
+  /* Heat backgrounds are mid-lightness by construction (hsl lightness 55%
+     across the whole blue→red sweep), so this fixed dark text reads on all
+     of them, in both themes. */
+  color: oklch(15% 0 0);
+}
+
+.te-cell--selected {
+  outline: 1px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.te-cell--active {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.te-cell-input {
+  width: 3rem;
+  padding: 0;
+  border: none;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  text-align: right;
+  outline: none;
+}
+
+.te-3d-placeholder {
+  margin-top: var(--space-md);
+  min-height: 12rem;
+  border: 1px dashed var(--te-hairline);
+  border-radius: 0.5rem;
+}
+
+.te-empty {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

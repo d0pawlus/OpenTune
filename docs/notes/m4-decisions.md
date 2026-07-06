@@ -318,3 +318,89 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   `package.json`/`allowScripts` nadal niezwiązane z tym zadaniem); dodane
   tylko `src/components/table-editor/*` + ten wpis w
   `docs/notes/m4-decisions.md`.
+
+## Task 5 — edytor tabel 2D: DOM grid, klawiatura, schowek, wpięcie w store
+
+- **Model a11y — jedna powierzchnia klawiaturowa + roving cell przez
+  `aria-activedescendant`** (zarejestrowany wyjątek ARCHITECTURE §3, decyzja 6):
+  semantyczny `<table role="grid">` (nagłówki `<th scope="col/row">`,
+  `<td role="gridcell" aria-selected>`), owinięty w `div.te-surface` z
+  `tabIndex=0`, `onKeyDown` i `aria-activedescendant={gridId}-{index}`.
+  Wrapper dostał `role="application"` — brief nie przypisywał mu roli, a
+  `aria-activedescendant` jest ważne tylko na rolach kompozytowych;
+  `application` jest uczciwym gospodarzem (fokus zostaje na wrapperze,
+  aktywna komórka ogłaszana przez id). Komórki NIE są fokusowalne — zero
+  roving-tabindex, jedna powierzchnia, jak przypiął brief.
+- **Inwersja wierszy wyświetlania: góra = najwyższe obciążenie** (konwencja
+  tuningowa) — wiersz wyświetlany `d` mapuje się na wiersz danych
+  `rows-1-d` WYŁĄCZNIE w `TableGrid` (renderowanie) ; selection/ops/store/
+  indeksy `CellEdit` pozostają w row-major porządku danych 1:1 z
+  `CellEditDto.index` Taska 3. Konsekwencja klawiszowa: `ArrowUp` = wiersz
+  danych +1 (wizualnie w górę), `ArrowDown` = -1; "Enter = commit + w dół
+  ekranu" = wiersz danych -1, z zaciskiem na krawędzi.
+- **Keymap — rozstrzygnięcia poza literą briefu:** (1) `+`/`-` mają
+  pierwszeństwo przed type-to-edit, więc `-` NIE otwiera draftu ujemnego —
+  wartości ujemne wpisuje się przez Enter (draft zasiany bieżącą wartością)
+  albo dopisanie `-` w otwartym draftcie (klawisze operacji przepuszczane do
+  inputa, gdy draft otwarty lub trzymany modyfikator); (2) `Shift+=` daje
+  `+` na układzie US, więc krok przez `+` z Shift = ×10 zgodnie ze
+  skeletonem briefu (`step * (e.shiftKey ? 10 : 1)`) — krok ×1 przez `+`
+  wymaga klawiatury numerycznej, przyjęte świadomie; (3) strzałki/Tab przy
+  otwartym draftcie commitują draft i dopiero przesuwają (zachowanie
+  arkuszowe); (4) draft startuje tylko na komórce skończonej — komórki
+  NaN/null ("—") nie da się edytować ani Enterem, ani type-to-edit.
+- **Polityka paste/NaN (decyzja kontrolera, zaimplementowana w warstwie
+  edytora):** `pasteEdits` (Task 4, zamrożone) przycina tylko do granic —
+  edytor filtruje edits, których BIEŻĄCA komórka docelowa jest
+  nie-skończona (`Number.isFinite` na wartości siatki), zanim wyśle gest.
+  Paste jest więc spójny z pięcioma operacjami (nigdy nie edytują komórek
+  nie-skończonych). Miły efekt uboczny round-tripu: `toTsv` renderuje NaN
+  jako pustą komórkę, `parseTsv` parsuje pustą jako 0 (brief-faithful, bez
+  zmian w tsv.ts) — ale skopiowany blok z dziurą NaN wklejony z powrotem w
+  to samo miejsce NIE nadpisze dziury zerem, bo filtr odrzuci edit na
+  nie-skończonym celu. Zero na skończonym celu z pustej komórki wklejonej
+  skądinąd pozostaje możliwy — świadomie, `parseTsv` jest zamrożony.
+- **Zakres heatmapy — "both literal":** `low`/`high` stałej Z użyte tylko
+  gdy OBA są literalne (bound `{expr}` projektuje się na null), inaczej
+  finite min/max danych — dosłownie wg briefu, nie per-bound.
+- **Keyed remount zamiast reset-effect:** eslint (`react-hooks/
+  set-state-in-effect`, v7) blokuje `setState` w efekcie resetującym stan
+  lokalny przy zmianie tabeli. Rozwiązane idiomatycznie: zewnętrzny
+  `TableEditor` wybiera tabelę ze store'a i renderuje wewnętrzny `Editor`
+  z `key={table.name}` — selection/draft/error/view/scaleFactor resetują
+  się przez remount, zero efektów resetujących.
+- **Podział plików (limit <400 linii):** kontener urósł do 430 linii, więc
+  toolbar wydzielony do prezentacyjnego `TableToolbar.tsx` (title + hint
+  `upDownLabel`, operacje, scale factor + Apply, przełącznik 2D/3D, link
+  help) — kontener 386, grid 148, toolbar 93. Podział pozostaje uczciwy:
+  klawiatura/dane/commit wyłącznie w kontenerze, prezentacja w liściach.
+- **Fixture testowe 2×3 zamiast 2×2 z briefu:** w siatce 2×2 każda komórka
+  recta pełnego zaznaczenia jest rogiem, więc `interpolateRect` zwraca `[]`
+  i asercja (f) briefu ("Interpolate dispatches the Task 4 edits") nie
+  miałaby czego obserwować (zamrożony `applyEdits` early-returnuje na
+  pustych edits). Minimalny kształt z wnętrzem: 2×3, interpolacja 1×3
+  wzdłuż wiersza → dokładnie jeden edit `{index:1, value:61}`.
+- **Nawigacja w `TunePanel`:** trzy `<nav.tune-menu>` (menu/tables/curves)
+  owinięte w nowy `div.tune-navs` — `.tune-body` to grid 2-kolumnowy,
+  więc trzy navy jako bezpośrednie dzieci łamałyby układ; border/padding
+  kolumny przeniesione z `.tune-menu` na `.tune-navs` (dialogs.css). Blok
+  curves renderuje się dopiero gdy definicja ma krzywe (sim INI: brak —
+  Task 6 to podejmie). Content area: `activeTable` wygrywa nad
+  `activeDialog` (store i tak gwarantuje wyłączność — settery czyszczą
+  pozostałe dwa).
+- **`TableField.tsx` usunięty; reguły `.table-*` NIE migrowane** — brief
+  każe migrować reguły "still-referenced", a po usunięciu TableFielda
+  żaden plik nie używa `.table-field/-title/-grid/-cell/-empty`
+  (zweryfikowane grepem) → usunięte z dialogs.css z komentarzem-nagrobkiem.
+  Build (tsc) dowodzi braku wiszących importów.
+- **Selekcja startowa = komórka danych (0,0)** — wizualnie lewy-dolny róg
+  (najniższe obciążenie/RPM), spójne z tym, że indeks 0 jest kanoniczny w
+  testach briefu; brief nie przypinał pozycji startowej.
+- **Dwa testy dołożone do suite'u Taska 4 (sankcjonowany fold-in, review
+  Minor):** `interpolateRect` → `[]` gdy róg recta nie-skończony (guard
+  tableOps.ts:46), `setEqualRect` → `[]` gdy WSZYSTKIE komórki zaznaczenia
+  nie-skończone (guard :113). Oba przechodzą na niezmienionym tableOps.ts —
+  pokrywają istniejące guardy, nie zmieniają semantyki.
+- **Staging jak w Task 1-4** — `git add -A` z briefu pominięte (dirty
+  `package.json`/`allowScripts` nadal poza zakresem); jawne ścieżki +
+  `git rm` na `TableField.tsx`.

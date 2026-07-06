@@ -6,7 +6,7 @@ import { isLinkAlive, useConnectionStore } from "../../stores/connection";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
-import { TableField } from "./TableField";
+import { TableEditor } from "../table-editor/TableEditor";
 import { TuneDiff } from "../diff/TuneDiff";
 import "./dialogs.css";
 
@@ -50,13 +50,11 @@ export function TunePanel({ locale }: { locale: Locale }) {
   const values = useTuneStore((s) => s.values);
   const dirty = useTuneStore((s) => s.dirty);
   const activeDialog = useTuneStore((s) => s.activeDialog);
+  const activeTable = useTuneStore((s) => s.activeTable);
+  const activeCurve = useTuneStore((s) => s.activeCurve);
 
   const [conditions, setConditions] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
-
-  const constantsByName = definition
-    ? Object.fromEntries(definition.constants.map((c) => [c.name, c]))
-    : {};
 
   // Re-read all values + re-evaluate all conditions from the backend.
   const refresh = useCallback(async (def: DefinitionDto) => {
@@ -200,26 +198,67 @@ export function TunePanel({ locale }: { locale: Locale }) {
       {error && <p className="tune-error">{error}</p>}
 
       <div className="tune-body">
-        <nav className="tune-menu" aria-label={t("tune.menu", locale)}>
-          {definition.menus.flatMap((menu) =>
-            menu.items.map((item) => (
-              <button
-                key={item.dialog}
-                type="button"
-                className="tune-menu-item"
-                aria-current={activeDialog === item.dialog}
-                onClick={() =>
-                  useTuneStore.getState().setActiveDialog(item.dialog)
-                }
-              >
-                {item.label}
-              </button>
-            )),
+        <div className="tune-navs">
+          <nav className="tune-menu" aria-label={t("tune.menu", locale)}>
+            {definition.menus.flatMap((menu) =>
+              menu.items.map((item) => (
+                <button
+                  key={item.dialog}
+                  type="button"
+                  className="tune-menu-item"
+                  aria-current={activeDialog === item.dialog}
+                  onClick={() =>
+                    useTuneStore.getState().setActiveDialog(item.dialog)
+                  }
+                >
+                  {item.label}
+                </button>
+              )),
+            )}
+          </nav>
+
+          {definition.tables.length > 0 && (
+            <nav className="tune-menu" aria-label={t("table.navLabel", locale)}>
+              {definition.tables.map((table) => (
+                <button
+                  key={table.name}
+                  type="button"
+                  className="tune-menu-item"
+                  aria-current={activeTable === table.name}
+                  onClick={() =>
+                    useTuneStore.getState().setActiveTable(table.name)
+                  }
+                >
+                  {table.title || table.name}
+                </button>
+              ))}
+            </nav>
           )}
-        </nav>
+
+          {/* Renders nothing until Task 6 — the sim INI has no curves yet. */}
+          {definition.curves.length > 0 && (
+            <nav className="tune-menu" aria-label={t("curve.navLabel", locale)}>
+              {definition.curves.map((curve) => (
+                <button
+                  key={curve.name}
+                  type="button"
+                  className="tune-menu-item"
+                  aria-current={activeCurve === curve.name}
+                  onClick={() =>
+                    useTuneStore.getState().setActiveCurve(curve.name)
+                  }
+                >
+                  {curve.title || curve.name}
+                </button>
+              ))}
+            </nav>
+          )}
+        </div>
 
         <div className="tune-content">
-          {activeDialog ? (
+          {activeTable ? (
+            <TableEditor locale={locale} />
+          ) : activeDialog ? (
             <DialogEngine
               definition={definition}
               dialogName={activeDialog}
@@ -230,15 +269,6 @@ export function TunePanel({ locale }: { locale: Locale }) {
           ) : (
             <p>{t("tune.noDialog", locale)}</p>
           )}
-
-          {definition.tables.map((table) => (
-            <TableField
-              key={table.name}
-              table={table}
-              constants={constantsByName}
-              values={values}
-            />
-          ))}
         </div>
       </div>
 

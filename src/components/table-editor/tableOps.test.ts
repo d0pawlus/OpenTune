@@ -39,6 +39,12 @@ describe("interpolateRect", () => {
       interpolateRect(grid(2, 2, [1, 2, 3, 4]), { r0: 0, c0: 0, r1: 0, c1: 0 }),
     ).toEqual([]);
   });
+  it("returns [] when a rect corner is non-finite (can't anchor on NaN)", () => {
+    const v = [0, 0, 20, 0, 99, 0, NaN, 0, 60]; // bottom-left corner is NaN
+    expect(
+      interpolateRect(grid(3, 3, v), { r0: 0, c0: 0, r1: 2, c1: 2 }),
+    ).toEqual([]);
+  });
 });
 
 describe("smoothRect", () => {
@@ -81,6 +87,11 @@ describe("scaleRect / setEqualRect / stepRect", () => {
       { index: 0, value: 5 },
       { index: 1, value: 5 },
     ]);
+  });
+  it("set-equal returns [] when every selected cell is non-finite", () => {
+    expect(
+      setEqualRect(grid(1, 2, [NaN, NaN]), { r0: 0, c0: 0, r1: 0, c1: 1 }),
+    ).toEqual([]);
   });
   it("steps every selected cell by delta", () => {
     expect(

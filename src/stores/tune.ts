@@ -2,6 +2,7 @@
 import { create } from "zustand";
 import { commands } from "../ipc/bindings";
 import type { DefinitionDto, TuneDirtyEvent, Value } from "../ipc/bindings";
+import type { CellEdit } from "../components/table-editor/tableOps";
 
 interface TuneStore {
   /** The definition being rendered, or `null` before it is loaded. */
@@ -18,10 +19,22 @@ interface TuneStore {
   dirtyPages: number[];
   /** The dialog currently shown, selected from a menu. */
   activeDialog: string | null;
+  /** The table editor currently shown, selected from the Tables nav (M4). */
+  activeTable: string | null;
+  /** The curve editor currently shown, selected from the Curves nav (M4). */
+  activeCurve: string | null;
 
   setDefinition: (definition: DefinitionDto | null) => void;
   setValues: (values: Record<string, Value>) => void;
+  /** Selects a dialog, clearing any active table/curve (single content pane). */
   setActiveDialog: (activeDialog: string | null) => void;
+  /** Selects a table, clearing any active dialog/curve (single content pane). */
+  setActiveTable: (activeTable: string | null) => void;
+  /** Selects a curve, clearing any active dialog/table (single content pane). */
+  setActiveCurve: (activeCurve: string | null) => void;
+
+  /** Merges a patch of freshly-read values without dropping existing keys. */
+  mergeValues: (patch: Record<string, Value>) => void;
 
   /** Reflect a backend `tune_dirty` event. */
   applyDirty: (event: TuneDirtyEvent) => void;
@@ -34,18 +47,34 @@ interface TuneStore {
    */
   setValue: (name: string, value: Value) => Promise<void>;
 
+  /**
+   * Optimistically patches an array constant's cells and writes them live via
+   * the backend as a single gesture (Task 3's `set_cells` — one command, one
+   * undo step). Rolls back to the previous array and rethrows on failure,
+   * mirroring `setValue`.
+   */
+  setCells: (name: string, edits: CellEdit[]) => Promise<void>;
+
   reset: () => void;
 }
 
 const INITIAL: Pick<
   TuneStore,
-  "definition" | "values" | "dirty" | "dirtyPages" | "activeDialog"
+  | "definition"
+  | "values"
+  | "dirty"
+  | "dirtyPages"
+  | "activeDialog"
+  | "activeTable"
+  | "activeCurve"
 > = {
   definition: null,
   values: {},
   dirty: false,
   dirtyPages: [],
   activeDialog: null,
+  activeTable: null,
+  activeCurve: null,
 };
 
 export const useTuneStore = create<TuneStore>((set, get) => ({
@@ -53,7 +82,14 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
 
   setDefinition: (definition) => set({ definition }),
   setValues: (values) => set({ values }),
-  setActiveDialog: (activeDialog) => set({ activeDialog }),
+  setActiveDialog: (activeDialog) =>
+    set({ activeDialog, activeTable: null, activeCurve: null }),
+  setActiveTable: (activeTable) =>
+    set({ activeTable, activeDialog: null, activeCurve: null }),
+  setActiveCurve: (activeCurve) =>
+    set({ activeCurve, activeDialog: null, activeTable: null }),
+
+  mergeValues: (patch) => set((s) => ({ values: { ...s.values, ...patch } })),
 
   applyDirty: (event) =>
     set({ dirty: event.dirty, dirtyPages: event.dirty_pages }),
@@ -75,6 +111,27 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
         }
         return { values };
       });
+      throw new Error(result.error);
+    }
+  },
+
+  setCells: async (name, edits) => {
+    const previous = get().values[name];
+    if (!previous || !("Array" in previous) || !previous.Array) {
+      throw new Error(`no array value loaded for ${name}`);
+    }
+    const next = [...previous.Array];
+    for (const e of edits) {
+      next[e.index] = e.value;
+    }
+    // Optimistic update; the backend stays the source of truth via tune_dirty.
+    set((s) => ({ values: { ...s.values, [name]: { Array: next } as Value } }));
+    const result = await commands.setCells(
+      name,
+      edits.map((e) => ({ index: e.index, value: e.value })),
+    );
+    if (result.status === "error") {
+      set((s) => ({ values: { ...s.values, [name]: previous } }));
       throw new Error(result.error);
     }
   },
