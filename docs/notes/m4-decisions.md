@@ -548,3 +548,116 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   `fix(ini):` (parser + oba testy + ten wpis i update nagłówka modułu),
   potem `feat(app):` z jawnymi ścieżkami `src/components/curve-editor/*` +
   `TunePanel.tsx` + i18n + reszta tego wpisu.
+
+## Task 7 — 3D surface: lazy three.js + żywy punkt pracy
+
+- **Granica chunka = `React.lazy` w `TableEditor` (zamrożona decyzja 9)** —
+  `SurfaceView.tsx` jest JEDYNYM modułem importującym three (statyczny
+  `import * as THREE` + `OrbitControls` z `three/examples/jsm/...` są legalne,
+  bo sam moduł jest osiągalny wyłącznie przez `import()`); test smoke importuje
+  go statycznie świadomie — testy nie są bundlem produkcyjnym. Pomiar bramki
+  7.6: entry `index-*.js` **76038 B gz** (budżet < 128000), lazy
+  `SurfaceView-*.js` **129497 B gz** (budżet ≤ 184320); `WebGLRenderer`
+  występuje 0 razy w entry, 5 razy w chunku lazy. `@types/three` dobrane do
+  wersji runtime (`three@0.182.0`).
+
+- **Normalizacja geometrii: jednostkowa stopa 0..1, wysokość względem
+  własnego zakresu danych** — `normalize(bins)` mapuje skończone min..max
+  binów na 0..1 (footprint siatki nie zależy od fizycznych jednostek osi);
+  zdegenerowany zakres (równe min/max lub zero skończonych) → wszędzie 0.5,
+  lustrzane wobec `heatT` Taska 4 ("brak gradientu" zamiast dzielenia przez
+  zero). Wysokość = `heightScale·(v-min)/(max-min)` liczona względem
+  skończonego zakresu WARTOŚCI tabeli (nie zakresu heat!) — powierzchnia
+  zawsze wykorzystuje pełną skalę wysokości 0.5 niezależnie od tego, czy
+  `zConst.low/high` obejmuje szerszy zakres. Komórka nieskończona (sentinel
+  `null` backendu) → wysokość 0 + szary wierzchołek `[0.5,0.5,0.5]` zamiast
+  ekstrapolowanego koloru/wysokości. Indeksy: dwa trójkąty CCW na quad,
+  wspólna przekątna (`[v00,v10,v01]`,`[v01,v10,v11]`).
+
+- **Dwie funkcje ponad interfejs briefu: `axisFraction` i `heightOf`
+  (eksportowane z `surfaceGeometry.ts`)** — szkic pętli rAF briefu woła
+  `fraction(...)` i `heightOf(...)` bez definicji; wyniesione jako czyste,
+  testowane funkcje zamiast prywatnych domknięć w komponencie, żeby pozycja
+  żywego punktu używała DOKŁADNIE tej samej matematyki co wierzchołki siatki
+  (jedno źródło prawdy dla "gdzie na osi" i "jak wysoko"), nie drugiej,
+  potencjalnie rozjeżdżającej się formuły.
+
+- **Semantyka żywego punktu** — pętla rAF czyta
+  `useRealtimeStore.getState().getChannel(...)` imperatywnie (wzorzec M3 z
+  `GaugeCanvas`: zero stanu Reacta na klatkę, zero alokacji — jedyny mutowany
+  obiekt to wbudowany `Vector3` pozycji kropki przez `position.set`). Punkt
+  wymaga OBU kanałów (`x_channel` i `y_channel` niepuste i oba widziane w
+  store); `bilinearHeight` interpoluje WARTOŚĆ komórki (nie znormalizowaną
+  wysokość) i zwraca `null` poza zakresem binów lub gdy którykolwiek z
+  czterech narożników klatki jest nieskończony → kropka znika zamiast
+  ekstrapolować lub pokazywać zmyśloną pozycję (ta sama decyzja co kursor
+  krzywej z Taska 6: milcząca nieobecność > myląca pozycja). Wysokość kropki
+  = `heightOf(wartość) + 0.03` (lewituje tuż nad powierzchnią).
+
+- **Fail-open WebGL** — `new THREE.WebGLRenderer(...)` w try/catch;
+  potwierdzone empirycznie, że pod jsdom rzuca synchronicznie ("Error
+  creating WebGL context."), więc smoke test przechodzi dokładnie przez tę
+  samą ścieżkę co WKWebView bez WebGL. Komponent renderuje wtedy
+  `unavailableLabel` — przetłumaczony string przekazywany propem z
+  `TableEditor` (wariant przypięty briefem: chunk lazy pozostaje wolny od
+  i18n). W teście `getContext` zamockowane na `null` (bez tego jsdom sypie
+  szumem "Not implemented" przez virtual console — wzorzec z
+  `Gauges.test.tsx`), a `console.error` wyciszone (three loguje błąd przed
+  rzuceniem).
+
+- **Utwardzenie WKWebView wg decyzji 9** — `setPixelRatio(min(dpr, 2))`;
+  `webglcontextlost` → `preventDefault()` + stop rAF, `webglcontextrestored`
+  → restart pętli; pełny dispose przy odmontowaniu (controls, geometria
+  siatki + wireframe + kula, trzy materiały, renderer). `setClearColor(0x0,
+  0)` — przezroczyste tło, motyw dostarcza CSS (canvas w ramce `.te-3d`).
+
+- **Aktualizacja danych bez przebudowy sceny** — efekt
+  `[values, heatLo, heatHi, xBins, yBins]` przepisuje atrybuty
+  `position`/`color` w miejscu (`copyArray` + `needsUpdate`; topologia
+  siatki nigdy się nie zmienia dla stałej tabeli). Wyjątek ponad brief:
+  `WireframeGeometry` to snapshot z konstrukcji — nie śledzi atrybutów
+  bazowej geometrii, więc TYLKO wireframe jest odtwarzany przy edycji
+  (dispose starego + nowy z zaktualizowanej geometrii); to per-edycja, nie
+  per-klatka.
+
+- **Świeże reguły `react-hooks` (v7) wymusiły dwa odstępstwa od szkicu
+  briefu** — (1) `propsRef.current = props` podczas renderu łamie
+  `react-hooks/refs`; synchronizacja przeniesiona do gołego `useEffect`
+  (kanoniczny "latest ref"), pętla rAF podnosi nową wartość w następnej
+  klatce. (2) `setUnavailable(true)` w ciele efektu montującego łamie
+  `react-hooks/set-state-in-effect`; sonda WebGL może działać wyłącznie
+  po montażu (wymaga prawdziwego canvasu) i odpala się co najwyżej raz —
+  celowany `eslint-disable-next-line` z uzasadnieniem (precedens:
+  `exhaustive-deps` w `CurveEditor`).
+
+- **Konsolidacja `binValues.ts`: przeniesione z `curve-editor/` do
+  `table-editor/`** (git mv, razem z testem) — Task 6 świadomie zduplikował
+  prywatne helpery `TableEditor` ("osobna, niewielka duplikacja... bo ten
+  task go nie dotyka"); Task 7 dotyka `TableEditor` legalnie, a jego
+  dodatki (lazy mount + numeryczne biny dla SurfaceView) wypchnęły plik na
+  415 linii, ponad budżet 400. Zamiast trzeciego wariantu odczytu binów:
+  `TableEditor` używa teraz `arrayOf`/`labelsOf`/`numericOf` z
+  przeniesionego modułu (prywatne `binLabels` + świeży `binValues` usunięte;
+  wynik: 397 linii), `CurveEditor` tylko zmienia ścieżkę importu. Kierunek
+  zależności pozostaje jednostronny: curve-editor → table-editor, nigdy
+  odwrotnie. `arrayShape` (rows/cols, potrzebne tylko tabeli) zostaje
+  prywatne w `TableEditor`.
+
+- **Zakres heat przekazany 1:1** — `heatLo`/`heatHi` SurfaceView dostaje
+  DOKŁADNIE te same wartości co `TableGrid` (low/high stałej z fallbackiem
+  na zakres danych, policzone raz w `TableEditor`); zero trzeciego wariantu
+  (pułapka z review Taska 6). Kolory wierzchołków przez `heatRgb` Taska 4 —
+  ta sama skala hue co heatmapa DOM, jedno źródło prawdy (`hueOf`).
+
+- **CSS: `.te-3d` ma sztywną wysokość (24rem), nie `min-height`** —
+  canvas SurfaceView wypełnia kontener przez 100%/100%, a `clientHeight`
+  musi się rozwiązać w momencie montażu (mount-once: rozmiar mierzony raz,
+  bez ResizeObservera — YAGNI dla stałego layoutu panelu; fallback 640×360
+  na wypadek wyścigu z layoutem). `.te-3d-placeholder` z Taska 5 usunięty
+  razem z gałęzią placeholdera.
+
+- **Staging jak w Task 1-6** — `git add -A` z briefu zastąpione jawnymi
+  ścieżkami; `package.json`/`package-lock.json` stage'owane w stanie
+  zawierającym WYŁĄCZNIE zmiany `three`/`@types/three` (dirty hunk
+  `allowScripts` odłożony patchem na czas commita i przywrócony po nim,
+  procedura kontrolera).

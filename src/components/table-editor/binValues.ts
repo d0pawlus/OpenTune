@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Small pure helpers for reading a curve's bound `ConstantDto`/`Value` pairs
-// (bin count, axis labels, numeric extraction) — split out of `CurveEditor`
-// to keep that container under the file-size budget. Mirrors the equivalent
-// private helpers in `TableEditor.tsx` (`arrayShape`/`binLabels`); kept as a
-// small standalone module here rather than exported from `TableEditor.tsx`,
-// which this task does not otherwise touch.
+// Small pure helpers for reading a bound `ConstantDto`/`Value` pair (bin
+// count, axis labels, numeric extraction), shared by both editors. Born in
+// Task 6 as `curve-editor/binValues.ts` (deliberately duplicating
+// `TableEditor.tsx`'s then-private helpers, which were out of that task's
+// scope); Task 7 touches `TableEditor` legitimately, so the duplication is
+// resolved by moving the module here — the dependency direction stays
+// one-way (curve-editor imports table-editor machinery, never the reverse).
 import type { ConstantDto, Value } from "../../ipc/bindings";
 
 /** Total element count of an Array-kinded constant, or null for any other. */

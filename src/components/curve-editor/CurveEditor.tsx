@@ -28,7 +28,12 @@ import {
 import { parseTsv, pasteEdits, toTsv } from "../table-editor/tsv";
 import { TableGrid } from "../table-editor/TableGrid";
 import { axisRange, polylinePoints, cursorFraction } from "./curveMath";
-import { arrayLength, arrayOf, labelsOf, numericOf } from "./binValues";
+import {
+  arrayLength,
+  arrayOf,
+  labelsOf,
+  numericOf,
+} from "../table-editor/binValues";
 import "./curve-editor.css";
 
 const PREVIEW_W = 400;

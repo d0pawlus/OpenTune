@@ -41,6 +41,8 @@ export const en = {
   "table.help": "Help",
   "table.clipboardError": "Clipboard unavailable",
   "table.noValues": "Table values not loaded yet",
+  "surface.loading": "Loading 3D view…",
+  "surface.unavailable": "3D view unavailable (WebGL not supported here)",
   "curve.preview": "Curve preview",
   "diff.title": "Diff",
   "diff.snapshot": "Snapshot baseline",

@@ -21,9 +21,9 @@
 // Cell edits are NOT link-gated (M3 decision: only burn/undo/redo are
 // connected-only; setValue-family commands queue behind a reconnect) —
 // mirrors `Field.tsx`.
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { commands, events } from "../../ipc/bindings";
-import type { ConstantDto, TableDto, Value } from "../../ipc/bindings";
+import type { ConstantDto, TableDto } from "../../ipc/bindings";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import type { Cell, Selection } from "./selection";
@@ -37,9 +37,16 @@ import {
   stepRect,
 } from "./tableOps";
 import { parseTsv, pasteEdits, toTsv } from "./tsv";
+import { arrayOf, labelsOf, numericOf } from "./binValues";
 import { TableGrid } from "./TableGrid";
 import { TableToolbar } from "./TableToolbar";
 import "./table-editor.css";
+
+// The React.lazy boundary IS the bundle-chunk boundary (locked decision 9):
+// SurfaceView (and three, which only it imports) lands in a separate Vite
+// chunk, fetched the first time a table is switched to the 3D view. No other
+// module may import three or SurfaceView statically.
+const LazySurfaceView = lazy(() => import("../surface/SurfaceView"));
 
 /** rows/cols of an Array-kinded constant, or null for any other kind. */
 function arrayShape(c: ConstantDto | undefined) {
@@ -48,14 +55,6 @@ function arrayShape(c: ConstantDto | undefined) {
     return kind.Array;
   }
   return null;
-}
-
-/** Formats a bin array into axis labels with the bin constant's digits. */
-function binLabels(value: Value | undefined, digits: number): string[] {
-  if (!value || !("Array" in value) || !value.Array) return [];
-  return value.Array.map((v) =>
-    v !== null && Number.isFinite(v) ? v.toFixed(digits) : "—",
-  );
 }
 
 const DRAFT_START = /^[0-9.,-]$/;
@@ -124,8 +123,7 @@ function Editor({ table, constants, locale }: EditorProps) {
   const constant = (name: string) => constants.find((c) => c.name === name);
   const zConst = constant(table.z);
   const shape = arrayShape(zConst);
-  const zVal = values[table.z];
-  const zArray = zVal && "Array" in zVal && zVal.Array ? zVal.Array : null;
+  const zArray = arrayOf(values[table.z]);
 
   if (!shape || !zArray) {
     return (
@@ -139,17 +137,13 @@ function Editor({ table, constants, locale }: EditorProps) {
   const { rows, cols } = shape;
   const digits = zConst?.digits ?? 0;
   // null (the backend's NaN sentinel) → NaN so the Task 4 ops skip the cell.
-  const gridValues = zArray.map((v) => (v === null ? NaN : v));
+  const gridValues = numericOf(zArray);
   const grid: Grid = { rows, cols, values: gridValues };
 
-  const xLabels = binLabels(
-    values[table.x_bins],
-    constant(table.x_bins)?.digits ?? 0,
-  );
-  const yLabels = binLabels(
-    values[table.y_bins],
-    constant(table.y_bins)?.digits ?? 0,
-  );
+  const xBinArray = arrayOf(values[table.x_bins]);
+  const yBinArray = arrayOf(values[table.y_bins]);
+  const xLabels = labelsOf(xBinArray, constant(table.x_bins)?.digits ?? 0);
+  const yLabels = labelsOf(yBinArray, constant(table.y_bins)?.digits ?? 0);
 
   // Heat range: the z constant's low/high when BOTH are literal (an {expr}
   // bound projects to null), else the finite min/max of the data.
@@ -352,7 +346,24 @@ function Editor({ table, constants, locale }: EditorProps) {
       {error && <p className="te-error">{error}</p>}
 
       {view === "3d" ? (
-        <div className="te-3d-placeholder" /> // Task 7 fills this
+        <div className="te-3d">
+          <Suspense
+            fallback={
+              <p className="te-3d-loading">{t("surface.loading", locale)}</p>
+            }
+          >
+            <LazySurfaceView
+              xBins={numericOf(xBinArray)}
+              yBins={numericOf(yBinArray)}
+              values={gridValues}
+              heatLo={heatLo}
+              heatHi={heatHi}
+              xChannel={table.x_channel}
+              yChannel={table.y_channel}
+              unavailableLabel={t("surface.unavailable", locale)}
+            />
+          </Suspense>
+        </div>
       ) : (
         <div
           className="te-surface"

@@ -42,6 +42,8 @@ export const pl: Record<keyof typeof en, string> = {
   "table.help": "Pomoc",
   "table.clipboardError": "Schowek niedostępny",
   "table.noValues": "Wartości tabeli jeszcze nie wczytane",
+  "surface.loading": "Wczytywanie widoku 3D…",
+  "surface.unavailable": "Widok 3D niedostępny (brak obsługi WebGL)",
   "curve.preview": "Podgląd krzywej",
   "diff.title": "Różnice",
   "diff.snapshot": "Zapisz stan odniesienia",
