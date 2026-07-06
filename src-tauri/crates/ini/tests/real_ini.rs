@@ -121,6 +121,15 @@ fn real_speeduino_ini_parses_diagnostic_clean() {
     let dwell = def.curve("dwell_correction_curve").expect("dwell curve");
     assert!(!dwell.title.is_empty());
     assert!(dwell.x_axis.is_some() && dwell.y_axis.is_some());
+    // M4 Task 6 fold-in: `warmup_analyzer_curve` (l.4915-4923) is the real
+    // file's only multi-series curve — `yBins = wueRates` (editable
+    // `[Constants]` series) followed by `yBins = wueRecommended` (read-only
+    // `[PcVariables]` analyzer output). First-wins must keep the editable
+    // series bound to `y_bins`, never the analyzer output.
+    let warmup_analyzer = def
+        .curve("warmup_analyzer_curve")
+        .expect("warmup_analyzer_curve");
+    assert_eq!(warmup_analyzer.y_bins, "wueRates");
     // Task 2: [VeAnalyze] binding (the #else / AFR branch wins by default).
     let va = def.ve_analyze.as_ref().expect("[VeAnalyze]");
     assert_eq!(va.maps[0].table, "veTable1Tbl");

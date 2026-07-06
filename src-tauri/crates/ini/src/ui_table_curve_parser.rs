@@ -36,9 +36,16 @@
 //! [`TableDef`] carries `help`) and `lineLabel` (a per-series legend for a
 //! curve with more than one `yBins`; real file l.4922-4923's
 //! `warmup_analyzer_curve` overlays a second, read-only series this way —
-//! the frozen [`CurveDef`] has a single `y_bins` slot, so the 2nd `yBins`
-//! occurrence simply overwrites the 1st, last-wins, same as every other
-//! single-valued attribute here).
+//! the frozen [`CurveDef`] has a single `y_bins` slot). **Corrected in M4
+//! Task 6** (sanctioned fold-in; see `docs/notes/m4-decisions.md`'s Task 6
+//! section): a repeated `yBins` now keeps the FIRST occurrence rather than
+//! the last, so `y_bins` stays bound to the editable `[Constants]` series
+//! (`wueRates`) instead of the read-only `[PcVariables]` analyzer output
+//! (`wueRecommended`) — the frozen `CurveDef::y_bins` doc contract is "the
+//! editable data array". `xBins` and every other single-valued curve/table
+//! attribute in this module are unaffected and remain last-wins (they never
+//! repeat in the real file); `lineLabel` stays silently dropped until
+//! `CurveDef` grows a real multi-series representation.
 
 use crate::constants_fields::parse_number;
 use crate::ui::{CurveAxis, CurveDef, Diagnostic, TableDef};
@@ -269,6 +276,18 @@ fn parse_curve_axis(value: &str) -> Option<CurveAxis> {
 /// `xBins` carries a live-cursor display channel (2nd token) in the real
 /// grammar — `yBins` never does, so `curve.x_channel` is the only channel
 /// field on [`CurveDef`].
+///
+/// `yBins` is the one exception to this module's last-wins default (M4
+/// Task 6 fold-in, sanctioned by the controller): a repeated `yBins` keeps
+/// the FIRST occurrence, set only when `curve.y_bins` is still empty. The
+/// frozen `CurveDef::y_bins` doc contract is "the editable data array", and
+/// the real file's only multi-series curve (`warmup_analyzer_curve`,
+/// l.4915-4923) declares the editable `[Constants]` series first
+/// (`yBins = wueRates`) followed by a read-only `[PcVariables]` analyzer
+/// output (`yBins = wueRecommended`) — last-wins would have bound the curve
+/// editor to the read-only PC variable. `xBins` (never repeats in the real
+/// file) and every diagnostic path below are unaffected — still last-wins /
+/// fired on every occurrence, same as before.
 fn set_curve_bin(
     value: &str,
     curves: &mut [CurveDef],
@@ -296,7 +315,7 @@ fn set_curve_bin(
     if is_x {
         curve.x_bins = name.clone();
         curve.x_channel = tokens.get(1).cloned().unwrap_or_default();
-    } else {
+    } else if curve.y_bins.is_empty() {
         curve.y_bins = name.clone();
     }
 }

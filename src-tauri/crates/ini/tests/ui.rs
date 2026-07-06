@@ -355,3 +355,38 @@ page = 1
     assert_eq!(c.y_bins, "taeRates");
     assert_eq!(c.size, vec![400.0, 400.0]);
 }
+
+/// M4 Task 6 fold-in (sanctioned scope, Task 2 review): a curve's repeated
+/// `yBins` must keep the FIRST occurrence, not the last. The frozen
+/// `CurveDef::y_bins` doc contract is "the editable data array", and the
+/// real file's only multi-series curve (`warmup_analyzer_curve`,
+/// l.4915-4923 @ 0832dc1d) declares the editable `[Constants]` series first
+/// (`yBins = wueRates`) followed by a read-only `[PcVariables]` analyzer
+/// output (`yBins = wueRecommended`) plus a `lineLabel` legend (still
+/// untracked — `CurveDef` has no multi-series slot). Last-wins would bind
+/// the curve editor to the read-only PC variable instead of the editable
+/// one; `xBins` and every other curve attribute stay last-wins (they never
+/// repeat in the real file).
+#[test]
+fn curve_repeated_y_bins_keeps_the_first_editable_series() {
+    let ini = format!(
+        r#"{COMMS_HEADER}
+[Constants]
+    pageSize = 288, 288
+
+page = 1
+      wueRates       = array,  U08,   0, [10], "%",    1.0, 0.0, 0.0, 255.0, 0
+
+[PcVariables]
+      wueRecommended = array, S16, [10], "AFR", 0.1, 0.0, -4.0, 4.0, 1
+
+[CurveEditor]
+      curve = warmup_analyzer_curve, "Warmup Enrichment"
+            yBins = wueRates
+            yBins = wueRecommended
+"#
+    );
+    let def = parse_definition(&ini).expect("parses");
+    let c = def.curve("warmup_analyzer_curve").expect("curve by id");
+    assert_eq!(c.y_bins, "wueRates");
+}

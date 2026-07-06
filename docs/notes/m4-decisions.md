@@ -404,3 +404,80 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
 - **Staging jak w Task 1-4** — `git add -A` z briefu pominięte (dirty
   `package.json`/`allowScripts` nadal poza zakresem); jawne ścieżki +
   `git rm` na `TableField.tsx`.
+
+## Task 6 — edytory krzywych 1D: ponowne użycie siatki + podgląd SVG
+
+- **Korekta Taska 2: `yBins` krzywej — first-wins, nie last-wins**
+  (sankcjonowany fold-in, kontroler, PRZED właściwym Taskiem 6, osobny commit
+  `fix(ini):`). Task 2 (patrz wyżej, sekcja "`warmup_analyzer_curve` —
+  multi-series curve") świadomie zostawił last-wins dla drugiego `yBins`
+  krzywej `warmup_analyzer_curve` (l.4915-4923 realnego pliku): `yBins =
+  wueRates` (edytowalna tablica `[Constants]`) nadpisywane przez `yBins =
+  wueRecommended` (tylko-do-odczytu wyjście analizatora z `[PcVariables]`).
+  To narusza zamrożony kontrakt dokumentacyjny `CurveDef::y_bins` ("the
+  editable data array") — edytor krzywych (ten Task) wiązałby edycje z
+  polem PC-local, nieedytowalnym przez ECU. Naprawione: `set_curve_bin`
+  (`ui_table_curve_parser.rs`) ustawia teraz `y_bins` TYLKO gdy jest wciąż
+  puste (first-wins), wyłącznie dla `yBins` — `xBins` i każdy inny atrybut
+  pojedynczej wartości w tym module (tabel i krzywych) pozostają last-wins
+  bez zmian (nigdy się nie powtarzają w realnym pliku, więc minimalny diff).
+  TDD: czerwony test jednostkowy
+  (`curve_repeated_y_bins_keeps_the_first_editable_series`, `tests/ui.rs`) +
+  rozszerzenie golden-gate (`tests/real_ini.rs`, asercja
+  `warmup_analyzer_curve.y_bins == "wueRates"`) przed zmianą w parserze,
+  zielone po. `lineLabel`/multi-series nadal poza zakresem (`CurveDef` ma
+  jeden slot `y_bins`) — bez zmian względem Taska 2, tylko WYBÓR, która
+  wartość ląduje w tym jednym slocie się odwrócił.
+
+- **WRITE FRESH dla `curveMath.ts`** (ADR-0006, jak Task 4) — trzy czyste
+  funkcje (`axisRange`/`polylinePoints`/`cursorFraction`) napisane od zera wg
+  pinów briefu; zero portowanego kodu. `axisRange` woli literalne granice
+  `AxisDto` (oba `min`/`max` nie-null), potem finite extents danych, potem
+  `{min:0,max:1}` jako fallback zdegenerowanego przypadku (pusta/wszystko
+  nie-skończone tablica) — ten sam duch "fail-closed zamiast NaN/Infinity"
+  co heatmapa Taska 4.
+
+- **Ponowne użycie siatki Taska 5 dosłownie — krzywa to `Grid` z `rows: 1`**
+  (Task 4 core, przypięte briefem) — `CurveEditor` buduje
+  `{rows:1, cols:n, values:ys}` i przepuszcza przez DOKŁADNIE te same moduły
+  co `TableEditor`: `selection.ts`/`tableOps.ts`/`tsv.ts`/`TableGrid`. Zero
+  nowej logiki zaznaczenia/operacji/schowka — `interpolateRect` na
+  pojedynczym wierszu degeneruje się do liniowej interpolacji (h=0 w Task 4
+  guard), `smoothRect` do jednowymiarowego jądra (sąsiedzi z rz-1/rz+1 poza
+  granicami [0,1) siatki są przycinani, jak każdy brzeg). `yLabels: [""]`
+  (jeden pusty nagłówek wiersza, bo `TableGrid` renderuje zawsze jeden
+  wiersz `<th scope="row">`); `xLabels` z wartości `curve.x_bins`
+  (`binLabels`, wzorowane 1:1 na `TableEditor`), `column_labels` jako
+  osobny podpis nad siatką (inny target niż `xLabels` — `columnLabel` w INI
+  to opisowe nagłówki kolumn typu "Temp"/"Duty %", nie wartości binów).
+
+- **Podgląd: SVG statyczny + kursor imperatywny w osobnej `<line>`** —
+  `<polyline>` przerysowywana normalnym reconciliation Reacta przy KAŻDEJ
+  zmianie danych (tanie: krzywe mają rzędu kilkunastu punktów, nie warto
+  kanwy/WebGL); wyłącznie żywy kursor (`<line ref={cursorRef}>`) omija Reacta
+  całkowicie — `x1`/`x2`/`visibility` ustawiane przez `setAttribute` w pętli
+  `requestAnimationFrame`, czytając `useRealtimeStore.getState().getChannel
+  (curve.x_channel)` (wzorzec M3 z `GaugeCanvas`: zero stanu Reacta per
+  klatka). Brak `curve.x_channel` (pusty string — krzywa bez powiązanego
+  kanału live) → efekt wychodzi wcześnie, kursor nigdy się nie renderuje
+  (`visibility="hidden"` to stan początkowy znacznika, nigdy nadpisywany).
+
+- **Semantyka kursora: `cursorFraction` zwraca `null` poza zakresem osi X,
+  kanał `undefined` (nigdy nie widziany) traktowany identycznie jak poza
+  zakresem** — pętla rAF mapuje oba przypadki na `visibility="hidden"`,
+  więc brak danych live i wartość poza skalą wyglądają tak samo (kreska
+  znika), zamiast np. przypinać się do brzegu — decyzja kontrolera:
+  milcząca nieobecność jest bezpieczniejsza niż myląca pozycja brzegowa.
+
+- **Nawigacja `TunePanel`: gałąź `activeCurve` wpięta symetrycznie do
+  `activeTable`** — `activeTable ? <TableEditor/> : activeCurve ?
+  <CurveEditor/> : <DialogEngine/>` (store i tak gwarantuje wyłączność
+  trzech `active*` pól, jak w Task 5). Blok nawigacji krzywych renderowany
+  już od Taska 5 (`definition.curves.length > 0`); ten Task wypełnia tylko
+  zawartość, żaden nowy JSX w nawigacji.
+
+- **Staging jak w Task 1-5** — `git add -A` z briefu pominięte (dirty
+  `package.json`/`allowScripts` nadal poza zakresem); dwa commity: fold-in
+  `fix(ini):` (parser + oba testy + ten wpis i update nagłówka modułu),
+  potem `feat(app):` z jawnymi ścieżkami `src/components/curve-editor/*` +
+  `TunePanel.tsx` + i18n + reszta tego wpisu.
