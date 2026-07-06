@@ -43,7 +43,7 @@ pub(super) fn build_session(source: ConnectSource, emit: &Emitter) -> Result<Ses
         }
     };
     Ok(Session {
-        conn,
+        conn: Some(conn),
         def,
         tune: None,
         snapshot: None,
@@ -64,7 +64,7 @@ pub(super) fn link_drop(
     mut session: Session,
     emit: &Emitter,
 ) -> (Option<Session>, Result<(), String>) {
-    let ActiveConnection::Sim { manager, simulator } = &mut session.conn else {
+    let Some(ActiveConnection::Sim { manager, simulator }) = &mut session.conn else {
         return (Some(session), Err(SIM_ONLY.to_owned()));
     };
 

@@ -47,8 +47,9 @@ pub enum ActiveConnection {
 /// so a `set_value`/`burn`/`undo` never touches the wire outside the owner.
 /// `tune` is `None` until [`Session::load_tune`] reads the pages.
 pub struct Session {
-    /// The live connection — sole owner of the transport.
-    pub conn: ActiveConnection,
+    /// The live connection, if any. `None` = an offline session (a tune loaded
+    /// from a file or created blank) that has no ECU link yet.
+    pub conn: Option<ActiveConnection>,
     /// The parsed firmware definition; immutable, shared cheaply.
     pub def: Arc<Definition>,
     /// The in-memory editable tune, once loaded from the ECU.

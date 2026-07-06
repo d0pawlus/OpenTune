@@ -69,8 +69,12 @@ impl Session {
             if probe.set(name, value.clone()).is_err() {
                 continue; // rejected pick -- skip rather than abort the batch
             }
-            let deltas = page_deltas(tune, &probe, &def.pages);
-            write_deltas(conn, &def.comms, &deltas)?;
+            // Wire the pick only when connected; offline sessions merge into
+            // the model alone (same rule as `Session::set_value`).
+            if let Some(conn) = conn.as_ref() {
+                let deltas = page_deltas(tune, &probe, &def.pages);
+                write_deltas(conn, &def.comms, &deltas)?;
+            }
             tune.set(name, value).map_err(fmt_model_err)?;
         }
         Ok(dirty_event(tune))
@@ -94,7 +98,7 @@ mod tests {
         let def = Arc::new(load_definition_from_str(BUNDLED_INI).expect("bundled INI parses"));
         let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
         Session {
-            conn,
+            conn: Some(conn),
             def,
             tune: None,
             snapshot: None,
@@ -104,7 +108,7 @@ mod tests {
     /// Read a page straight off the ECU (bypassing the tune) — the "reached
     /// the wire" oracle, same pattern as `session.rs`'s own tests.
     fn ecu_page(session: &Session, number: u16) -> Vec<u8> {
-        let ActiveConnection::Sim { simulator, .. } = &session.conn else {
+        let Some(ActiveConnection::Sim { simulator, .. }) = &session.conn else {
             panic!("expected simulator connection");
         };
         let page = *session

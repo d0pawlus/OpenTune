@@ -326,7 +326,7 @@ impl Owner {
             Command::DebugSimulator { reply } => {
                 let r = match &self.session {
                     Some(Session {
-                        conn: ActiveConnection::Sim { simulator, .. },
+                        conn: Some(ActiveConnection::Sim { simulator, .. }),
                         ..
                     }) => Ok(Arc::clone(simulator)),
                     Some(_) => Err("not a simulator connection".to_owned()),
