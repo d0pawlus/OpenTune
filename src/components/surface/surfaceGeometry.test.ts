@@ -3,7 +3,10 @@ import { describe, it, expect } from "vitest";
 import {
   normalize,
   axisFraction,
+  axisFractionIn,
+  finiteRange,
   heightOf,
+  heightOfIn,
   surfacePositions,
   surfaceIndices,
   surfaceColors,
@@ -32,6 +35,38 @@ describe("axisFraction", () => {
   });
 });
 
+describe("finiteRange", () => {
+  it("returns the finite min/max of an array", () => {
+    expect(finiteRange([3, 1, 2])).toEqual({ min: 1, max: 3 });
+  });
+
+  it("ignores non-finite entries", () => {
+    expect(finiteRange([NaN, 1, Infinity, 3])).toEqual({ min: 1, max: 3 });
+  });
+
+  it("returns null when no entries are finite", () => {
+    expect(finiteRange([NaN, Infinity, -Infinity])).toBeNull();
+  });
+});
+
+describe("axisFractionIn", () => {
+  it("is the range-accepting form of axisFraction: same result given the same range", () => {
+    const bins = [1000, 2000, 3000];
+    const range = finiteRange(bins);
+    for (const v of [1000, 1500, 2000, 3000]) {
+      expect(axisFractionIn(range, v)).toBe(axisFraction(v, bins));
+    }
+  });
+
+  it("falls back to 0.5 on a degenerate range", () => {
+    expect(axisFractionIn({ min: 5, max: 5 }, 5)).toBe(0.5);
+  });
+
+  it("falls back to 0.5 on a null range", () => {
+    expect(axisFractionIn(null, 5)).toBe(0.5);
+  });
+});
+
 describe("heightOf", () => {
   it("scales a value to heightScale at the data's max, 0 at its min", () => {
     const values = [0, 10, 20, 30];
@@ -43,6 +78,25 @@ describe("heightOf", () => {
   it("is 0 for a non-finite value or an all-non-finite array", () => {
     expect(heightOf(NaN, [0, 10], 0.5)).toBe(0);
     expect(heightOf(5, [NaN, NaN], 0.5)).toBe(0);
+  });
+});
+
+describe("heightOfIn", () => {
+  it("is the range-accepting form of heightOf: same result given the same range", () => {
+    const values = [0, 10, 20, 30];
+    const range = finiteRange(values);
+    for (const v of [0, 15, 30]) {
+      expect(heightOfIn(range, v, 0.5)).toBe(heightOf(v, values, 0.5));
+    }
+  });
+
+  it("is 0 for a non-finite value even with a valid range", () => {
+    expect(heightOfIn({ min: 0, max: 10 }, NaN, 0.5)).toBe(0);
+  });
+
+  it("is 0 on a null or degenerate range", () => {
+    expect(heightOfIn(null, 5, 0.5)).toBe(0);
+    expect(heightOfIn({ min: 5, max: 5 }, 5, 0.5)).toBe(0);
   });
 });
 

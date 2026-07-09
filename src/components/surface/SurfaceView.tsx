@@ -14,12 +14,14 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { useEffect, useRef, useState } from "react";
 import { useRealtimeStore } from "../../stores/realtime";
 import {
-  axisFraction,
+  axisFractionIn,
   bilinearHeight,
-  heightOf,
+  finiteRange,
+  heightOfIn,
   surfaceColors,
   surfaceIndices,
   surfacePositions,
+  type FiniteRange,
 } from "./surfaceGeometry";
 import "./surface.css";
 
@@ -55,6 +57,31 @@ interface SceneRefs {
 }
 
 /**
+ * Finite extents of xBins/yBins/values, precomputed once whenever the data
+ * changes (review finding I-1) and stashed in `rangesRef` — the paint loop
+ * below reads these every frame instead of re-deriving them from the raw
+ * arrays, which was the per-frame `.filter()`/spread allocation the review
+ * flagged.
+ */
+interface Ranges {
+  xr: FiniteRange | null;
+  yr: FiniteRange | null;
+  vr: FiniteRange | null;
+}
+
+function computeRanges(
+  xBins: number[],
+  yBins: number[],
+  values: number[],
+): Ranges {
+  return {
+    xr: finiteRange(xBins),
+    yr: finiteRange(yBins),
+    vr: finiteRange(values),
+  };
+}
+
+/**
  * three.js surface plot of the table: heights and vertex colors from the
  * same values/heat range the DOM heatmap renders (single color source of
  * truth — Task 4's `heatRgb`), plus a live operating-point dot driven by the
@@ -74,6 +101,7 @@ export default function SurfaceView(props: SurfaceViewProps) {
     propsRef.current = props;
   });
   const sceneRefs = useRef<SceneRefs | null>(null);
+  const rangesRef = useRef<Ranges>({ xr: null, yr: null, vr: null });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -106,6 +134,7 @@ export default function SurfaceView(props: SurfaceViewProps) {
     controls.target.set(CENTER.x, CENTER.y, CENTER.z);
 
     const p = propsRef.current;
+    rangesRef.current = computeRanges(p.xBins, p.yBins, p.values);
     const geometry = new THREE.BufferGeometry();
     const positionAttr = new THREE.BufferAttribute(
       surfacePositions(p.xBins, p.yBins, p.values, HEIGHT_SCALE),
@@ -167,10 +196,14 @@ export default function SurfaceView(props: SurfaceViewProps) {
           dot.visible = false;
         } else {
           dot.visible = true;
+          // Ranges read from `rangesRef` (precomputed on mount/data-change
+          // above), never re-derived here — the steady-state visible-dot
+          // path allocates nothing (review finding I-1).
+          const { xr, yr, vr } = rangesRef.current;
           dot.position.set(
-            axisFraction(xv, xBins),
-            heightOf(h, values, HEIGHT_SCALE) + DOT_LIFT,
-            axisFraction(yv, yBins),
+            axisFractionIn(xr, xv),
+            heightOfIn(vr, h, HEIGHT_SCALE) + DOT_LIFT,
+            axisFractionIn(yr, yv),
           );
         }
       } else {
@@ -214,6 +247,7 @@ export default function SurfaceView(props: SurfaceViewProps) {
   useEffect(() => {
     const refs = sceneRefs.current;
     if (!refs) return;
+    rangesRef.current = computeRanges(props.xBins, props.yBins, props.values);
     const { geometry, position, color, wireframe } = refs;
     position.copyArray(
       surfacePositions(props.xBins, props.yBins, props.values, HEIGHT_SCALE),

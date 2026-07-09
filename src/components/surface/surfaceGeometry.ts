@@ -5,8 +5,19 @@
 // Grid: vertex/cell i = row*cols + col.
 import { heatRgb } from "../table-editor/heatmap";
 
-/** Finite min/max of `values`, or null when none are finite. */
-function finiteRange(values: number[]): { min: number; max: number } | null {
+/** A finite min/max extent, as computed by `finiteRange`. */
+export interface FiniteRange {
+  min: number;
+  max: number;
+}
+
+/**
+ * Finite min/max of `values`, or null when none are finite. Exported (review
+ * finding I-1) so SurfaceView's paint loop can be handed a range PRECOMPUTED
+ * once on mount/data-change instead of calling this — an O(n) `.filter()` +
+ * spread'd `Math.min`/`Math.max` — on every animation frame.
+ */
+export function finiteRange(values: number[]): FiniteRange | null {
   const finite = values.filter(Number.isFinite);
   if (finite.length === 0) return null;
   return { min: Math.min(...finite), max: Math.max(...finite) };
@@ -33,7 +44,20 @@ export function normalize(bins: number[]): number[] {
  * "where is this on the axis".
  */
 export function axisFraction(value: number, bins: number[]): number {
-  const range = finiteRange(bins);
+  return axisFractionIn(finiteRange(bins), value);
+}
+
+/**
+ * Range-accepting counterpart of `axisFraction` (review finding I-1) — same
+ * formula, but takes a `range` PRECOMPUTED by the caller (e.g. via
+ * `finiteRange`) instead of re-deriving it from `bins` every call. Lets
+ * SurfaceView's paint loop compute the fraction every frame without
+ * re-scanning the bins array each time.
+ */
+export function axisFractionIn(
+  range: FiniteRange | null,
+  value: number,
+): number {
   if (!range || range.min >= range.max) return 0.5;
   return (value - range.min) / (range.max - range.min);
 }
@@ -51,7 +75,21 @@ export function heightOf(
   values: number[],
   heightScale: number,
 ): number {
-  const range = finiteRange(values);
+  return heightOfIn(finiteRange(values), value, heightScale);
+}
+
+/**
+ * Range-accepting counterpart of `heightOf` (review finding I-1) — same
+ * formula, but takes a `range` PRECOMPUTED by the caller (e.g. via
+ * `finiteRange`) instead of re-deriving it from `values` every call. Lets
+ * SurfaceView's paint loop compute the live dot's height every frame without
+ * an O(cells) `.filter()` over the whole values array each time.
+ */
+export function heightOfIn(
+  range: FiniteRange | null,
+  value: number,
+  heightScale: number,
+): number {
   if (!range || range.max <= range.min || !Number.isFinite(value)) return 0;
   return heightScale * ((value - range.min) / (range.max - range.min));
 }
@@ -174,7 +212,17 @@ export function bilinearHeight(
   const v01 = values[r * cols + c + 1];
   const v10 = values[(r + 1) * cols + c];
   const v11 = values[(r + 1) * cols + c + 1];
-  if (![v00, v01, v10, v11].every(Number.isFinite)) return null;
+  // Inline checks, not `[v00,v01,v10,v11].every(Number.isFinite)` (review
+  // finding I-1) — this runs every animation frame while the live dot is
+  // visible, and the array literal was a per-frame allocation.
+  if (
+    !Number.isFinite(v00) ||
+    !Number.isFinite(v01) ||
+    !Number.isFinite(v10) ||
+    !Number.isFinite(v11)
+  ) {
+    return null;
+  }
   const top = v00 + (v01 - v00) * fx;
   const bottom = v10 + (v11 - v10) * fx;
   return top + (bottom - top) * fy;

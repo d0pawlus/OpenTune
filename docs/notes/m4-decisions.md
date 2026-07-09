@@ -584,15 +584,18 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
 
 - **Semantyka żywego punktu** — pętla rAF czyta
   `useRealtimeStore.getState().getChannel(...)` imperatywnie (wzorzec M3 z
-  `GaugeCanvas`: zero stanu Reacta na klatkę, zero alokacji — jedyny mutowany
-  obiekt to wbudowany `Vector3` pozycji kropki przez `position.set`). Punkt
-  wymaga OBU kanałów (`x_channel` i `y_channel` niepuste i oba widziane w
-  store); `bilinearHeight` interpoluje WARTOŚĆ komórki (nie znormalizowaną
-  wysokość) i zwraca `null` poza zakresem binów lub gdy którykolwiek z
-  czterech narożników klatki jest nieskończony → kropka znika zamiast
-  ekstrapolować lub pokazywać zmyśloną pozycję (ta sama decyzja co kursor
-  krzywej z Taska 6: milcząca nieobecność > myląca pozycja). Wysokość kropki
-  = `heightOf(wartość) + 0.03` (lewituje tuż nad powierzchnią).
+  `GaugeCanvas`: zero stanu Reacta na klatkę; jedyny mutowany obiekt to
+  wbudowany `Vector3` pozycji kropki przez `position.set`). Zakresy osi/wartości
+  (`xBins`/`yBins`/`values`) są PRECOMPUTED w `rangesRef` przez efekt montujący
+  i efekt zmiany danych, więc sama pętla rAF już ich nie liczy — patrz korekta
+  niżej. Punkt wymaga OBU kanałów (`x_channel` i `y_channel` niepuste i oba
+  widziane w store); `bilinearHeight` interpoluje WARTOŚĆ komórki (nie
+  znormalizowaną wysokość) i zwraca `null` poza zakresem binów lub gdy
+  którykolwiek z czterech narożników klatki jest nieskończony → kropka znika
+  zamiast ekstrapolować lub pokazywać zmyśloną pozycję (ta sama decyzja co
+  kursor krzywej z Taska 6: milcząca nieobecność > myląca pozycja). Wysokość
+  kropki = `heightOfIn(zakres, wartość) + 0.03` (lewituje tuż nad
+  powierzchnią).
 
 - **Fail-open WebGL** — `new THREE.WebGLRenderer(...)` w try/catch;
   potwierdzone empirycznie, że pod jsdom rzuca synchronicznie ("Error
@@ -661,3 +664,36 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   zawierającym WYŁĄCZNIE zmiany `three`/`@types/three` (dirty hunk
   `allowScripts` odłożony patchem na czas commita i przywrócony po nim,
   procedura kontrolera).
+
+- **Korekta Taska 7 (review, finding I-1): pętla rAF jednak ALOKOWAŁA co
+  klatkę, mimo że powyższy opis "Semantyka żywego punktu" twierdził "zero
+  alokacji"** — to zdanie było nieprawdziwe w pierwszej wersji. Faktyczny
+  stan sprzed poprawki: `bilinearHeight` budowało literał tablicy
+  `[v00,v01,v10,v11].every(Number.isFinite)` przy każdym wywołaniu, a
+  `axisFraction`/`heightOf` (wołane z pętli dla obu osi i wysokości kropki)
+  za każdym razem na nowo liczyły `finiteRange` — `bins.filter(Number.isFinite)`
+  + `Math.min(...)`/`Math.max(...)` na rozproszonej tablicy + świeży obiekt
+  `{min,max}` — czyli przy widocznej kropce operacyjnej silnik JS śmiecił przy
+  KAŻDEJ klatce (dla `values` to skan O(cells), np. 400 elementów przy tabeli
+  20×20 w 60 fps), łamiąc zamrożoną decyzję 9 ("no per-frame allocation —
+  reuse one Vector3"). Naprawione BEZ zmiany istniejących sygnatur
+  eksportowanych (`bilinearHeight`/`axisFraction`/`heightOf` testowane i
+  używane gdzie indziej, więc nietykalne): (1) `bilinearHeight` zamienione na
+  cztery inline'owane `!Number.isFinite(...)` zamiast literału tablicy; (2)
+  `surfaceGeometry.ts` eksportuje teraz `finiteRange` (typ `FiniteRange`) oraz
+  dwa nowe czyste warianty przyjmujące gotowy zakres —
+  `axisFractionIn(range, value)` i `heightOfIn(range, value, heightScale)` —
+  a `axisFraction`/`heightOf` stały się cienkimi wrapperami nad nimi (DRY, bez
+  duplikacji formuły); (3) `SurfaceView.tsx` liczy zakresy `xBins`/`yBins`/
+  `values` RAZ — w efekcie montującym i w efekcie zmiany danych (`[xBins,
+  yBins, values, heatLo, heatHi]`) — i chowa je w `rangesRef`; pętla rAF
+  czyta wyłącznie ten ref (`axisFractionIn`/`heightOfIn`), nie licząc niczego
+  od nowa. Stan po poprawce: krok po kroku w pętli rAF nie ma ani jednego
+  literału tablicy/obiektu, spreadu ani domknięcia tworzonego per klatka —
+  jedyny mutowany obiekt to nadal wbudowany `Vector3` kropki przez
+  `position.set`, dokładnie jak zamrożona decyzja 9 zakładała od początku.
+  Pokrycie: nowe testy jednostkowe dla `finiteRange`/`axisFractionIn`/
+  `heightOfIn` w `surfaceGeometry.test.ts`, w tym asercje parzystości z
+  istniejącymi `axisFraction`/`heightOf` dla tych samych zakresów (ten sam
+  wynik = zero regresji zachowania); pełny `npm test` i `npm run lint` +
+  `npm run format:check` zielone.
