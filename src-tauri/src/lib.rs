@@ -4,6 +4,7 @@ pub mod connection;
 pub mod dto;
 pub mod events;
 mod layout;
+mod offline_commands;
 pub mod owner;
 mod realtime_commands;
 pub mod session;
@@ -36,6 +37,9 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::snapshot_tune,
             tune_commands::diff_tune,
             tune_commands::merge_tune,
+            offline_commands::new_tune,
+            offline_commands::open_tune,
+            offline_commands::save_tune,
             realtime_commands::start_realtime,
             realtime_commands::stop_realtime,
             layout::save_layout,

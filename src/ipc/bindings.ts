@@ -69,6 +69,9 @@ export const commands = {
 	 *  earlier picks already committed (M2 behavior, preserved).
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
+	newTune: (iniPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("new_tune", { iniPath })),
+	openTune: (iniPath: string, msqPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("open_tune", { iniPath, msqPath })),
+	saveTune: (path: string) => typedError<null, string>(__TAURI_INVOKE("save_tune", { path })),
 	/**
 	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
 	 *  ≤30 Hz as `RealtimeFrameEvent`s).

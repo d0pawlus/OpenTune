@@ -34,6 +34,7 @@ opentune-simulator = { path = "crates/simulator" }
 opentune-ini = { path = "crates/ini" }
 opentune-model = { path = "crates/model" }
 opentune-realtime = { path = "crates/realtime" }
+opentune-project = { path = "crates/project" }
 # §9 owner task: mpsc/oneshot channels + spawn_blocking for the blocking
 # serial transport. Already in the tree transitively via tauri.
 tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }

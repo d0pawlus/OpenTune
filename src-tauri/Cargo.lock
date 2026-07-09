@@ -2339,6 +2339,7 @@ version = "0.1.0"
 dependencies = [
  "opentune-ini",
  "opentune-model",
+ "opentune-project",
  "opentune-protocol",
  "opentune-realtime",
  "opentune-simulator",

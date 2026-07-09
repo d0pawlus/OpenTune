@@ -120,6 +120,25 @@ pub enum Command {
     DebugSimulator {
         reply: Reply<Arc<opentune_simulator::EcuSimulator>>,
     },
+    /// Build a fresh offline session (no ECU link) around a blank tune from
+    /// `ini_path` (M4 Task 3 — offline tune lifecycle).
+    NewTune {
+        ini_path: String,
+        reply: Reply<DefinitionDto>,
+    },
+    /// Build a fresh offline session and load a `.msq` into its tune
+    /// (M4 Task 3 — offline tune lifecycle).
+    OpenTune {
+        ini_path: String,
+        msq_path: String,
+        reply: Reply<DefinitionDto>,
+    },
+    /// Serialize the current tune to `.msq` at `path` (M4 Task 3 — offline
+    /// tune lifecycle).
+    SaveTune {
+        path: String,
+        reply: Reply<()>,
+    },
 }
 
 /// An event the owner wants delivered to the frontend. Decouples the loop
@@ -334,6 +353,30 @@ impl Owner {
                 };
                 let _ = reply.send(r);
             }
+            Command::NewTune { ini_path, reply } => {
+                let _ = reply.send(self.new_tune(ini_path).await);
+            }
+            Command::OpenTune {
+                ini_path,
+                msq_path,
+                reply,
+            } => {
+                let _ = reply.send(self.open_tune(ini_path, msq_path).await);
+            }
+            Command::SaveTune { path, reply } => {
+                let r = self
+                    .with_session(move |s| {
+                        let tune = s
+                            .tune
+                            .as_ref()
+                            .ok_or_else(|| crate::session::NO_TUNE.to_string())?;
+                        let xml = opentune_project::msq::tune_to_msq(tune);
+                        std::fs::write(&path, xml)
+                            .map_err(|e| format!("cannot write `{path}`: {e}"))
+                    })
+                    .await;
+                let _ = reply.send(r);
+            }
         }
     }
 
@@ -460,6 +503,48 @@ impl Owner {
             (self.emit)(OwnerEvent::TuneDirty(ev.clone()));
         }
         result.map(|_| event)
+    }
+
+    /// Tear down the current session and any realtime polling state — the
+    /// shared body of `new_tune`/`open_tune`: an offline session never
+    /// inherits a previous session's live link or polling (same rule as
+    /// `Disconnect`/`connect`).
+    fn reset_session(&mut self) {
+        self.session = None;
+        self.polling = false;
+        self.poller = None;
+    }
+
+    /// Build a blank offline tune from `ini_path` and make it the current
+    /// session. Built off-loop first — a bad INI must not wipe the user's
+    /// current session before the replacement is known to succeed.
+    async fn new_tune(&mut self, ini_path: String) -> Result<DefinitionDto, String> {
+        let session = tokio::task::spawn_blocking(move || ops::build_offline_session(&ini_path))
+            .await
+            .map_err(|e| format!("new_tune panicked: {e}"))??;
+        let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
+        self.session = Some(session);
+        Ok(dto)
+    }
+
+    /// Build an offline tune from `ini_path` with a `.msq` loaded into it,
+    /// and make it the current session. Same build-first ordering as
+    /// [`Self::new_tune`].
+    async fn open_tune(
+        &mut self,
+        ini_path: String,
+        msq_path: String,
+    ) -> Result<DefinitionDto, String> {
+        let session = tokio::task::spawn_blocking(move || {
+            ops::build_offline_session_from_msq(&ini_path, &msq_path)
+        })
+        .await
+        .map_err(|e| format!("open_tune panicked: {e}"))??;
+        let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
+        self.session = Some(session);
+        Ok(dto)
     }
 }
 
