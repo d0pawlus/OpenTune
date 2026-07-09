@@ -45,8 +45,14 @@ function conditionExprs(def: DefinitionDto): string[] {
  * Wire-touching actions stay connected-only: the load/refresh sequence
  * fetches from the ECU only when nothing is loaded yet and the link
  * *becomes* alive (i.e. on connect — `reconnecting` only ever follows
- * `connected`, so it never re-fires mid-glitch), and burn/undo/redo are
- * disabled while merely reconnecting.
+ * `connected`, so it never re-fires mid-glitch), and burn is disabled
+ * while merely reconnecting (`!dirty || !isConnected`). Undo/redo are
+ * wire-free for an offline tune (Task 2), so they gate on `!offline &&
+ * !isConnected` — enabled whenever offline, or the link is strictly
+ * `connected`; only an *online* tune loses them mid-reconnect. Write-to-ECU
+ * (Task 6) is the mirror case, gated on `!offline || !isConnected`: it only
+ * makes sense for an offline-origin tune pushed onto a live, strictly-
+ * connected link.
  */
 export function TunePanel({ locale }: { locale: Locale }) {
   const connectionState = useConnectionStore((s) => s.connectionState);
@@ -54,6 +60,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
   const linkAlive = isLinkAlive(connectionState);
 
   const definition = useTuneStore((s) => s.definition);
+  const offline = useTuneStore((s) => s.offline);
   const values = useTuneStore((s) => s.values);
   const dirty = useTuneStore((s) => s.dirty);
   const activeDialog = useTuneStore((s) => s.activeDialog);
@@ -192,12 +199,20 @@ export function TunePanel({ locale }: { locale: Locale }) {
             {t("tune.badge.modified", locale)}
           </span>
         )}
-        {/* Burn/undo/redo are connected-only: while `reconnecting` the
-            panel stays visible (see the component doc) but these buttons
-            must not put new traffic on a link being re-established. Field
-            edits and diff/merge actions are NOT gated here — the owner
-            queues their commands behind the reconnect (safe, just delayed);
-            gating them too is a recorded follow-up. */}
+        {/* Burn always needs a live link (there is nothing to flash to
+            offline), so it stays gated on `!dirty || !isConnected` — while
+            merely `reconnecting` this correctly stays disabled too, since
+            `isConnected` is strictly `connectionState.type === "connected"`.
+            Undo/redo are wire-free for an offline tune (Task 2), so they are
+            enabled whenever `offline` OR the link is strictly `connected` —
+            `!offline && !isConnected` disables them only for an online tune
+            while merely `reconnecting`, so they never put new traffic on a
+            link being re-established. Write-to-ECU is the mirror case: it
+            only makes sense for an offline-origin tune pushed onto a live,
+            strictly-connected link, so it is gated on `!offline ||
+            !isConnected`. Field edits and diff/merge actions are NOT gated
+            here — the owner queues their commands behind the reconnect
+            (safe, just delayed); gating them too is a recorded follow-up. */}
         <div className="tune-actions">
           <button
             type="button"
@@ -209,16 +224,23 @@ export function TunePanel({ locale }: { locale: Locale }) {
           <button
             type="button"
             onClick={() => runAndRefresh(() => commands.undoTune())}
-            disabled={!isConnected}
+            disabled={!offline && !isConnected}
           >
             {t("tune.undo", locale)}
           </button>
           <button
             type="button"
             onClick={() => runAndRefresh(() => commands.redoTune())}
-            disabled={!isConnected}
+            disabled={!offline && !isConnected}
           >
             {t("tune.redo", locale)}
+          </button>
+          <button
+            type="button"
+            onClick={() => runAndRefresh(() => commands.writeTuneToEcu())}
+            disabled={!offline || !isConnected}
+          >
+            {t("tune.writeToEcu", locale)}
           </button>
         </div>
       </header>

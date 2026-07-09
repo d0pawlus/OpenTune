@@ -208,3 +208,91 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
     expect(useTuneStore.getState().definition).toBeNull();
   });
 });
+
+/**
+ * A file-backed offline tune (loaded via `OfflinePanel`'s `setOfflineDefinition`,
+ * simulated here directly on the store) never had a wire link to begin with.
+ * `TunePanel`'s reset effect keys off `offline`, not just `isLinkAlive`, so a
+ * true disconnect must be a no-op for it — no reset, and no doomed
+ * `getValues`/`evalConditions` refresh against a link that was never there
+ * (the refresh-guard from commit 0ba29ba, `linkAlive || store.offline`).
+ */
+describe("App composition: offline tune survives a link disconnect", () => {
+  const offlineDefinition: DefinitionDto = {
+    signature: "sig-offline",
+    menus: [
+      { label: "Fuel", items: [{ label: "Fuel Settings", dialog: "fuel" }] },
+    ],
+    dialogs: [
+      {
+        name: "fuel",
+        title: "Fuel Settings",
+        fields: [
+          { kind: { Constant: "baseFuel" }, visible: "rpm > 0", enable: null },
+        ],
+      },
+    ],
+    constants: [
+      { name: "baseFuel", units: "ms", digits: 1, low: 0, high: 25, kind: "Scalar" },
+    ],
+    tables: [],
+    curves: [],
+    gauges: [],
+    frontpage: { gauge_slots: [], indicators: [] },
+  };
+
+  beforeEach(() => {
+    useConnectionStore.setState({ connectionState: null });
+    useTuneStore.getState().reset();
+    vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [{ Scalar: 12 }],
+    });
+    vi.mocked(ipc.commands.evalConditions).mockResolvedValue({
+      status: "ok",
+      data: [true],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+    useConnectionStore.setState({ connectionState: null });
+    useTuneStore.getState().reset();
+  });
+
+  it("keeps the definition after a true disconnect and issues no extra wire reads", async () => {
+    act(() => {
+      useTuneStore.getState().setOfflineDefinition(offlineDefinition);
+      useTuneStore.getState().setActiveDialog("fuel");
+    });
+
+    render(<TunePanel locale="en" />);
+    await screen.findByRole("heading", { name: "Tune" });
+
+    // Mount reads once against the offline (wire-free) tune — this is the
+    // one legitimate call `refresh` makes when `store.offline` is true.
+    await vi.waitFor(() =>
+      expect(ipc.commands.getValues).toHaveBeenCalledTimes(1),
+    );
+    await vi.waitFor(() =>
+      expect(ipc.commands.evalConditions).toHaveBeenCalledTimes(1),
+    );
+
+    const definitionBefore = useTuneStore.getState().definition;
+    expect(definitionBefore).toBe(offlineDefinition);
+    expect(useTuneStore.getState().offline).toBe(true);
+
+    // A true disconnect: this tune never had a live link, so it must
+    // survive untouched — not reset — and must not fire a doomed refresh.
+    setConnectionState({ type: "disconnected" });
+
+    expect(useTuneStore.getState().definition).toBe(definitionBefore);
+    expect(useTuneStore.getState().offline).toBe(true);
+    expect(screen.getByRole("heading", { name: "Tune" })).toBeTruthy();
+
+    // No spurious extra reads fired against the (nonexistent) dead link.
+    expect(ipc.commands.getValues).toHaveBeenCalledTimes(1);
+    expect(ipc.commands.evalConditions).toHaveBeenCalledTimes(1);
+  });
+});
