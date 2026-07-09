@@ -705,6 +705,21 @@ async fn wait_for_sample_count(tx: &OwnerHandle, min: u32) -> CaptureStatusDto {
     panic!("sample_count never reached {min} within 2 s");
 }
 
+/// The structural half of the tap-rate invariant (review I-1): the capture
+/// tap sits on poll_tick's EMITTED frames, above the realtime coalescing
+/// gate. That sees the full poll rate only while the owner polls no faster
+/// than the gate emits. The behavioral test below can't catch a rate change
+/// (frames still flow either way) — this assertion breaks loudly instead.
+#[test]
+fn poll_interval_never_outpaces_the_coalesce_gate() {
+    assert!(
+        POLL_INTERVAL >= opentune_realtime::DEFAULT_EMIT_INTERVAL,
+        "capture taps emitted frames; if the owner ever polls faster than the \
+         coalescing gate, frames get discarded before the tap and capture sees \
+         less than full rate — move the tap below the gate (realtime poll.rs)"
+    );
+}
+
 #[tokio::test]
 async fn capture_rate_pins_the_tap_invariant() {
     let (tx, _events) = test_owner();

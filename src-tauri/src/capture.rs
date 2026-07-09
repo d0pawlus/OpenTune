@@ -66,9 +66,10 @@ impl CaptureBuffer {
     }
 
     /// The ring's current status. `duration_ms` is the last captured row's
-    /// `t_ms` (0 when empty) — the span of data actually captured, which
-    /// freezes once capturing stops rather than drifting with wall-clock
-    /// time between polls.
+    /// `t_ms` (0 when empty) — elapsed capture time, which freezes once
+    /// capturing stops rather than drifting with wall-clock time between
+    /// polls. Once the ring has wrapped it exceeds the span of the rows
+    /// actually retained (oldest were dropped; see `dropped`).
     pub fn status(&self, capturing: bool) -> CaptureStatusDto {
         CaptureStatusDto {
             capturing,
