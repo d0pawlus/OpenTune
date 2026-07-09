@@ -117,7 +117,7 @@ pub(super) fn build_offline_session_from_msq(
     let tune = session
         .tune
         .as_mut()
-        .expect("offline session always has a tune");
+        .ok_or_else(|| "internal error: offline session missing tune".to_string())?;
     opentune_project::msq::load_msq_into(tune, &xml).map_err(|e| e.to_string())?;
     Ok(session)
 }
