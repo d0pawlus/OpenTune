@@ -251,6 +251,32 @@ impl Session {
             .collect())
     }
 
+    /// Push the entire tune to the ECU: write every page's bytes, then burn
+    /// each page. Used by the offline "Write to ECU" action, which has no
+    /// read baseline to diff against. Requires a live connection.
+    pub fn write_all_to_ecu(&mut self) -> Result<TuneDirtyEvent, String> {
+        let Session {
+            conn, def, tune, ..
+        } = self;
+        let conn = conn.as_ref().ok_or_else(|| NO_CONNECTION.to_string())?;
+        let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+        let mut proto = protocol_for(conn, &def.comms)?;
+        // Whole-page write in one call — a new access pattern (M2 only ever
+        // wrote small deltas). Against the simulator this is accepted in one
+        // shot; real serial write (when it lifts SERIAL_UNSUPPORTED) MUST
+        // chunk each page into `comms.blocking_factor`-sized spans.
+        for page in &def.pages {
+            proto
+                .write(page.number, 0, tune.page_bytes(page.number))
+                .map_err(|e| e.to_string())?;
+        }
+        for page in &def.pages {
+            proto.burn(page.number).map_err(|e| e.to_string())?;
+        }
+        tune.mark_burned();
+        Ok(dirty_event(tune))
+    }
+
     /// The tune's current dirty-state event, if a tune is loaded.
     ///
     /// Used by IPC commands to emit a truthful badge state regardless of

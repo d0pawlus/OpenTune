@@ -40,6 +40,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             offline_commands::new_tune,
             offline_commands::open_tune,
             offline_commands::save_tune,
+            offline_commands::write_tune_to_ecu,
             realtime_commands::start_realtime,
             realtime_commands::stop_realtime,
             layout::save_layout,

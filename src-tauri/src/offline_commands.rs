@@ -42,3 +42,12 @@ pub async fn open_tune(
 pub async fn save_tune(path: String, owner: State<'_, OwnerHandle>) -> Result<(), String> {
     request(&owner, |reply| Command::SaveTune { path, reply }).await
 }
+
+/// Push the entire tune to the ECU: write every page's bytes, then burn.
+/// Used by the offline "Write to ECU" action, which has no read baseline to
+/// diff against. Requires a live connection (attach or connect first).
+#[tauri::command]
+#[specta::specta]
+pub async fn write_tune_to_ecu(owner: State<'_, OwnerHandle>) -> Result<(), String> {
+    request(&owner, |reply| Command::WriteTuneToEcu { reply }).await
+}

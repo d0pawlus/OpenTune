@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use opentune_ini::Definition;
 use opentune_model::Tune;
 use opentune_protocol::ConnectionState;
 
@@ -122,6 +123,46 @@ pub(super) fn build_offline_session_from_msq(
     Ok(session)
 }
 
+/// Attach a live link to an existing offline session **without** reading the
+/// tune (which would overwrite the user's offline edits). Verifies the ECU
+/// signature matches the offline tune's INI before attaching.
+pub(super) fn attach_connection(
+    session: &mut Session,
+    source: ConnectSource,
+    emit: &Emitter,
+) -> Result<(), String> {
+    let emit_cs =
+        |cs: ConnectionState| emit(OwnerEvent::Connection(ConnectionStateEvent::from(cs)));
+    let conn = match source {
+        // ATTACH ignores the source's ini_path: the offline def is authoritative.
+        ConnectSource::Simulator { .. } => connect_simulator(session.def.as_ref(), &emit_cs)?,
+        ConnectSource::Serial { ref port_name, .. } => {
+            connect_serial(port_name.clone(), session.def.comms.clone(), &emit_cs)?
+        }
+    };
+    verify_signature(&conn, &session.def)?;
+    session.conn = Some(conn);
+    Ok(())
+}
+
+/// Guard #2: the connected ECU's signature must match the tune's INI.
+fn verify_signature(conn: &ActiveConnection, def: &Definition) -> Result<(), String> {
+    match conn {
+        // The simulator is built from `def`, so its identity always matches.
+        ActiveConnection::Sim { .. } => Ok(()),
+        ActiveConnection::Serial { manager } => match manager.state() {
+            ConnectionState::Connected { identity } if identity.matches(&def.comms) => Ok(()),
+            ConnectionState::Connected { identity } => Err(format!(
+                "connected ECU signature `{}` does not match your tune's INI `{}`",
+                identity.signature, def.comms.signature
+            )),
+            _ => {
+                Err("ECU did not report a signature; cannot verify tune compatibility".to_string())
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod offline_build_tests {
     use super::*;
@@ -188,5 +229,78 @@ mod offline_build_tests {
             ),
             other => panic!("expected a scalar reqFuel, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn attach_keeps_the_offline_tune_and_pushes_to_sim() {
+        use crate::owner::Emitter;
+        use std::sync::Arc;
+
+        let mut s = build_offline_session(INI).unwrap();
+        let emit: Emitter = Arc::new(|_| {});
+        attach_connection(&mut s, ConnectSource::Simulator { ini_path: None }, &emit).unwrap();
+        assert!(s.conn.is_some(), "attach adds a connection");
+        assert!(s.tune.is_some(), "attach never drops the offline tune");
+        // The simulator accepts a whole-tune write + burn.
+        s.write_all_to_ecu().unwrap();
+    }
+
+    /// A `Serial` `ActiveConnection` whose manager's state is force-set (no
+    /// real port is ever opened — the factory is never invoked) so
+    /// `verify_signature`'s serial arm can be exercised hardware-free.
+    fn serial_conn_with_state(state: ConnectionState) -> ActiveConnection {
+        use opentune_protocol::reconnect::{ConnectionManager, ReconnectConfig};
+        use opentune_transport::serial::SerialTransport;
+
+        let def = build_offline_session(INI).unwrap().def;
+        let factory: Box<dyn FnMut() -> opentune_protocol::Result<SerialTransport> + Send> =
+            Box::new(|| unreachable!("factory must not run; state is forced for the test"));
+        let mut manager =
+            ConnectionManager::new(def.comms.clone(), ReconnectConfig::default(), factory);
+        manager.force_state_for_test(state);
+        ActiveConnection::Serial { manager }
+    }
+
+    #[test]
+    fn verify_signature_rejects_a_serial_signature_mismatch() {
+        use opentune_protocol::EcuIdentity;
+
+        let def = build_offline_session(INI).unwrap().def;
+        let conn = serial_conn_with_state(ConnectionState::Connected {
+            identity: EcuIdentity {
+                signature: "some-other-ecu".to_string(),
+                version: String::new(),
+            },
+        });
+        let err = verify_signature(&conn, &def).unwrap_err();
+        assert!(
+            err.contains("does not match"),
+            "expected a signature-mismatch error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_signature_accepts_a_matching_serial_signature() {
+        use opentune_protocol::EcuIdentity;
+
+        let def = build_offline_session(INI).unwrap().def;
+        let conn = serial_conn_with_state(ConnectionState::Connected {
+            identity: EcuIdentity {
+                signature: def.comms.signature.clone(),
+                version: String::new(),
+            },
+        });
+        verify_signature(&conn, &def).expect("matching signature must verify");
+    }
+
+    #[test]
+    fn verify_signature_rejects_a_serial_connection_with_no_reported_identity() {
+        let def = build_offline_session(INI).unwrap().def;
+        let conn = serial_conn_with_state(ConnectionState::Connecting);
+        let err = verify_signature(&conn, &def).unwrap_err();
+        assert!(
+            err.contains("did not report a signature"),
+            "expected the no-identity error, got: {err}"
+        );
     }
 }

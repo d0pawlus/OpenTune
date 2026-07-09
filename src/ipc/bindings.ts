@@ -87,6 +87,12 @@ export const commands = {
 	 */
 	saveTune: (path: string) => typedError<null, string>(__TAURI_INVOKE("save_tune", { path })),
 	/**
+	 *  Push the entire tune to the ECU: write every page's bytes, then burn.
+	 *  Used by the offline "Write to ECU" action, which has no read baseline to
+	 *  diff against. Requires a live connection (attach or connect first).
+	 */
+	writeTuneToEcu: () => typedError<null, string>(__TAURI_INVOKE("write_tune_to_ecu")),
+	/**
 	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
 	 *  ≤30 Hz as `RealtimeFrameEvent`s).
 	 */

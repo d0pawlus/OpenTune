@@ -139,6 +139,11 @@ pub enum Command {
         path: String,
         reply: Reply<()>,
     },
+    /// Push the entire tune to the ECU: write every page, then burn (M4
+    /// Task 4 — offline "Write to ECU"). Requires a live connection.
+    WriteTuneToEcu {
+        reply: Reply<()>,
+    },
 }
 
 /// An event the owner wants delivered to the frontend. Decouples the loop
@@ -377,6 +382,11 @@ impl Owner {
                     .await;
                 let _ = reply.send(r);
             }
+            Command::WriteTuneToEcu { reply } => {
+                let r = self.with_session(Session::write_all_to_ecu).await;
+                self.emit_dirty(&r);
+                let _ = reply.send(r.map(|_| ()));
+            }
         }
     }
 
@@ -456,16 +466,32 @@ impl Owner {
         }
     }
 
-    /// Tear down any current session, then build a fresh one: parse the
-    /// definition, open the transport, and run the handshake (all blocking).
+    /// Connect to an ECU. Branches on whether an offline tune is already
+    /// loaded:
+    /// - **ATTACH**: an offline session (`conn: None`, `tune: Some`) is kept
+    ///   as-is — only the live link is added, after the ECU's signature is
+    ///   verified against the offline tune's INI. The user's offline edits
+    ///   are never overwritten by a read.
+    /// - **FRESH**: no offline tune is loaded (or the session already has a
+    ///   connection) — tear down and build a brand-new session, reading the
+    ///   tune from the ECU (unchanged M2/M3 behavior).
+    ///
     /// `Connecting`/`Connected` are emitted from inside the handshake so a
-    /// slow serial connect still shows live progress.
+    /// slow serial connect still shows live progress either way.
     async fn connect(&mut self, source: ConnectSource) -> Result<(), String> {
-        self.session = None;
-        // Realtime is explicit-start only: a fresh session never inherits a
-        // previous session's polling (same rule as Disconnect).
-        self.polling = false;
-        self.poller = None;
+        if matches!(&self.session, Some(s) if s.conn.is_none() && s.tune.is_some()) {
+            let mut session = self.session.take().expect("checked by matches! above");
+            let emit = Arc::clone(&self.emit);
+            let session = tokio::task::spawn_blocking(move || {
+                ops::attach_connection(&mut session, source, &emit)?;
+                Ok::<_, String>(session)
+            })
+            .await
+            .map_err(|e| format!("attach panicked: {e}"))??;
+            self.session = Some(session);
+            return Ok(());
+        }
+        self.reset_session();
         let emit = Arc::clone(&self.emit);
         let session = tokio::task::spawn_blocking(move || build_session(source, &emit))
             .await
