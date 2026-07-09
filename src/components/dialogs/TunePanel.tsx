@@ -99,9 +99,16 @@ export function TunePanel({ locale }: { locale: Locale }) {
       const store = useTuneStore.getState();
       if (store.definition) {
         // Definition already present (offline via OfflinePanel, or a prior
-        // connect). Re-read values + conditions; never touch the wire, never
-        // reload the tune (that would overwrite offline edits on attach).
-        if (!cancelled) await refresh(store.definition);
+        // connect). Re-read values + conditions — but only when there is
+        // somewhere to read them from: a live link, or an offline tune (no
+        // wire needed). On a true disconnect of an *online* tune, `definition`
+        // is still set here (this effect runs before the sibling reset effect
+        // commits `reset()`), so without this guard we'd fire a doomed
+        // `getValues`/`evalConditions` at the dead link. Never reload the
+        // tune here either way — that would overwrite offline edits on attach.
+        if (!cancelled && (linkAlive || store.offline)) {
+          await refresh(store.definition);
+        }
         return;
       }
       if (!linkAlive) return; // nothing loaded yet and no link — show nothing
