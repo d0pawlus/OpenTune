@@ -33,12 +33,18 @@ function conditionExprs(def: DefinitionDto): string[] {
  * `Dashboard` reads the same `useTuneStore`-held `definition`, so this panel's
  * reset-on-disconnect effect must not fire on a mere `reconnecting` glitch —
  * doing so would null `definition` out from under `Dashboard` and unmount it
- * too. The load/reset effect and the render gate therefore use
- * {@link isLinkAlive} (`connected` or `reconnecting`), matching `Dashboard`'s
- * mount predicate: the panel stays visible through a glitch and only a true
- * disconnect (`disconnected`/`failed`) resets the store. Wire-touching
- * actions stay connected-only: the load/refresh sequence runs only when the
- * link *becomes* alive (i.e. on connect — `reconnecting` only ever follows
+ * too. The reset effect therefore keys off {@link isLinkAlive} (`connected`
+ * or `reconnecting`), not `isConnected`: only a true disconnect
+ * (`disconnected`/`failed`) resets the store, and even then only for a
+ * live-read tune — a file-backed offline tune (`useTuneStore`'s `offline`
+ * flag, set via `OfflinePanel`'s `setOfflineDefinition`) has no wire link to
+ * lose and survives so editing can continue after unplugging. The render
+ * gate itself only checks `definition`, so an offline tune still renders
+ * with no link at all; `Dashboard` keeps gating on `isLinkAlive` too, so it
+ * still hides (no stale gauges) whenever the link is down, offline or not.
+ * Wire-touching actions stay connected-only: the load/refresh sequence
+ * fetches from the ECU only when nothing is loaded yet and the link
+ * *becomes* alive (i.e. on connect — `reconnecting` only ever follows
  * `connected`, so it never re-fires mid-glitch), and burn/undo/redo are
  * disabled while merely reconnecting.
  */
@@ -77,33 +83,38 @@ export function TunePanel({ locale }: { locale: Locale }) {
     }
   }, []);
 
-  // Load definition + tune once the link comes alive. On a true disconnect
-  // we reset the store (an external system) and let the panel unmount its
-  // content; stale local `conditions` are harmless (the panel renders null)
-  // and are fully replaced by `refresh` on the next connect. Gating on
+  // Load definition + tune on a fresh online connect; otherwise just refresh
+  // values/conditions (wire-free, so it also serves the offline case: a
+  // definition already present — via `OfflinePanel`'s `setOfflineDefinition`,
+  // or a prior connect — is re-read but never re-fetched or reloaded, which
+  // would overwrite offline edits on attach). Gating the fetch branch on
   // `linkAlive` rather than `isConnected` means a `reconnecting` glitch
-  // neither resets the store nor re-fetches: `reconnecting` only ever
-  // follows `connected`, so becoming alive always means becoming connected,
-  // and staying alive through connected → reconnecting → connected leaves
-  // this effect untouched — definition/values/dirty simply survive the blip.
+  // neither re-fetches nor reloads: `reconnecting` only ever follows
+  // `connected`, so becoming alive always means becoming connected, and
+  // staying alive through connected → reconnecting → connected leaves this
+  // effect a no-op — definition/values/dirty simply survive the blip.
   useEffect(() => {
-    if (!linkAlive) {
-      useTuneStore.getState().reset();
-      return;
-    }
     let cancelled = false;
     (async () => {
+      const store = useTuneStore.getState();
+      if (store.definition) {
+        // Definition already present (offline via OfflinePanel, or a prior
+        // connect). Re-read values + conditions; never touch the wire, never
+        // reload the tune (that would overwrite offline edits on attach).
+        if (!cancelled) await refresh(store.definition);
+        return;
+      }
+      if (!linkAlive) return; // nothing loaded yet and no link — show nothing
       const defRes = await commands.getDefinition();
       if (defRes.status !== "ok" || cancelled) {
         if (defRes.status === "error") setError(defRes.error);
         return;
       }
       const def = defRes.data;
-      useTuneStore.getState().setDefinition(def);
+      store.setDefinition(def);
       const firstDialog =
         def.menus[0]?.items[0]?.dialog ?? def.dialogs[0]?.name ?? null;
-      useTuneStore.getState().setActiveDialog(firstDialog);
-
+      store.setActiveDialog(firstDialog);
       const loadRes = await commands.loadTune();
       if (loadRes.status === "error") {
         setError(loadRes.error);
@@ -114,7 +125,16 @@ export function TunePanel({ locale }: { locale: Locale }) {
     return () => {
       cancelled = true;
     };
-  }, [linkAlive, refresh]);
+  }, [linkAlive, definition, refresh]);
+
+  // Reset on a *true* disconnect — but only for a live-read tune. A
+  // file-backed offline tune (via `OfflinePanel`) has no wire link to lose,
+  // so it survives so the user can keep editing after unplugging.
+  useEffect(() => {
+    if (!linkAlive && !useTuneStore.getState().offline) {
+      useTuneStore.getState().reset();
+    }
+  }, [linkAlive]);
 
   // Reflect backend dirty-state events into the store.
   useEffect(() => {
@@ -152,7 +172,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
     [definition, refresh],
   );
 
-  if (!linkAlive || !definition) {
+  if (!definition) {
     return null;
   }
 

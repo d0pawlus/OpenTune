@@ -7,6 +7,13 @@ import type { CellEdit } from "../components/table-editor/tableOps";
 interface TuneStore {
   /** The definition being rendered, or `null` before it is loaded. */
   definition: DefinitionDto | null;
+  /**
+   * True when `definition` came from a file-backed offline load
+   * (`setOfflineDefinition`) rather than a live ECU read (`setDefinition`).
+   * An offline tune has no wire link to lose, so it survives a true
+   * disconnect instead of being reset — see `TunePanel`'s reset effect.
+   */
+  offline: boolean;
   /** Current physical values keyed by constant name. */
   values: Record<string, Value>;
   /**
@@ -24,7 +31,10 @@ interface TuneStore {
   /** The curve editor currently shown, selected from the Curves nav (M4). */
   activeCurve: string | null;
 
+  /** Loads a definition from a live ECU read; clears `offline`. */
   setDefinition: (definition: DefinitionDto | null) => void;
+  /** Loads a definition from a file-backed offline open/new; sets `offline`. */
+  setOfflineDefinition: (definition: DefinitionDto) => void;
   setValues: (values: Record<string, Value>) => void;
   /** Selects a dialog, clearing any active table/curve (single content pane). */
   setActiveDialog: (activeDialog: string | null) => void;
@@ -61,6 +71,7 @@ interface TuneStore {
 const INITIAL: Pick<
   TuneStore,
   | "definition"
+  | "offline"
   | "values"
   | "dirty"
   | "dirtyPages"
@@ -69,6 +80,7 @@ const INITIAL: Pick<
   | "activeCurve"
 > = {
   definition: null,
+  offline: false,
   values: {},
   dirty: false,
   dirtyPages: [],
@@ -80,7 +92,8 @@ const INITIAL: Pick<
 export const useTuneStore = create<TuneStore>((set, get) => ({
   ...INITIAL,
 
-  setDefinition: (definition) => set({ definition }),
+  setDefinition: (definition) => set({ definition, offline: false }),
+  setOfflineDefinition: (definition) => set({ definition, offline: true }),
   setValues: (values) => set({ values }),
   setActiveDialog: (activeDialog) =>
     set({ activeDialog, activeTable: null, activeCurve: null }),
