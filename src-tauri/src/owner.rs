@@ -482,14 +482,19 @@ impl Owner {
         if matches!(&self.session, Some(s) if s.conn.is_none() && s.tune.is_some()) {
             let mut session = self.session.take().expect("checked by matches! above");
             let emit = Arc::clone(&self.emit);
-            let session = tokio::task::spawn_blocking(move || {
-                ops::attach_connection(&mut session, source, &emit)?;
-                Ok::<_, String>(session)
+            // Always hand the session back (tuple pattern, same as
+            // `with_session`/`simulate_link_drop`): a *failed* attach — the
+            // signature guard rejecting a mismatched ECU, or `connect_serial`
+            // erroring on a bad port — must leave the user's unsaved offline
+            // tune intact, never destroyed. Only a genuine task panic loses it.
+            let (session, r) = tokio::task::spawn_blocking(move || {
+                let r = ops::attach_connection(&mut session, source, &emit);
+                (session, r)
             })
             .await
-            .map_err(|e| format!("attach panicked: {e}"))??;
+            .map_err(|e| format!("attach panicked: {e}"))?;
             self.session = Some(session);
-            return Ok(());
+            return r;
         }
         self.reset_session();
         let emit = Arc::clone(&self.emit);

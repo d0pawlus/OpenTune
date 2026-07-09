@@ -290,6 +290,62 @@ async fn commands_error_when_not_connected() {
     assert!(err.contains("not connected"), "got: {err}");
 }
 
+// ── Task 4 regression: a FAILED attach must NOT destroy the offline tune ─────
+//
+// `Owner::connect`'s ATTACH branch takes the session out to move it onto the
+// blocking pool. If `attach_connection` errors — the signature guard rejecting
+// a mismatched ECU, or `connect_serial` failing on a bad port — the session
+// must be handed back intact, never dropped. The earlier `?`-in-closure form
+// dropped the owned `session` local on the error path, so `self.session`
+// stayed `None`: the user's unsaved offline tune was destroyed exactly when
+// the guard rejected a bad ECU. This drives the real command path (NOT
+// `attach_connection` directly, which the owner_ops tests do and thus bypass
+// this bug): NewTune builds the offline session, Connect with a Serial source
+// pointing at a nonexistent port makes `connect_serial` error, and the tune
+// must survive.
+
+#[tokio::test]
+async fn failed_attach_preserves_the_offline_tune() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, _events) = test_owner();
+
+    // Build the offline session (conn: None, tune: Some) via the real command.
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+
+    // Attach to a bogus serial port: `connect_serial` opens the port on a
+    // single attempt and errors immediately (ENOENT, no retry/hang), so the
+    // ATTACH branch's `attach_connection` returns Err.
+    let err = send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Serial {
+            port_name: "/dev/opentune-nonexistent-bogus-port".to_owned(),
+            ini_path: INI.to_owned(),
+        },
+        reply,
+    })
+    .await
+    .expect_err("attach to a nonexistent serial port must fail");
+    assert!(!err.is_empty(), "the failed attach reports an error");
+
+    // The offline session SURVIVED: `GetDefinition` still succeeds, proving
+    // `self.session` is still `Some`. Against the buggy code this returned
+    // "not connected" because the failed attach dropped the session.
+    let dto = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect("the offline tune must survive a failed attach");
+    assert!(
+        !dto.gauges.is_empty(),
+        "the surviving session still exposes the loaded definition"
+    );
+}
+
 #[tokio::test]
 async fn realtime_flag_commands_reply_ok() {
     let (tx, _events) = test_owner();
