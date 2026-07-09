@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod analysis_commands;
+mod capture;
 mod commands;
 pub mod connection;
 pub mod dto;
@@ -38,6 +40,9 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::merge_tune,
             realtime_commands::start_realtime,
             realtime_commands::stop_realtime,
+            analysis_commands::start_capture,
+            analysis_commands::stop_capture,
+            analysis_commands::capture_status,
             layout::save_layout,
             layout::load_layout,
         ])
@@ -214,6 +219,22 @@ mod binding_gen {
     fn export_typescript_bindings_includes_realtime_commands_and_event() {
         let contents = export_and_read();
         for needle in ["startRealtime", "stopRealtime", "RealtimeFrameEvent"] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_capture_commands_and_dto() {
+        let contents = export_and_read();
+        for needle in [
+            "startCapture",
+            "stopCapture",
+            "captureStatus",
+            "CaptureStatusDto",
+        ] {
             assert!(
                 contents.contains(needle),
                 "bindings.ts should contain `{needle}`, got:\n{contents}"

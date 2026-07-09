@@ -678,3 +678,82 @@ async fn m3_demo_link_drop_recovery_rereads_tune_and_resumes_frames() {
         .await
         .expect("stop");
 }
+
+// ── Task 8: the capture ring pins the poll-tick tap invariant ──────────────
+//
+// `capture.rs`'s doc comment records the rate invariant: the ring taps
+// poll_tick's EMITTED frames, and at the owner's 25 Hz cadence (40 ms) —
+// slower than the realtime poller's ~30 Hz (33 ms) coalescing gate — every
+// acquired frame is emitted, so the capture sees (near) the full poll rate.
+// This test verifies the observable behavior that invariant depends on:
+// frames flow into the ring while capturing (waited out with a generous cap,
+// not a fixed window, to stay CI-safe), and rows freeze — not decay — once
+// `StopCapture` clears the flag.
+
+/// Poll `CaptureStatus` (deterministic wait, ~2 s cap) until `sample_count`
+/// reaches `min`.
+async fn wait_for_sample_count(tx: &OwnerHandle, min: u32) -> CaptureStatusDto {
+    for _ in 0..200 {
+        let status = send(tx, |reply| Command::CaptureStatus { reply })
+            .await
+            .expect("capture_status");
+        if status.sample_count >= min {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("sample_count never reached {min} within 2 s");
+}
+
+#[tokio::test]
+async fn capture_rate_pins_the_tap_invariant() {
+    let (tx, _events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
+    send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect("start capture");
+
+    // ~10 poll ticks (400 ms) elapse; every acquired frame must be captured
+    // (25 Hz < 30 Hz gate ⇒ no coalescing) — expect at least 8 rows.
+    let status = wait_for_sample_count(&tx, 8).await;
+    assert!(
+        status.capturing,
+        "capture_status must report capturing while the flag is set"
+    );
+    assert!(
+        status.sample_count >= 8,
+        "expected >= 8 captured rows after ~10 poll ticks, got {}",
+        status.sample_count
+    );
+
+    let stopped = send(&tx, |reply| Command::StopCapture { reply })
+        .await
+        .expect("stop_capture");
+    assert!(!stopped.capturing, "stop_capture clears the flag");
+    let frozen_count = stopped.sample_count;
+    let frozen_duration = stopped.duration_ms;
+
+    // A further tick window must not grow the ring: the flag is off, rows
+    // are retained (not cleared) for a later `run_ve_analyze`.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let after = send(&tx, |reply| Command::CaptureStatus { reply })
+        .await
+        .expect("capture_status");
+    assert_eq!(
+        after.sample_count, frozen_count,
+        "sample_count must not grow after stop_capture"
+    );
+    assert_eq!(
+        after.duration_ms, frozen_duration,
+        "duration_ms must freeze too — no new rows means no later t_ms"
+    );
+    assert!(!after.capturing, "capturing stays false after stop_capture");
+
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop realtime");
+}

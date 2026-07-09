@@ -2337,6 +2337,7 @@ dependencies = [
 name = "opentune"
 version = "0.1.0"
 dependencies = [
+ "opentune-analysis",
  "opentune-ini",
  "opentune-model",
  "opentune-protocol",

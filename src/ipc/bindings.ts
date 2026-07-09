@@ -76,6 +76,19 @@ export const commands = {
 	startRealtime: () => typedError<null, string>(__TAURI_INVOKE("start_realtime")),
 	/**  Stop the realtime poll loop. */
 	stopRealtime: () => typedError<null, string>(__TAURI_INVOKE("stop_realtime")),
+	/**
+	 *  Start (or restart) the realtime capture ring for the current session.
+	 *  Requires an active session — the ring's pinned columns come from the
+	 *  session's declared output channels.
+	 */
+	startCapture: () => typedError<null, string>(__TAURI_INVOKE("start_capture")),
+	/**
+	 *  Stop capturing (rows are retained for `run_ve_analyze`) and return the
+	 *  final status.
+	 */
+	stopCapture: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("stop_capture")),
+	/**  Report the capture ring's current status. */
+	captureStatus: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("capture_status")),
 	/**  Persist the dashboard layout JSON to the app config dir. */
 	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
 	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
@@ -104,6 +117,14 @@ export type AxisDto = {
 	min: number | null,
 	max: number | null,
 	divisions: number,
+};
+
+/**  The realtime-capture ring buffer's status (Task 8). */
+export type CaptureStatusDto = {
+	capturing: boolean,
+	sample_count: number,
+	duration_ms: number | null,
+	dropped: number,
 };
 
 /**  IPC projection of [`opentune_model::CellDiff`]. */

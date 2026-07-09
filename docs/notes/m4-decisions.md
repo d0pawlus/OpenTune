@@ -665,6 +665,117 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   `allowScripts` odłożony patchem na czas commita i przywrócony po nim,
   procedura kontrolera).
 
+## Task 8 — owner-side realtime capture ring (`ve_analyze` data seam)
+
+- **Miejsce podpięcia (tap) i inwariant tempa** — `CaptureBuffer::push`
+  wołane w `poll_tick` (`owner.rs`) NA zdekodowanej, JUŻ WYEMITOWANEJ ramce
+  (`if let Ok(Some(frame)) = r { ... }`), PRZED konwersją na
+  `RealtimeFrameEvent` (`frame.channels.into_iter()...`), która konsumuje
+  `frame` — więc tap musi (i faktycznie) siedzieć przed nią, zgodnie z
+  brief 8.2. Ponieważ owner pollinguje z 25 Hz (40 ms, `POLL_INTERVAL`), a
+  bramka koalescencji `RealtimePoller` (`crates/realtime/src/poll.rs`)
+  emituje maksymalnie co 33 ms (~30 Hz), 25 Hz < 30 Hz ⇒ DZIŚ każda
+  zaakceptowana próbka jest emitowana i capture widzi PEŁNE tempo pollingu
+  — nic nie jest koalescowane/tracone między pollem a capture'em. To
+  udokumentowane wprost w doc-commencie `CaptureBuffer` (rate note z
+  briefu, dosłownie) i sprawdzone zachowaniowo osobnym testem ownera
+  (`capture_rate_pins_the_tap_invariant`, `owner_tests.rs`): `StartRealtime` +
+  `StartCapture`, poll-until-threshold (limit ~2 s, nie sztywny sleep) musi
+  dać `sample_count >= 8`, a po `StopCapture` kolejne okno ticków NIE
+  powiększa ani `sample_count`, ani `duration_ms` (zamrożenie, nie zanik).
+  **Uczciwe zastrzeżenie (recenzja kontrolera):** poll-until-threshold z
+  hojnym limitem 2 s potwierdza PRZEPŁYW ramek do bufora i ZAMROŻENIE po
+  stopie, ale nie przypina dosłownie stosunku tempa (8 ramek zdąży przyjść w
+  2 s nawet przy o połowę wolniejszym capture'ie) — świadomy trade-off na
+  rzecz odporności na wolniejsze CI, przyjęty zamiast sztywnego okna
+  "~12 ticków, assert ≥8", które faktycznie przypinałoby tempo≈tempo
+  pollingu kosztem większego ryzyka flaky. Jeśli M5 kiedyś podniesie tempo
+  pollingu powyżej 30 Hz, capture zacznie realnie gubić ramki na bramce
+  koalescencji — trzeba będzie wtedy przenieść tap PONIŻEJ niej (`poll.rs`).
+- **Wybór pojemności: `CAPTURE_CAPACITY = 27_000`** — dosłownie z briefu
+  (~18 min przy 25 Hz; ~1,1 kB/wiersz dla realnego pliku, 139 kanałów × 8 B
+  na f64). Brak dodatkowego uzasadnienia poza tym z briefu — nie
+  renegocjowane.
+- **Przypięcie kolumn — kolejność deklaracji, linear lookup, brak
+  `HashMap`** — `StartCapture` buduje `columns` z
+  `session.def.output_channels` (kolejność deklaracji w `[OutputChannels]`,
+  deterministyczna), tworzy NOWY `CaptureBuffer` (zastępuje stary — restart
+  zawsze zaczyna czystą tablicę kolumn, nawet jeśli definicja się nie
+  zmieniła). `push` mapuje `columns.iter()` przez liniowe
+  `frame.channels.iter().find(...)` — celowo bez `HashMap`, zgodnie z
+  briefem ("no HashMap, deterministic"): przy typowej liczbie kanałów
+  (rzędu 139 na realnym pliku) koszt O(kolumny × kanały) na klatkę jest
+  pomijalny wobec prostoty/determinizmu, a determinizm jest tu wartością
+  samą w sobie (spójne z `opentune-analysis`'s "same input → identical
+  output" z Task 0).
+- **Polityka NaN — fail-open per pozycja** — brakujący kanał w danej ramce
+  (np. `[OutputChannels]` się zmieniło albo dekodowanie częściowo zawiodło)
+  daje `f64::NAN` w tej jednej komórce wiersza, nigdy błąd ani odrzucenie
+  całego wiersza — zgodnie z dyspozycją "fail-open per item everywhere".
+  `to_sample_set` te NaN-y przepisuje 1:1 (Task 11 decyduje, jak je
+  traktować w analizie — poza zakresem tego taska).
+- **`duration_ms` — decyzja poza literą briefu, podjęta świadomie: zamrożony
+  czas ostatniego wiersza, nie zegar ścienny od startu.** `CaptureStatusDto`
+  ma pole `duration_ms`, ale brief nie precyzuje jego formuły. Rozważona i
+  odrzucona alternatywa: `self.start.elapsed()` (żywy zegar) — rośnie przy
+  KAŻDYM wywołaniu `status()`, także PO `StopCapture`, co dawałoby mylące
+  wrażenie, że capture nadal coś rejestruje, mimo że flaga jest wyłączona i
+  żaden nowy wiersz nie powstaje. Przyjęte: `duration_ms` = `t_ms`
+  ostatniego zebranego wiersza (0 gdy pusto) — zamraża się dokładnie w
+  momencie `StopCapture` (brak nowych wierszy ⇒ brak nowego `t_ms`) i
+  odzwierciedla realny zebrany zakres czasu, nie czas zegara. Przypięte
+  drugą połową `capture_rate_pins_the_tap_invariant`: `duration_ms` musi
+  być identyczne w dwóch kolejnych odczytach `CaptureStatus` rozdzielonych
+  200 ms ciszy po `StopCapture`, obok istniejącej asercji `sample_count`.
+- **`StopCapture` czyści WYŁĄCZNIE flagę, `Connect`/`Disconnect` czyszczą
+  OBA pola** — zgodnie z brief 4: `stop_capture` zeruje `capturing` ale
+  zostawia `self.capture` nietknięte (wiersze przeżywają dla
+  `run_ve_analyze`, ponowne uruchomienie z innymi parametrami to cecha, nie
+  bug). `connect()`/`Command::Disconnect` (owner.rs) czyszczą OBA
+  (`self.capture = None; self.capturing = false;`) w tych samych miejscach,
+  gdzie już czyszczą `polling`/`poller` — świeża sesja nigdy nie dziedziczy
+  capture'u poprzedniej (ta sama reguła M3 co dla pollingu).
+- **Prywatny moduł `mod capture;` (nie `pub mod`)** — w przeciwieństwie do
+  `dto`/`events`/`connection`/`owner`/`session` (publiczne, bo używane przez
+  testy integracyjne/inne moduły spoza drzewa `src/owner*`), `capture` jest
+  wewnętrznym szczegółem implementacyjnym ownera, używanym wyłącznie przez
+  `owner.rs` — ten sam wzorzec co `session_diff.rs` (prywatny moduł
+  top-level, widoczny w całym drzewie crate'a przez potomków crate-roota,
+  bez potrzeby `pub`).
+- **`#[allow(dead_code)]` na `CaptureBuffer::to_sample_set`, z
+  uzasadnieniem w doc-commencie** — metoda jest seamem Task 0/8 dla Task
+  11 (`RunVeAnalyze` wciąż zwraca `Err("not implemented (M4)")` — pozostaje
+  nietknięty, zgodnie z brief 8, poza jedną poprawką komentarza, patrz
+  niżej); dziś wywołują ją wyłącznie testy jednostkowe `capture.rs`
+  (`#[cfg(test)]`), więc zwykły `cargo clippy --workspace -- -D warnings`
+  (bez `--tests`) widziałby ją jako martwy kod. Rozważona alternatywa —
+  uczynienie modułu `pub` (jak `opentune-analysis` re-eksportuje swoje
+  stuby Task 0 z crate-roota) — odrzucona: nadawałaby `capture` status
+  publicznego API appki bez realnej potrzeby, tylko po to, by ominąć lint.
+- **Komentarz `owner.rs` poprawiony, nie tylko rozszerzony** — stary
+  komentarz nad stubami ("seams frozen, handlers stubbed until Task 8 /
+  Task 11") stałby się nieprawdą po zaimplementowaniu trzech z czterech
+  ramion; przeniesiony i zawężony do WYŁĄCZNIE `RunVeAnalyze` (jedyny
+  pozostały stub, Task 11).
+- **`opentune-analysis` jako zwykła (nie dev-only) zależność
+  `src-tauri/Cargo.toml`** — `to_sample_set` zwraca
+  `opentune_analysis::SampleSet` z kodu produkcyjnego (`capture.rs`), więc
+  zależność musi żyć w `[dependencies]`, nie `[dev-dependencies]` (w
+  przeciwieństwie do np. testowych-only crate'ów).
+- **Testy ownera — prawdziwy czas, nie `tokio::time::pause`** —
+  `src-tauri/Cargo.toml` (dev-deps) nie ma feature'a `test-util`, więc
+  wszystkie testy timingowe w `owner_tests.rs` (M3 i ten) działają na
+  realnym zegarze; nowy `wait_for_sample_count` (deterministyczne pollowanie
+  co 10 ms, limit ~2 s) jest lustrzany wobec istniejącego wzorca
+  `await_frame_since`/`await_frame_where` z Taska 6 — unika sztywnego
+  `sleep(N ms)`, więc test nie jest z założenia flaky przy wolniejszym CI.
+- **Staging jak w Task 1-7** — `git add -A` z briefu pominięte (dirty
+  `package.json`/`allowScripts` nadal poza zakresem); dodane tylko jawne
+  ścieżki: `src-tauri/src/capture.rs`, `src-tauri/src/analysis_commands.rs`,
+  `src-tauri/src/owner.rs`, `src-tauri/src/owner_tests.rs`,
+  `src-tauri/src/lib.rs`, `src-tauri/Cargo.toml`, `src/ipc/bindings.ts`
+  (zregenerowany), ten wpis.
+
 - **Korekta Taska 7 (review, finding I-1): pętla rAF jednak ALOKOWAŁA co
   klatkę, mimo że powyższy opis "Semantyka żywego punktu" twierdził "zero
   alokacji"** — to zdanie było nieprawdziwe w pierwszej wersji. Faktyczny

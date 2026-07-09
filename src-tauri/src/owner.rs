@@ -19,6 +19,7 @@ use opentune_realtime::RealtimePoller;
 use tauri_specta::Event as _;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::capture::{CaptureBuffer, CAPTURE_CAPACITY};
 #[cfg(test)]
 use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
@@ -185,11 +186,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(40);
 
 /// The owner's private state: the session it exclusively owns plus the
 /// realtime polling state (Task 6). `poller` holds the ≤30 Hz emit gate;
-/// it exists exactly while `polling` is set.
+/// it exists exactly while `polling` is set. `capture`/`capturing` (Task 8)
+/// tap the same poll tick to feed the VE-analysis ring buffer; `capture`
+/// keeps its rows after `capturing` flips off (`StopCapture` only clears the
+/// flag) so `run_ve_analyze` can still read them.
 struct Owner {
     session: Option<Session>,
     polling: bool,
     poller: Option<RealtimePoller>,
+    capture: Option<CaptureBuffer>,
+    capturing: bool,
     emit: Emitter,
 }
 
@@ -198,6 +204,8 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
         session: None,
         polling: false,
         poller: None,
+        capture: None,
+        capturing: false,
         emit,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
@@ -235,6 +243,10 @@ impl Owner {
                 // not silently resume a previous session's polling.
                 self.polling = false;
                 self.poller = None;
+                // A fresh session never inherits a previous session's
+                // capture either (same M3 polling rule, Task 8).
+                self.capture = None;
+                self.capturing = false;
                 (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
                 let _ = reply.send(Ok(()));
             }
@@ -307,18 +319,47 @@ impl Owner {
                 self.poller = None;
                 let _ = reply.send(Ok(()));
             }
-            // M4 Task 0: seams frozen, handlers stubbed until their task
-            // (Task 8 / Task 11). Each still sends exactly one reply, per
-            // the M3 rule.
+            // Start a fresh capture ring, pinned to the session's declared
+            // output channels in declaration order (Task 8).
             Command::StartCapture { reply } => {
-                let _ = reply.send(Err("not implemented (M4)".to_string()));
+                let r = match &self.session {
+                    Some(s) => {
+                        let columns: Vec<String> = s
+                            .def
+                            .output_channels
+                            .iter()
+                            .map(|c| c.name().to_string())
+                            .collect();
+                        self.capture = Some(CaptureBuffer::new(columns, CAPTURE_CAPACITY));
+                        self.capturing = true;
+                        Ok(())
+                    }
+                    None => Err(NOT_CONNECTED.to_owned()),
+                };
+                let _ = reply.send(r);
             }
+            // Stop capturing; the rows stay for `run_ve_analyze` (Task 11) —
+            // only the flag clears (Task 8).
             Command::StopCapture { reply } => {
-                let _ = reply.send(Err("not implemented (M4)".to_string()));
+                self.capturing = false;
+                let r = self
+                    .capture
+                    .as_ref()
+                    .map(|b| b.status(false))
+                    .ok_or_else(|| "no capture".to_string());
+                let _ = reply.send(r);
             }
             Command::CaptureStatus { reply } => {
-                let _ = reply.send(Err("not implemented (M4)".to_string()));
+                let r = self
+                    .capture
+                    .as_ref()
+                    .map(|b| b.status(self.capturing))
+                    .ok_or_else(|| "no capture".to_string());
+                let _ = reply.send(r);
             }
+            // M4 Task 0: seam frozen, handler stubbed until Task 11 (the
+            // deterministic VE-analysis engine). Still sends exactly one
+            // reply, per the M3 rule.
             Command::RunVeAnalyze { reply, .. } => {
                 let _ = reply.send(Err("not implemented (M4)".to_string()));
             }
@@ -373,6 +414,14 @@ impl Owner {
                 self.session = Some(session);
                 self.poller = Some(poller);
                 if let Ok(Some(frame)) = r {
+                    // Task 8: tap the emitted frame for the capture ring
+                    // BEFORE the event conversion consumes it below (rate
+                    // note: capture.rs documents why this sees full rate).
+                    if self.capturing {
+                        if let Some(buf) = self.capture.as_mut() {
+                            buf.push(&frame);
+                        }
+                    }
                     let channels = frame
                         .channels
                         .into_iter()
@@ -423,6 +472,9 @@ impl Owner {
         // previous session's polling (same rule as Disconnect).
         self.polling = false;
         self.poller = None;
+        // Nor a previous session's capture (Task 8, same rule).
+        self.capture = None;
+        self.capturing = false;
         let emit = Arc::clone(&self.emit);
         let session = tokio::task::spawn_blocking(move || build_session(source, &emit))
             .await
