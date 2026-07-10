@@ -8,7 +8,7 @@
 
 use tauri::State;
 
-use crate::dto::CaptureStatusDto;
+use crate::dto::{CaptureStatusDto, VeAnalysisReportDto};
 use crate::owner::{request, Command, OwnerHandle};
 
 /// Start (or restart) the realtime capture ring for the current session.
@@ -33,4 +33,15 @@ pub async fn stop_capture(owner: State<'_, OwnerHandle>) -> Result<CaptureStatus
 #[specta::specta]
 pub async fn capture_status(owner: State<'_, OwnerHandle>) -> Result<CaptureStatusDto, String> {
     request(&owner, |reply| Command::CaptureStatus { reply }).await
+}
+
+/// Run the deterministic VE-analysis engine against the current capture for
+/// a named `[TableEditor]`/`[VeAnalyze]` table (M4 Task 11).
+#[tauri::command]
+#[specta::specta]
+pub async fn run_ve_analyze(
+    table: String,
+    owner: State<'_, OwnerHandle>,
+) -> Result<VeAnalysisReportDto, String> {
+    request(&owner, |reply| Command::RunVeAnalyze { table, reply }).await
 }

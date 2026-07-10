@@ -1020,3 +1020,95 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
 - **Staging jak w Task 1-9** — `git add -A` z briefu zastąpione jawnymi
   ścieżkami; dirty `package.json`/`allowScripts` (poza zakresem) nadal
   niestage'owany.
+
+## Task 11 — `run_ve_analyze` + AutoTune UI: most między silnikiem a UI
+
+- **Proweniencja siatki celu (AFR/lambda) — ZABLOKOWANA wg reviewu
+  Tasków 9/10, powtórzona w dispatchu.** `analysis_bridge.rs` buduje siatkę
+  celu WYŁĄCZNIE z tabeli wskazanej przez `[VeAnalyze]`'s `target_table`
+  (`afrTable1Tbl`/`afrTable` w dołączonym INI) TAK JAK LEŻY w `Tune` w danym
+  momencie — zero fallbacku na kanał wyjściowy `afrTarget`. Świeżo
+  załadowany tune ma `afrTable` wyzerowane (symulator zaczyna od zer —
+  `MemoryImage::new` w `crates/simulator/src/memory.rs`), więc dopóki nikt
+  nie zapisze tabeli, `target.lookup(...) ≤ 0` odrzuca KAŻDĄ próbkę przez
+  `targetMissing` — to jest POPRAWNE zachowanie fail-open (silnik Taska 10
+  o tym mówi wprost), nie błąd tego bridge'a. Demo E2E (Task 12) zapisuje
+  `afrTable` przed pierwszą analizą.
+- **Mapowanie DTO — dokładnie wg zamrożonego kształtu z Taska 0, zero
+  przeprojektowania.** `VeAnalysisReportDto`/`CellResultDto`/`FilterCountDto`
+  już istniały w `dto.rs` (z komentarzem "Task 11 wires the conversion") —
+  dodane tylko `impl From<opentune_analysis::CellResult/FilterCount>`
+  (field-for-field) + funkcja bridge'a, która doszywa `table` (pole, którego
+  silnik świadomie nie zna — jest tabelo-agnostyczny). `DefinitionDto`
+  dostał `analyze_tables: Vec<String>` z `def.ve_analyze.iter().flat_map(...)`
+  — specta 0.0.12 eksportuje tę nazwę pola bez zmian wielkości liter
+  (`analyze_tables`, przypięte needle'em w `lib.rs`).
+- **Odkrycie na etapie budowania frontendu: specta 0.0.12 projektuje KAŻDE
+  `f64` (nawet nie-`Option`) jako `number | null` w TS** — konwencja
+  NaN-safety już obecna w bindings (`CellDiffDto.a: number | null` mimo że
+  Rust ma zwykłe `f64`, patrz też komentarz w `TableEditor.tsx` o "NaN
+  sentinel"). `CellResultDto`'s `current/proposed/delta_pct/hit_weight/
+  confidence` więc też są `number | null` w TS, choć silnik NIGDY faktycznie
+  nie emituje null/NaN dla tych pól. `AutoTunePanel.tsx` stosuje ten sam
+  wzorzec co `TuneDiff.tsx`'s `formatValue` (`value.Scalar ?? 0`): helper
+  `num()` z fallbackiem `?? 0` dla arytmetyki/formatowania (próg pewności,
+  tooltip, `maxAbs`), ale tablica `values` przekazywana do `TableGrid` NIE
+  jest coercowana — `delta_pct` leci 1:1, więc gdyby kiedyś faktycznie
+  przyszedł `null`, komórka renderuje "—" tym samym mechanizmem co każdy
+  inny edytor tabel/krzywych (non-finite policy, uniform across editors).
+- **Test bridge'a (11.1): kolumna `fuelLoad`, nie `map` — poprawka prozy
+  briefu wobec ground-truth INI.** Brief opisował hand-built `SampleSet`
+  z kolumnami `["rpm", "map", "afr", "egoCorrection", "coolant"]`, ale
+  realny `veTable1Tbl` w `resources/speeduino.sample.ini` ma
+  `yBins = fuelLoadBins, fuelLoad` — więc `y_channel` binding to `fuelLoad`
+  (kanał obliczeniowy `{ map }`), nie surowy `map`. `resolve_columns` w
+  silniku wymaga DOKŁADNEJ nazwy kolumny; z kolumną `map` zamiast
+  `fuelLoad` test zwróciłby `MissingChannel("fuelLoad")`, nie `Ok(...)`,
+  jak wymaga asercja briefu. Test w `analysis_bridge.rs` używa więc
+  `fuelLoad` — zgodnie z dyspozycją zadania: "read the crate's lib.rs +
+  ve_analyze.rs FIRST — the brief may abbreviate" rozszerzone też na kształt
+  bundlowanego INI (też ground truth, nie do zgadywania).
+- **Filtrowanie widoczne w UI (`autotune.filtered`)** — `<ul>` renderuje
+  KAŻDY wiersz `report.filtered`, zera włącznie (roadmapowe "visible
+  filtering"); żadnego odchudzania po stronie frontendu.
+- **`AutoTunePanel` czyta `definition.analyze_tables` samodzielnie** (własny
+  selektor zustand w `TableEditor.tsx`'s `Editor`), zamiast dostawać je jako
+  prop z zewnątrz — brief przypina propsy panelu na `{ locale, table, zName,
+  rows, cols }` (bez `analyzeTables`), więc bramkowanie "czy w ogóle
+  montować panel" zostaje w `Editor`, sam panel nie musi znać reszty
+  definicji.
+- **`xLabels`/`yLabels` siatki delt = proste etykiety indeksowe** (`"0",
+  "1", …`), bo lista propsów panelu z briefu nie przewiduje tablic binów —
+  `TableGrid` wymaga tych propsów nie-opcjonalnie, więc dostaje coś
+  deterministycznego zamiast `undefined`. Nagłówki wizualnie różnią się od
+  głównej siatki (indeksy zamiast RPM/kPa); test nie asercjonuje treści
+  nagłówków, tylko wartości komórek + tooltipa.
+- **Owner-level testy w osobnym pliku `owner_analysis_tests.rs`** —
+  `owner_tests.rs` był już na 774 liniach (limit miękki ~800 z briefu),
+  więc zamiast dopisywać tam i przekraczać limit, nowy plik dołączony przez
+  `#[path]` obok istniejącego (ten sam wzorzec). Prywatność modułów Rusta
+  nie pozwala mu re-używać helperów siostrzanego `mod tests` (moduły
+  rodzeństwa nie widzą swoich prywatnych itemów nawzajem, tylko przodek/
+  potomek), więc `test_owner`/`send`/`connect` są zduplikowane w miniaturze
+  — świadomy koszt, nie przeoczenie. Pokrycie: brak połączenia / brak tune /
+  brak capture / nieznany id tabeli / pełny happy-path przez owner
+  (seedowanie binów+tabel przez `SetValue`, `StartRealtime`+`StartCapture`,
+  `RunVeAnalyze` → `Ok` z poprawnym `table`/`x_len`/`y_len`).
+- **Poprawka środowiskowa poza zakresem, ale konieczna do wiarygodnego
+  `npm test`:** `vite.config.ts` miał domyślny `test.exclude` vitest 4.x
+  (`node_modules`, `.git`) bez wykluczenia `.worktrees/**` — repo ma
+  równoległy worktree `offline-tune` (inny agent/branch) z WŁASNYM
+  `node_modules`; nieostrożone odkrycie testów zbierało też jego pliki i
+  crashowało na dwóch kopiach Reacta (`Cannot read properties of null
+  (reading 'useState')`). Dodane `"**/.worktrees/**"` do `test.exclude` —
+  nie dotyka plików tamtego worktree, tylko zakres discovery w TYM
+  checkout. Bez tej poprawki `npm test` fałszywie raportowałby 60 failów
+  niezwiązanych z Task 11.
+- **Pięć istniejących fixture'ów `DefinitionDto` w testach frontendowych
+  zaktualizowanych o `analyze_tables: []`** (`App.integration.test.tsx`,
+  `Dashboard.test.tsx`, `DialogEngine.test.tsx`, `CurveEditor.test.tsx`,
+  `TableEditor.test.tsx`) — nowe pole nie-opcjonalne w wygenerowanym typie
+  TS, więc `tsc`/`npm run build` wymagałby tego niezależnie od tego, czy
+  dany test w ogóle dotyczy AutoTune.
+- **Staging jak w Task 1-10** — jawne ścieżki, `package.json`'s
+  `allowScripts` nadal niestage'owany (poza zakresem tego taska).

@@ -89,6 +89,11 @@ export const commands = {
 	stopCapture: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("stop_capture")),
 	/**  Report the capture ring's current status. */
 	captureStatus: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("capture_status")),
+	/**
+	 *  Run the deterministic VE-analysis engine against the current capture for
+	 *  a named `[TableEditor]`/`[VeAnalyze]` table (M4 Task 11).
+	 */
+	runVeAnalyze: (table: string) => typedError<VeAnalysisReportDto, string>(__TAURI_INVOKE("run_ve_analyze", { table })),
 	/**  Persist the dashboard layout JSON to the app config dir. */
 	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
 	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
@@ -141,6 +146,16 @@ export type CellDiffDto = {
 export type CellEditDto = {
 	index: number,
 	value: number | null,
+};
+
+/**  IPC projection of `opentune_analysis::CellResult`. */
+export type CellResultDto = {
+	current: number | null,
+	proposed: number | null,
+	delta_pct: number | null,
+	hit_weight: number | null,
+	sample_count: number,
+	confidence: number | null,
 };
 
 /**  Which ECU to connect to; deserialized from the frontend command payload. */
@@ -242,6 +257,11 @@ export type DefinitionDto = {
 	gauges: GaugeDto[],
 	/**  `[FrontPage]` — the default dashboard layout (M3). */
 	frontpage: FrontPageDto,
+	/**
+	 *  `[TableEditor]` ids that carry a `[VeAnalyze]` map — the frontend's
+	 *  "show AutoTune here" signal (M4 Task 11).
+	 */
+	analyze_tables: string[],
 };
 
 /**  A dialog and its fields. */
@@ -283,6 +303,13 @@ export type FieldKindDto =
 ({ Label: string }) & { Constant?: never; Panel?: never } | 
 /**  A layout spacer. */
 "Gap";
+
+/**  IPC projection of `opentune_analysis::FilterCount`. */
+export type FilterCountDto = {
+	id: string,
+	label: string,
+	count: number,
+};
 
 /**  `[FrontPage]` — the default dashboard layout. */
 export type FrontPageDto = {
@@ -418,6 +445,21 @@ export type Value =
 ({ Enum: number }) & { Array?: never; Scalar?: never; Text?: never } | 
 /**  A fixed-length text value. */
 ({ Text: string }) & { Array?: never; Enum?: never; Scalar?: never };
+
+/**
+ *  IPC projection of `opentune_analysis::VeAnalysisReport` (the `table` field
+ *  is the bridge's own addition — the report itself doesn't name the table
+ *  it corrects, since the engine is table-agnostic).
+ */
+export type VeAnalysisReportDto = {
+	table: string,
+	x_len: number,
+	y_len: number,
+	cells: CellResultDto[],
+	filtered: FilterCountDto[],
+	total_samples: number,
+	used_samples: number,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

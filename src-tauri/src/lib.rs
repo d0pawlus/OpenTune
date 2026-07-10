@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod analysis_bridge;
 mod analysis_commands;
 mod capture;
 mod commands;
@@ -43,6 +44,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             analysis_commands::start_capture,
             analysis_commands::stop_capture,
             analysis_commands::capture_status,
+            analysis_commands::run_ve_analyze,
             layout::save_layout,
             layout::load_layout,
         ])
@@ -234,6 +236,23 @@ mod binding_gen {
             "stopCapture",
             "captureStatus",
             "CaptureStatusDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_run_ve_analyze_command_and_dtos() {
+        let contents = export_and_read();
+        for needle in [
+            "runVeAnalyze",
+            "VeAnalysisReportDto",
+            "CellResultDto",
+            "FilterCountDto",
+            "analyze_tables",
         ] {
             assert!(
                 contents.contains(needle),

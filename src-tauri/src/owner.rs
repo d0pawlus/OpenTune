@@ -357,11 +357,25 @@ impl Owner {
                     .ok_or_else(|| "no capture".to_string());
                 let _ = reply.send(r);
             }
-            // M4 Task 0: seam frozen, handler stubbed until Task 11 (the
-            // deterministic VE-analysis engine). Still sends exactly one
-            // reply, per the M3 rule.
-            Command::RunVeAnalyze { reply, .. } => {
-                let _ = reply.send(Err("not implemented (M4)".to_string()));
+            // Run the deterministic VE-analysis engine (M4 Task 11) against
+            // the current capture. The bridge is pure compute over ≤27k rows
+            // (a few ms) — it runs inline, not on the blocking pool (that
+            // rule exists for wire/disk I/O, which this never touches).
+            Command::RunVeAnalyze { table, reply } => {
+                let r = match (&self.session, &self.capture) {
+                    (Some(s), Some(buf)) => {
+                        let samples = buf.to_sample_set();
+                        s.tune
+                            .as_ref()
+                            .ok_or_else(|| "no tune loaded".to_string())
+                            .and_then(|t| {
+                                crate::analysis_bridge::run_ve_analyze(&s.def, t, &samples, &table)
+                            })
+                    }
+                    (None, _) => Err(NOT_CONNECTED.to_owned()),
+                    (_, None) => Err("no capture — start a capture first".to_string()),
+                };
+                let _ = reply.send(r);
             }
             #[cfg(test)]
             Command::DebugSimulator { reply } => {
@@ -521,3 +535,7 @@ mod ops;
 #[cfg(test)]
 #[path = "owner_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "owner_analysis_tests.rs"]
+mod analysis_tests;

@@ -40,6 +40,7 @@ import { parseTsv, pasteEdits, toTsv } from "./tsv";
 import { arrayOf, labelsOf, numericOf } from "./binValues";
 import { TableGrid } from "./TableGrid";
 import { TableToolbar } from "./TableToolbar";
+import { AutoTunePanel } from "../autotune/AutoTunePanel";
 import "./table-editor.css";
 
 // The React.lazy boundary IS the bundle-chunk boundary (locked decision 9):
@@ -92,6 +93,7 @@ interface EditorProps {
 
 function Editor({ table, constants, locale }: EditorProps) {
   const values = useTuneStore((s) => s.values);
+  const analyzeTables = useTuneStore((s) => s.definition?.analyze_tables ?? []);
 
   const [selection, setSelection] = useState<Selection>(ORIGIN);
   const [draft, setDraft] = useState<{ cell: Cell; text: string } | null>(null);
@@ -391,6 +393,16 @@ function Editor({ table, constants, locale }: EditorProps) {
             onDraftChange={(text) => setDraft((d) => (d ? { ...d, text } : d))}
           />
         </div>
+      )}
+
+      {analyzeTables.includes(table.name) && (
+        <AutoTunePanel
+          locale={locale}
+          table={table}
+          zName={table.z}
+          rows={rows}
+          cols={cols}
+        />
       )}
     </section>
   );

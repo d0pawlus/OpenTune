@@ -34,6 +34,9 @@ pub struct DefinitionDto {
     pub gauges: Vec<GaugeDto>,
     /// `[FrontPage]` — the default dashboard layout (M3).
     pub frontpage: FrontPageDto,
+    /// `[TableEditor]` ids that carry a `[VeAnalyze]` map — the frontend's
+    /// "show AutoTune here" signal (M4 Task 11).
+    pub analyze_tables: Vec<String>,
 }
 
 /// A top-level menu.
@@ -210,6 +213,11 @@ impl From<&Definition> for DefinitionDto {
             curves: def.curves.iter().map(CurveDto::from).collect(),
             gauges: def.gauges.iter().map(GaugeDto::from).collect(),
             frontpage: FrontPageDto::from(&def.frontpage),
+            analyze_tables: def
+                .ve_analyze
+                .iter()
+                .flat_map(|v| v.maps.iter().map(|m| m.table.clone()))
+                .collect(),
         }
     }
 }
@@ -444,8 +452,7 @@ pub struct CaptureStatusDto {
     pub dropped: u32,
 }
 
-/// IPC projection of `opentune_analysis::CellResult` (Task 11 wires the
-/// conversion — `opentune-analysis` is not yet a dependency of this crate).
+/// IPC projection of `opentune_analysis::CellResult`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct CellResultDto {
     pub current: f64,
@@ -456,8 +463,20 @@ pub struct CellResultDto {
     pub confidence: f64,
 }
 
-/// IPC projection of `opentune_analysis::FilterCount` (Task 11 wires the
-/// conversion).
+impl From<opentune_analysis::CellResult> for CellResultDto {
+    fn from(c: opentune_analysis::CellResult) -> Self {
+        Self {
+            current: c.current,
+            proposed: c.proposed,
+            delta_pct: c.delta_pct,
+            hit_weight: c.hit_weight,
+            sample_count: c.sample_count,
+            confidence: c.confidence,
+        }
+    }
+}
+
+/// IPC projection of `opentune_analysis::FilterCount`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct FilterCountDto {
     pub id: String,
@@ -465,8 +484,19 @@ pub struct FilterCountDto {
     pub count: u32,
 }
 
-/// IPC projection of `opentune_analysis::VeAnalysisReport` (Task 11 wires
-/// the conversion), naming the table it corrects.
+impl From<opentune_analysis::FilterCount> for FilterCountDto {
+    fn from(f: opentune_analysis::FilterCount) -> Self {
+        Self {
+            id: f.id,
+            label: f.label,
+            count: f.count,
+        }
+    }
+}
+
+/// IPC projection of `opentune_analysis::VeAnalysisReport` (the `table` field
+/// is the bridge's own addition — the report itself doesn't name the table
+/// it corrects, since the engine is table-agnostic).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct VeAnalysisReportDto {
     pub table: String,
@@ -562,6 +592,44 @@ mod tests {
             "the shipped INI must parse without degradation, got {:?}",
             def.diagnostics
         );
+    }
+
+    #[test]
+    fn bundled_definition_projects_its_ve_analyze_map_as_analyze_tables() {
+        // The Task 9 bundled INI declares one `[VeAnalyze]` map, correcting
+        // `veTable1Tbl` — the frontend's "show AutoTune here" signal.
+        let def = load_definition_from_str(BUNDLED_INI).expect("parses");
+        let dto = DefinitionDto::from(&def);
+        assert_eq!(dto.analyze_tables, vec!["veTable1Tbl".to_string()]);
+    }
+
+    #[test]
+    fn cell_result_dto_and_filter_count_dto_project_field_for_field() {
+        let cell = opentune_analysis::CellResult {
+            current: 50.0,
+            proposed: 54.0,
+            delta_pct: 8.0,
+            hit_weight: 24.0,
+            sample_count: 24,
+            confidence: 1.0,
+        };
+        let dto = CellResultDto::from(cell);
+        assert_eq!(dto.current, 50.0);
+        assert_eq!(dto.proposed, 54.0);
+        assert_eq!(dto.delta_pct, 8.0);
+        assert_eq!(dto.hit_weight, 24.0);
+        assert_eq!(dto.sample_count, 24);
+        assert_eq!(dto.confidence, 1.0);
+
+        let filter = opentune_analysis::FilterCount {
+            id: "minCltFilter".to_string(),
+            label: "Minimum CLT".to_string(),
+            count: 3,
+        };
+        let dto = FilterCountDto::from(filter);
+        assert_eq!(dto.id, "minCltFilter");
+        assert_eq!(dto.label, "Minimum CLT");
+        assert_eq!(dto.count, 3);
     }
 
     #[test]

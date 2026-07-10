@@ -68,4 +68,13 @@ export const pl: Record<keyof typeof en, string> = {
   "dashboard.kindDigital": "Cyfrowy",
   "dashboard.moveUp": "Przenieś w górę",
   "dashboard.moveDown": "Przenieś w dół",
+  "autotune.title": "AutoTune (analiza VE)",
+  "autotune.startCapture": "Rozpocznij przechwytywanie",
+  "autotune.stopCapture": "Zatrzymaj przechwytywanie",
+  "autotune.samples": "Próbki",
+  "autotune.analyze": "Analizuj",
+  "autotune.apply": "Zastosuj propozycje",
+  "autotune.threshold": "Min. pewność",
+  "autotune.filtered": "Odrzucone próbki",
+  "autotune.noReport": "Uruchom analizę, aby zobaczyć proponowane korekty",
 };

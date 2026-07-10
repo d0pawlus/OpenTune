@@ -67,4 +67,13 @@ export const en = {
   "dashboard.kindDigital": "Digital",
   "dashboard.moveUp": "Move up",
   "dashboard.moveDown": "Move down",
+  "autotune.title": "AutoTune (VE analyze)",
+  "autotune.startCapture": "Start capture",
+  "autotune.stopCapture": "Stop capture",
+  "autotune.samples": "Samples",
+  "autotune.analyze": "Analyze",
+  "autotune.apply": "Apply proposed",
+  "autotune.threshold": "Min confidence",
+  "autotune.filtered": "Filtered samples",
+  "autotune.noReport": "Run an analysis to see proposed corrections",
 } as const;

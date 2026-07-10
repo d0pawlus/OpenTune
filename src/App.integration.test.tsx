@@ -60,6 +60,7 @@ const definition: DefinitionDto = {
     },
   ],
   frontpage: { gauge_slots: ["rpmGauge"], indicators: [] },
+  analyze_tables: [],
 };
 
 /**

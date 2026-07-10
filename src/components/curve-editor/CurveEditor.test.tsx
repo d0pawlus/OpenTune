@@ -59,6 +59,7 @@ function definition(): DefinitionDto {
     curves: [curve],
     gauges: [],
     frontpage: { gauge_slots: [], indicators: [] },
+    analyze_tables: [],
   };
 }
 
