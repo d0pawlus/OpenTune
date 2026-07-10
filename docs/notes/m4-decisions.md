@@ -808,3 +808,117 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   istniejącymi `axisFraction`/`heightOf` dla tych samych zakresów (ten sam
   wynik = zero regresji zachowania); pełny `npm test` i `npm run lint` +
   `npm run format:check` zielone.
+
+## Task 9 — measured AFR + deliberata VE-error surface (grunt prawdy dla Taska 12)
+
+- **Kształt powierzchni `true_ve` — afiniczna, nie logarytmiczna/tabelaryczna,
+  celowo.** Brief przypina wprost `40 + 25·(load/100) + 15·(rpm/6000)`,
+  clamp `20..110`. Afiniczność jest kluczowa dla testowalności Taska 12: bo
+  `true_ve` jest liniowa w `rpm`/`load`, dwuliniowa interpolacja
+  (`VeContext::current_ve`) próbkowana w węzłach siatki jest DOKŁADNA (zero
+  błędu interpolacji) — jedyny błąd po korekcie komórek to zaokrąglenie do
+  najbliższego bajtu (U08, `veTable` scale=1.0) i kwantyzacja kanału `afr`
+  (U08, scale=0.1). To świadomie ułatwia przyszłemu auto-tune demo (Task 12)
+  udowodnienie zbieżności "w jednym kroku" bez szumu numerycznego
+  maskującego, czy algorytm faktycznie zbiega.
+- **Wzór AFR (locked decision 11) i dlaczego zamyka pętlę w jeden krok** —
+  `afr = afr_target × true_ve / current_ve`. Tabela VE za nisko (chudo
+  zaplanowane paliwo) ⇒ measured `afr` POWYŻEJ `afrTarget` (chudo). Korekta
+  `VE_new = VE_old × afr/target = VE_old × true/current` upraszcza się do
+  `VE_new = VE_old × (true_ve/current_ve) = true_ve` — algebraicznie zbiega
+  w jednym kroku, niezależnie od tego, jak bardzo `current_ve` się myli
+  (dopóki `current_ve` nie jest przycięte do 1.0 — patrz niżej). To NIE jest
+  fizycznie realistyczny model spalania (naprawdę EGO-korekta zbiega
+  iteracyjnie z tłumieniem) — to świadomy skrót projektowy dla deterministycznego,
+  jednokrokowego demo.
+- **`current_ve.max(1.0)` — nie `.max(0.0)` ani brak clampu** — zerowa/prawie
+  zerowa strona pamięci (świeżo zaalokowana, nie napisana) dawałaby
+  `current_ve ≈ 0`, więc `true/current` eksplodowałoby do nieskończoności/NaN
+  przy dzieleniu. Dolny próg 1.0 (nie 0.0) gwarantuje, że iloraz zostaje
+  duży, ale skończony i sensowny (`afr` = kilkukrotność `afrTarget`, nie
+  `inf`) — "graceful, never divides by ~0", dosłownie z briefu.
+- **Determinizm: `ve_ctx` to czysta funkcja stanu silnika + pamięci strony,
+  zero nowego RNG, zero zegara ściennego.** `VeContext` jest dekodowany na
+  nowo z bajtów strony (`ve_model::ve_context`) PRZED każdym tickiem
+  (`ecu.rs`: `Pipe::auto_tick`/`EcuSimulator::tick_engine`), a `snapshot()`
+  liczy `afr` z już wyliczonych `self.rpm`/`self.map_kpa` tego ticku —
+  żadnego nowego strumienia losowości, żadnego odczytu `Instant::now()`
+  wewnątrz silnika. Test pinujący determinizm z M3
+  (`same_tick_sequence_is_deterministic`) pozostaje zielony bez zmian —
+  potwierdza, że dodanie `ve_ctx` nie naruszyło kontraktu "ta sama sekwencja
+  ticków ⇒ identyczne bajty bloku".
+- **Konwencja bajtowa `zBins`: row-major, wiersz = oś Y (load), kolumna = oś
+  X (rpm) — własna decyzja modułu, nie z gramatyki INI.** Składnia `[RxC]`
+  w `[Constants]` nie przypisuje wierszy/kolumn do konkretnej osi fizycznej
+  (parser widzi tylko dwie liczby). `ve_model.rs` przyjmuje
+  `ve[load_idx * rpm_bins.len() + rpm_idx]` — zgodne z realną konwencją
+  Speeduino/TunerStudio (każdy wiersz to jeden bin obciążenia/MAP na
+  wszystkich kolumnach RPM) i z `analysis::grid::TableGrid`'s
+  `z[y * x_bins.len() + x]` (Task 0, wciąż stub). Test 9.4 pisze komórki
+  `true_ve(rpm_bin, load_bin)` pod dokładnie tym samym adresem
+  (`load_idx*16 + rpm_idx`), więc spójność jest wewnętrzna i jawna w
+  doc-commencie modułu — gdyby ktoś kiedyś podłączył prawdziwy
+  `analysis::grid::TableGrid::lookup` (Task 11), konwencje się zgadzają.
+- **`ve_context(def, memory)` liczy resolve+decode za każdym tickiem, bez
+  cache'owanego `VeBinding` — zmiana względem pierwszego podejścia.**
+  Pierwsza wersja (zgodnie z sugestią briefu "prefer smaller retained
+  state") trzymała na `Pipe` tylko 3 rozwiązane `ConstantDef` +
+  `Endianness` (`VeBinding`), a osobna funkcja `ve_context` (pełny
+  resolve+decode z `&Definition`) istniała wyłącznie dla testu 9.3 —
+  co czyniło ją martwym kodem pod zwykłym (bez `--tests`)
+  `cargo clippy --workspace -- -D warnings` (nikt w kodzie produkcyjnym jej
+  nie wołał). Naprawione przez odwrót do prostszego podejścia: `Pipe`
+  trzyma sklonowany `Definition` (`Definition: Clone` już wyprowadzone),
+  `ve_context(&definition, &memory)` jest wołane wprost co tick — te same
+  liniowe skany po `tables`/`constants` (rząd kilkunastu elementów) są
+  wystarczająco tanie, by liczyć je od nowa zamiast cache'ować. Efekt:
+  jedna funkcja publiczna zamiast trzech (`VeBinding`/`resolve_ve_binding`/
+  `decode_ve_context` usunięte), dokładnie sygnatura z brief interface
+  block, zero `dead_code`.
+- **`och_codec::width` z prywatnej na `pub(crate)`** — jedyna zmiana w
+  istniejącym kodzie poza dodaniem pól: `ve_model::decode_array` potrzebuje
+  tej samej tabeli szerokości typów co `och_codec::write_scalar` (odwrotny
+  kierunek — bajty → fizyczna wartość), więc reużyta zamiast duplikowana
+  (DRY w obrębie crate'a — inaczej niż dwuliniowa interpolacja, która
+  celowo NIE jest reużyta z `analysis`, bo `analysis` to osobny, jeszcze
+  niegotowy crate, patrz wyżej).
+- **Test 9.4 tickuje silnik 8000 ms, nie 500 ms jak sugerował brief.**
+  500 ms (10 kroków) zostawia silnik w STARTUP przy rpm≈250 — PONIŻEJ
+  najniższego binu `rpmBins` (500), więc `current_ve` przycinałby się do
+  krawędzi, podczas gdy `true_ve` liczyłoby się z nieprzyciętego,
+  faktycznego rpm — pętla nie zbiegałaby się czysto. 8000 ms sprowadza
+  silnik do ustabilizowanego trybu Idle (rpm ok. 700-900, MAP ok. 30-40
+  kPa — empirycznie zweryfikowane debug-printem podczas TDD), oba w
+  granicach binów, więc interpolacja nigdy się nie przycina.
+  Zweryfikowane wartości z jednego przebiegu: rpm=1073, map=52 kPa,
+  afr=16.4 (target 14.7) przed korektą; afr=14.7=target po korekcie.
+- **RED przed GREEN zweryfikowane sabotażem, nie tylko przez brak
+  implementacji.** Test 9.4 napisany i zaimplementowany niemal równolegle
+  (formuły przypięte przez brief, więc TDD "napisz test, zobacz FAIL"
+  miałby niewielką wartość diagnostyczną na starcie pustego pliku) — więc
+  RED zweryfikowany OSOBNO: `engine.set_ve_context(ctx)` w obu miejscach w
+  `ecu.rs` tymczasowo zamienione na `set_ve_context(None)`, test
+  `sim_measured_afr_reflects_ve_error` faktycznie się wywalił
+  (`afr==afr_target`, asercja "must read lean" nieprawdziwa), potem
+  przywrócone do stanu GREEN. Dowód, że test naprawdę coś sprawdza, nie
+  jest tautologiczny.
+- **Zmiany w `speeduino.sample.ini`** — `nPages` 1→4, `pageSize` `8` →
+  `8, 288, 288, 16` (strona 1 nietknięta); nowe strony 2 (`veTable`/
+  `rpmBins`/`fuelLoadBins`), 3 (`afrTable`/`rpmBinsAFR`/`loadBinsAFR`), 4
+  (`warmupBins`/`warmupValues`); `[OutputChannels]` +4 kanały (`map`, `afr`,
+  `egoCorrection`, `afrTarget`) + 1 computed (`fuelLoad`) w wolnych bajtach
+  8-11 bloku 16-bajtowego; nowe sekcje `[TableEditor]` (2 tabele),
+  `[CurveEditor]` (1 krzywa rozgrzewki), `[VeAnalyze]` (1 mapa + 6
+  filtrów) — dosłownie z briefu. Nowy test golden-gate dla sample INI:
+  `crates/ini/tests/sample_ini.rs` (żaden istniejący test pod
+  `crates/ini/tests/` nie parsował `speeduino.sample.ini` — grep czysty
+  przed tym taskiem), pinuje `diagnostics.is_empty()` i
+  `ve_analyze.is_some()`; istniejące testy pod `src-tauri/src/*.rs`
+  (`session.rs`, `dto.rs`, `session_diff.rs`, `owner_ops.rs`) i
+  `src-tauri/tests/{tune_demo,connect_flow}.rs` ładujące
+  `BUNDLED_INI`/sample INI przeszły bez zmian — w tym
+  `dto.rs::bundled_definition_projects_live_gauges_and_frontpage`, który
+  osobno pinuje `def.diagnostics.is_empty()`.
+- **Staging jak w Task 1-8** — `git add -A` z briefu zastąpione jawnymi
+  ścieżkami; dirty `package.json`/`allowScripts` (poza zakresem tego taska)
+  pozostawiony nietknięty i niestage'owany.

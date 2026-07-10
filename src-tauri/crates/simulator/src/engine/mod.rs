@@ -27,6 +27,17 @@
 //! and [`crate::memory`]'s port-note, both written against Speeduino
 //! `comms.cpp`.
 //!
+//! **M4 Task 9 (fresh):** [`Self::set_ve_context`] hands the engine a
+//! decoded [`VeContext`] (see [`crate::ve_model`]) each tick — refreshed by
+//! [`crate::ecu`] from the INI's `[VeAnalyze]`-bound `veTable`, wherever it
+//! lives in page memory. [`Self::snapshot`] uses it to compute a "measured"
+//! `afr` that drifts away from `afr_target` exactly where that table
+//! disagrees with the hidden [`crate::ve_model::true_ve`] surface — the
+//! ground truth the M4 auto-tune demo (Task 12) must flatten. No new
+//! randomness and no wall clock: the whole computation is a pure function
+//! of `rpm`/`map_kpa` (already-ticked engine state) and the current
+//! `VeContext`, so determinism (see below) is unaffected.
+//!
 //! # Determinism
 //!
 //! No wall clock and no OS RNG *in the engine itself*: time advances only
@@ -40,6 +51,7 @@
 mod physics;
 
 use crate::och_codec::{self, ChannelValues};
+use crate::ve_model::{self, VeContext};
 use opentune_ini::{Definition, Endianness, OutputChannelDef};
 use std::time::Duration;
 
@@ -134,6 +146,11 @@ pub struct SimEngine {
     battery_dv: i32,
     advance_deg: i32,
     rng: XorShift32,
+    /// M4 Task 9: the currently-decoded `veTable` context, refreshed each
+    /// tick by [`crate::ecu`] via [`Self::set_ve_context`]. `None` for INIs
+    /// with no `[VeAnalyze]` binding (or before the first refresh) — the
+    /// simulator then behaves exactly as before M4 (`afr == afr_target`).
+    ve_ctx: Option<VeContext>,
 }
 
 impl SimEngine {
@@ -167,6 +184,7 @@ impl SimEngine {
             battery_dv: VOLTAGE_NORMAL,
             advance_deg: 0,
             rng: XorShift32(0x4F54_5531),
+            ve_ctx: None,
         };
         engine.transition(EngineMode::Startup);
         engine.encode();
@@ -205,6 +223,16 @@ impl SimEngine {
         self.transition(mode);
     }
 
+    /// M4 Task 9: install (or clear) the decoded `veTable` context used to
+    /// compute the "measured" `afr` channel — see the module doc comment.
+    /// Re-encodes immediately so a caller that sets the context and reads
+    /// [`Self::och_block`] without an intervening [`Self::tick`] still sees
+    /// it reflected (mirrors [`Self::reset_secl`]'s immediate re-encode).
+    pub(crate) fn set_ve_context(&mut self, ctx: Option<VeContext>) {
+        self.ve_ctx = ctx;
+        self.encode();
+    }
+
     /// One 50 ms update (ported `EngineSimulator::update` body). The
     /// physics live in [`physics`] — same ordering as the reference:
     /// RPM drives everything, then thermal, throttle, MAP, timing, voltage.
@@ -231,7 +259,27 @@ impl SimEngine {
     }
 
     /// This tick's physical values, handed to [`crate::och_codec`].
+    ///
+    /// M4 Task 9 (locked decision 11): the loop closes as
+    /// `afr = afr_target × true_ve / current_ve` — a `veTable` reading too
+    /// low means too little fuel is scheduled, i.e. lean, i.e. measured AFR
+    /// *above* target; correcting a cell to `VE_new = VE_old × afr/target =
+    /// VE_old × true/current` converges to `true_ve` in one step. Without a
+    /// `[VeAnalyze]`/veTable binding in the loaded INI, `ve_ctx` is `None`
+    /// and `afr == afr_target` — old INIs behave exactly as before M4.
     fn snapshot(&self) -> ChannelValues {
+        let afr_target = f64::from(AFR_STOICH) / 10.0;
+        let afr = match &self.ve_ctx {
+            Some(ctx) => {
+                let current = ctx
+                    .current_ve(f64::from(self.rpm), f64::from(self.map_kpa))
+                    .unwrap_or(1.0)
+                    .max(1.0); // zeroed page must not explode the ratio
+                let wanted = ve_model::true_ve(f64::from(self.rpm), f64::from(self.map_kpa));
+                afr_target * wanted / current
+            }
+            None => afr_target, // no VE binding in this INI — behave as before M4
+        };
         ChannelValues {
             secl: self.secl,
             rpm: self.rpm,
@@ -242,7 +290,11 @@ impl SimEngine {
             tps_percent: self.tps_reading,
             battery_dv: self.battery_dv,
             advance_deg: self.advance_deg,
-            afr_target: f64::from(AFR_STOICH) / 10.0,
+            afr_target,
+            afr,
+            // Speeduino's egoCorrection is 100-centered; the sim never
+            // trims — EGO math is unit-tested in `analysis` instead.
+            ego_correction: 100.0,
             // Speeduino semantics: BIT_ENGINE_RUN vs BIT_ENGINE_CRANK.
             running: self.rpm > 0 && self.mode != EngineMode::Startup,
             cranking: self.mode == EngineMode::Startup,

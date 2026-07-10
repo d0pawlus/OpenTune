@@ -28,6 +28,14 @@ pub(crate) struct ChannelValues {
     pub(crate) battery_dv: i32,
     pub(crate) advance_deg: i32,
     pub(crate) afr_target: f64,
+    /// M4 Task 9: the simulator's "measured" AFR — equal to `afr_target`
+    /// when the loaded INI has no `[VeAnalyze]`/veTable binding, else
+    /// drifts away from it wherever the bound `veTable` disagrees with the
+    /// engine's hidden true-VE surface (see `crate::ve_model`).
+    pub(crate) afr: f64,
+    /// M4 Task 9: Speeduino's `egoCorrection` channel is 100-centered
+    /// (100 = no trim); the sim never trims, so this is always 100.0.
+    pub(crate) ego_correction: f64,
     pub(crate) running: bool,
     pub(crate) cranking: bool,
 }
@@ -52,6 +60,8 @@ impl ChannelValues {
             "batteryVoltage" => f64::from(self.battery_dv) / 10.0,
             "advance" => f64::from(self.advance_deg),
             "afrTarget" => self.afr_target,
+            "afr" => self.afr,
+            "egoCorrection" => self.ego_correction,
             // Speeduino `engine` bitfield: BIT_ENGINE_RUN=0, BIT_ENGINE_CRANK=1.
             "engine" => f64::from(u8::from(self.running) | (u8::from(self.cranking) << 1)),
             _ => return None,
@@ -136,7 +146,9 @@ pub(crate) fn block_size(def: &Definition) -> usize {
 }
 
 /// Byte width of a scalar storage type (mirrors opentune-model's codec).
-fn width(kind: ScalarType) -> usize {
+/// `pub(crate)`: also reused by [`crate::ve_model`]'s array decode (the
+/// inverse direction — raw bytes back to physical — needs the same widths).
+pub(crate) fn width(kind: ScalarType) -> usize {
     match kind {
         ScalarType::U08 | ScalarType::S08 => 1,
         ScalarType::U16 | ScalarType::S16 => 2,
