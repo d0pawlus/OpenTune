@@ -54,6 +54,17 @@ async fn req_fuel(tx: &OwnerHandle) -> Value {
     values.into_iter().next().expect("one value")
 }
 
+/// True when a `ConnectionStateEvent::Disconnected` was emitted in
+/// `events[since..]` — the oracle for the FIX 2a/2b corrective emits.
+fn emitted_disconnected_since(events: &Collected, since: usize) -> bool {
+    events.lock().unwrap()[since..].iter().any(|ev| {
+        matches!(
+            ev,
+            OwnerEvent::Connection(ConnectionStateEvent::Disconnected)
+        )
+    })
+}
+
 /// The dirty flags of every `TuneDirty` event in `events[since..]`.
 fn dirty_events_since(events: &Collected, since: usize) -> Vec<bool> {
     events.lock().unwrap()[since..]
@@ -310,7 +321,7 @@ async fn failed_attach_preserves_the_offline_tune() {
         env!("CARGO_MANIFEST_DIR"),
         "/resources/speeduino.sample.ini"
     );
-    let (tx, _events) = test_owner();
+    let (tx, events) = test_owner();
 
     // Build the offline session (conn: None, tune: Some) via the real command.
     send(&tx, |reply| Command::NewTune {
@@ -323,6 +334,7 @@ async fn failed_attach_preserves_the_offline_tune() {
     // Attach to a bogus serial port: `connect_serial` opens the port on a
     // single attempt and errors immediately (ENOENT, no retry/hang), so the
     // ATTACH branch's `attach_connection` returns Err.
+    let mark = events.lock().unwrap().len();
     let err = send(&tx, |reply| Command::Connect {
         source: ConnectSource::Serial {
             port_name: "/dev/opentune-nonexistent-bogus-port".to_owned(),
@@ -333,6 +345,15 @@ async fn failed_attach_preserves_the_offline_tune() {
     .await
     .expect_err("attach to a nonexistent serial port must fail");
     assert!(!err.is_empty(), "the failed attach reports an error");
+
+    // FIX 2b: the refused attach must emit a corrective `Disconnected`
+    // (`connect`'s `if r.is_err()` path) so the UI does not stay stuck on the
+    // `Connected`/`Connecting` the attach already emitted. Removing that emit
+    // makes this assertion fail.
+    assert!(
+        emitted_disconnected_since(&events, mark),
+        "a refused attach must emit ConnectionStateEvent::Disconnected"
+    );
 
     // The offline session SURVIVED: `GetDefinition` still succeeds, proving
     // `self.session` is still `Some`. Against the buggy code this returned
@@ -469,6 +490,39 @@ async fn disconnect_destroys_an_online_tune() {
     send(&tx, |reply| Command::LoadTune { reply })
         .await
         .expect("FRESH re-read after reconnect");
+}
+
+// FIX 2a: replacing a *connected* session with a new offline tune
+// (`new_tune`/`open_tune` → `reset_session`) must emit a corrective
+// `Disconnected` so the UI does not keep showing a false "Connected" after the
+// live link is torn down. Removing that emit makes this assertion fail.
+
+#[tokio::test]
+async fn new_tune_while_connected_emits_disconnected() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, events) = test_owner();
+
+    // Establish a live link first: `self.session` now has `conn: Some`.
+    connect_and_load(&tx).await;
+
+    // Create a fresh offline tune while connected — `reset_session` tears down
+    // the live session (`had_link == true`) and must emit `Disconnected`.
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune replaces the connected session with an offline one");
+
+    assert!(
+        emitted_disconnected_since(&events, mark),
+        "creating an offline tune while connected must emit \
+         ConnectionStateEvent::Disconnected"
+    );
 }
 
 #[tokio::test]
