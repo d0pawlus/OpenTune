@@ -887,11 +887,22 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   najniższego binu `rpmBins` (500), więc `current_ve` przycinałby się do
   krawędzi, podczas gdy `true_ve` liczyłoby się z nieprzyciętego,
   faktycznego rpm — pętla nie zbiegałaby się czysto. 8000 ms sprowadza
-  silnik do ustabilizowanego trybu Idle (rpm ok. 700-900, MAP ok. 30-40
-  kPa — empirycznie zweryfikowane debug-printem podczas TDD), oba w
-  granicach binów, więc interpolacja nigdy się nie przycina.
-  Zweryfikowane wartości z jednego przebiegu: rpm=1073, map=52 kPa,
-  afr=16.4 (target 14.7) przed korektą; afr=14.7=target po korekcie.
+  silnik do realnego punktu pracy pod obciążeniem (empirycznie
+  zweryfikowane debug-printem podczas TDD: rpm=1073, map=52 kPa — NIE jest
+  to ściśle tryb Idle, tylko dowolny stan po STARTUP/WARMUP_IDLE), oba w
+  granicach binów, więc interpolacja nigdy się nie przycina. **Poprawka po
+  recenzji (advisor):** pierwsza wersja tej notatki błędnie opisywała ten
+  punkt jako "ustabilizowany Idle (rpm 700-900, MAP 30-40 kPa)" — nieprawda,
+  rpm=1073/map=52 leży poza tym zakresem. Właściwe wyjaśnienie, dlaczego
+  test i tak jest poprawny: `flat-50` `veTable` daje "lean" tylko gdy
+  `true_ve(rpm,map) > 50`, co przy samym Idle (niskie rpm/load) byłoby
+  ledwo prawdziwe (margines rzędu pojedynczego kwantu U08); dłuższy tick
+  celowo ląduje w stanie WYŻSZEGO obciążenia (nie idle), gdzie
+  `true_ve(1073,52)≈55.7` wyraźnie przewyższa 50 — dokładnie zgodnie z
+  własnym sformułowaniem briefu "true VE above 50 at running load", nie z
+  założeniem "idle". Zweryfikowane wartości z jednego przebiegu: rpm=1073,
+  map=52 kPa, afr=16.4 (target 14.7) przed korektą; afr=14.7=target po
+  korekcie.
 - **RED przed GREEN zweryfikowane sabotażem, nie tylko przez brak
   implementacji.** Test 9.4 napisany i zaimplementowany niemal równolegle
   (formuły przypięte przez brief, więc TDD "napisz test, zobacz FAIL"

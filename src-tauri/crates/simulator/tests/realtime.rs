@@ -360,9 +360,12 @@ fn sim_measured_afr_reflects_ve_error() {
         .expect("fuelLoadBins write");
     writer.write(3, 0, &[147u8; 256]).expect("afrTable write"); // 14.7 AFR ×10
 
-    // Tick well past STARTUP/WARMUP_IDLE into a settled Idle operating
-    // point (rpm ~700-900, map ~30-40 kPa — both inside the bin range, so
-    // current_ve never clamps to a bin edge).
+    // Tick well past STARTUP/WARMUP_IDLE into a real running-load operating
+    // point (deterministic for this fixed-seed engine — one observed run:
+    // rpm=1073, map=52 kPa; both comfortably inside the bin range, so
+    // current_ve never clamps to a bin edge, and true_ve(1073, 52) ≈ 55.7
+    // clears the flat-50 table with margin — not necessarily strict Idle,
+    // just "a real running load", per the brief's own framing).
     sim.tick_engine(Duration::from_millis(8_000));
 
     let mut och = MsProtocol::new(def.comms.clone(), sim.client_transport());
