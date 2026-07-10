@@ -14,12 +14,15 @@
 //! and reasoned about in complete isolation from the `ini`/`model` crates
 //! that otherwise touch the same tables.
 //!
-//! Task 0 freezes every type and the [`ve_analyze`] signature with stub
-//! bodies; Task 11 implements the real algorithm.
+//! Task 0 froze every type and the [`ve_analyze`] signature with stub
+//! bodies; Task 10 implements the real algorithm (Task 11 bridges it to
+//! Definition/Tune/SampleSet DTOs).
 
 mod grid;
+mod ve_analyze;
 
-pub use grid::{ve_analyze, TableGrid};
+pub use grid::TableGrid;
+pub use ve_analyze::ve_analyze;
 
 /// Column-oriented capture: channel names pinned once, one f64 row per frame
 /// (missing channel = NaN). The owner's ring buffer produces this.
@@ -169,3 +172,16 @@ pub enum AnalyzeError {
     EmptyTable,
     ShapeMismatch(String),
 }
+
+// Manual impls (Task 0 review Minor): the crate is zero-dep, so no thiserror.
+impl std::fmt::Display for AnalyzeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingChannel(name) => write!(f, "missing channel: {name}"),
+            Self::EmptyTable => write!(f, "empty table"),
+            Self::ShapeMismatch(msg) => write!(f, "table shape mismatch: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for AnalyzeError {}

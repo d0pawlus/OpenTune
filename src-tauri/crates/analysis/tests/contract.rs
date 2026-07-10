@@ -28,3 +28,18 @@ fn seams_compile_and_default_params_are_pinned() {
     assert_eq!(s.column("rpm"), Some(0));
     assert_eq!(s.len(), 1);
 }
+
+#[test]
+fn analyze_error_displays_and_is_a_std_error() {
+    // Task 0 review (Minor): AnalyzeError needs manual Display + Error impls
+    // (zero-dep crate — no thiserror). Added by Task 10, the first consumer.
+    let missing = AnalyzeError::MissingChannel("map".into());
+    assert_eq!(missing.to_string(), "missing channel: map");
+    assert_eq!(AnalyzeError::EmptyTable.to_string(), "empty table");
+    assert_eq!(
+        AnalyzeError::ShapeMismatch("ve: 3 cells, expected 4".into()).to_string(),
+        "table shape mismatch: ve: 3 cells, expected 4"
+    );
+    let as_std: &dyn std::error::Error = &missing;
+    assert!(as_std.source().is_none());
+}

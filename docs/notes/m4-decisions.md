@@ -933,3 +933,90 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
 - **Staging jak w Task 1-8** — `git add -A` z briefu zastąpione jawnymi
   ścieżkami; dirty `package.json`/`allowScripts` (poza zakresem tego taska)
   pozostawiony nietknięty i niestage'owany.
+
+## Task 10 — `opentune-analysis::ve_analyze`: deterministyczny silnik analizy VE
+
+- **Konflikt brief-prose vs verbatim-test w kolejności filtrów — rozstrzygnięty
+  przez kontrolera NA RZECZ TESTU (autorytatywne, nie do ponownego
+  rozpatrywania).** Proza briefu (krok 3) mówiła "Built-ins first: `nonFinite`,
+  then `targetMissing`, then `binding.filters`", ale verbatim test
+  `filters_reject_in_declared_order_and_are_all_reported` wymaga, żeby próbka
+  `rpm=500` (poniżej osi X) była policzona na `std_xAxisMin` — a
+  `target.lookup(500, 30)` też zwróciłby `None` (poza binami), więc dosłowna
+  proza przypisałaby ją do `targetMissing` i test by się wywalił.
+  Zaimplementowana KOLEJNOŚĆ EWALUACJI: (1) guard `nonFinite`, (2)
+  `binding.filters` w kolejności deklaracji (filtry `std_*Axis*` SĄ
+  semantycznymi właścicielami odrzucenia out-of-range w modelu `[VeAnalyze]`
+  TunerStudio), (3) dopiero `targetMissing` przez `lookup` — jako kubełek
+  RESZTKOWY dla próbek, które przeszły wszystkie zadeklarowane filtry a mimo
+  to nie dają się użyć (lookup `None`, cel nie-skończony lub ≤ 0, NaN-owe biny
+  w środku tabeli, zdegenerowane osie, punkt pracy niebinowalny do siatki VE
+  przy braku zadeklarowanych filtrów osi). Kolejność RAPORTOWANIA `filtered`
+  bez zmian wg pinu briefu: `[nonFinite, targetMissing, …binding.filters]` —
+  ewaluacja i raport to dwa niezależne porządki. Bonus: lookup liczony tylko
+  dla próbek, które przeżyły filtry (taniej). Udokumentowane też w doc-commencie
+  modułu `ve_analyze.rs` (sekcja "The pinned algorithm", krok 3).
+- **`targetMissing` rozszerzone ponad literalne "None or ≤ 0.0" o cel
+  nie-skończony** — bilinear lookup nad tabelą z NaN-owym binem/komórką może
+  zwrócić `Some(NaN)`, a `NaN ≤ 0.0` jest fałszywe, więc dosłowna reguła
+  przepuściłaby NaN do `factor` i zatruła akumulatory. `Some(t)` przechodzi
+  tylko gdy `t.is_finite() && t > 0.0`; wszystko inne = `targetMissing`
+  (fail-closed, ten sam duch co heatmapa/curveMath z Tasków 4/6: "nigdy
+  NaN w wyniku").
+- **`segment(bins, v)` (współdzielony `grid.rs`, `pub(crate)`)** — zwraca
+  `Option<(i, t)>`: `None` dla v nie-skończonego, poza binami lub osi < 2
+  binów; skan w przód wybiera segment `bins[i] ≤ v ≤ bins[i+1]`; segment
+  o równych sąsiadach (duplikaty binów) idzie ścieżką `t = 0` zamiast dzielić
+  przez zero (przypięte testem `duplicate_bins_...`); porównania z NaN-owym
+  binem są fałszywe → skan po prostu się zatrzymuje (fail-closed, nigdy UB).
+  `TableGrid::lookup` = `segment` × 2 + lerp z lerpów; dokładnie ta sama
+  funkcja `segment` zasila akumulację bilinearną silnika — jedno źródło
+  prawdy dla "gdzie na osi", nie dwie rozjeżdżające się implementacje.
+- **Determinizm konstrukcyjnie:** cztery płaskie akumulatory
+  `Vec<f64>`/`Vec<u32>` indeksowane `y·x_len+x` (zero HashMap), próbki w
+  kolejności wierszy, pętla akumulacji dy→dx odwiedza 4 komórki w rosnącej
+  kolejności płaskich indeksów, remis max-weight łamany przez ścisłe `>`
+  (pierwszy = najniższy indeks — przypięte testem `mid_cell_...`), finalize
+  w kolejności płaskich indeksów, zero RNG/czasu/równoległości. Bitowa
+  identyczność przypięta testem `same_input_is_bitwise_identical`
+  (`to_bits()` na proposed/confidence/hit_weight).
+- **Filtry Custom: `disabled_filters` dotyczy WYŁĄCZNIE wariantu `Custom`**
+  (dosłownie wg briefu "skipping Custom ids"); wyłączony/nieobecny-kanałowo
+  filtr nadal dostaje wiersz `FilterCount` z `count: 0` (audytowalność dla
+  UI Taska 11 — "widoczne filtrowanie"). Nie-skończona wartość kanału
+  custom nigdy nie matchuje (pin briefu); `And` = `(ch as i64) & (value as
+  i64) != 0` (saturujący cast `as` Rusta — deterministyczny).
+- **Id/etykiety wbudowanych wierszy filtrów:** id przypięte testami
+  (`nonFinite`, `targetMissing`, `std_xAxisMin/Max`, `std_yAxisMin/Max`,
+  `std_DeadLambda`; Custom niesie własne id/label z INI). Etykiety
+  wbudowanych wybrane po angielsku ("Non-finite sample value", "X axis
+  minimum", …) — test sprawdza tylko id; tłumaczenie to sprawa warstwy UI
+  (Task 11), nie zero-dep silnika.
+- **Wiersz krótszy niż `columns` czyta się jako NaN** (`row.get(col) →
+  NAN`) — konwencja crate'u "missing channel = NaN" zastosowana fail-closed
+  do teoretycznie poszarpanych wierszy zamiast panic na indeksowaniu;
+  taka próbka wpada w `nonFinite` (deterministycznie), nie wywala silnika.
+- **Guard `.max(0.0)` na `max_delta`** — `f64::clamp` panikuje gdy
+  `min > max`; ujemny (nonsensowny) `params.max_delta_pct` odwróciłby
+  granice. Czysty silnik nie może panikować na danych — jedyne odstępstwo
+  od dosłownego wzoru briefu, aktywne wyłącznie dla wejścia spoza sensu.
+- **`AnalyzeError`: ręczne `Display` + `std::error::Error`** (Task 0 review
+  Minor, domknięte tutaj jako pierwszy realny konsument) — crate jest
+  zero-dep (bez thiserror), więc impl ręczny; przypięte testem w
+  `contract.rs` (RED = błąd kompilacji przed implem). Wariant `EmptyTable`
+  po implementacji silnika jest z niego nieosiągalny (walidacja kształtu
+  używa `ShapeMismatch`) — zostaje w zamrożonym enumie bez zmian.
+- **Stub przeniesiony zgodnie z planem plików briefu:** `ve_analyze` z
+  `grid.rs` do nowego `src/ve_analyze.rs`; `grid.rs` zostaje czystym
+  modułem lookup/segment; `lib.rs` re-eksportuje osobno (`pub use
+  grid::TableGrid; pub use ve_analyze::ve_analyze;`). Wszystkie pliki <400
+  linii (największy: `ve_analyze.rs`, 389).
+- **TDD sekwencyjnie wg briefu:** 10.1 RED (3 asercje lookup na stubie
+  `None`) → GREEN; RED na `Display` (błąd kompilacji E0599/E0277) → GREEN;
+  10.2 RED (8/8 testów ve_analyze pada na stubie `Err(EmptyTable)`) →
+  10.3 GREEN (15/15 w crate); `cargo test --workspace` (52 binarki zielone)
+  + `cargo clippy --workspace -- -D warnings` + `cargo fmt --check`.
+  `Cargo.toml` crate'u nietknięty — zero zależności.
+- **Staging jak w Task 1-9** — `git add -A` z briefu zastąpione jawnymi
+  ścieżkami; dirty `package.json`/`allowScripts` (poza zakresem) nadal
+  niestage'owany.
