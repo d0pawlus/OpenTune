@@ -1112,3 +1112,152 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   dany test w ogóle dotyczy AutoTune.
 - **Staging jak w Task 1-10** — jawne ścieżki, `package.json`'s
   `allowScripts` nadal niestage'owany (poza zakresem tego taska).
+
+## Task 12 — E2E demo: `ve_analyze_flattens_the_sim_ve_error` (zamyka M4)
+
+- **Plik testu: `owner_analysis_tests.rs`, nie `owner_tests.rs` jak dosłownie
+  wymienia brief.** `owner_tests.rs` był już na 774 liniach (miękki limit z
+  briefu ~800); doliczenie tego E2E (dwie fazy przechwytywania, ~150 linii)
+  przebiłoby limit. Ten sam wzorzec co Task 11's własny split: nowy test
+  dopisany do już istniejącego `owner_analysis_tests.rs` (413 linii po
+  dopisaniu), z dwoma nowymi lokalnymi helperami (`simulator`/`drive_engine`)
+  współdzielącymi kształt z `owner_tests.rs`'s odpowiednikami — zduplikowane,
+  nie re-eksportowane, z tego samego powodu co Task 11 (prywatność modułów
+  rodzeństwa w Ruście).
+- **TDD RED zweryfikowany dosłownie na kroku z briefu:** z wyłączonym
+  zasianiem `afrTable` (świeżo załadowany tune ma tę tablicę wyzerowaną —
+  Task 11's udokumentowana `targetMissing` prowieniencja), `RunVeAnalyze`
+  zwraca `used_samples == 0` i asercja `report1.used_samples > 0` faktycznie
+  panikuje z komunikatem "analysis must use captured samples" — dokładnie ten
+  seam, który brief przewidywał. Przywrócone przed GREEN.
+- **Faza 3 — dosłowny szkielet briefu ("drive ~120 windows again" na TYM
+  SAMYM symulatorze) empirycznie NIE działa — zamiast flattening, błąd ROSNiE.**
+  Zweryfikowane debug-printem podczas implementacji: `sim.tick_engine` jest
+  kumulatywny i bezstanowo kontynuuje deterministyczną trajektorię silnika
+  (Startup→WarmupIdle→Idle→LightLoad→...) tam, gdzie Faza 1 ją zostawiła —
+  drugi przebieg `drive_engine` na tym samym `EcuSimulator` ciągnie
+  trajektorię w zupełnie NOWE, nigdy nie korygowane komórki siatki (Faza 1
+  dotknęła np. komórek x∈{0,1,2}, y∈{1..7}; kontynuacja o kolejne 200 okien
+  trafiła w x∈{2,3,4}, y∈{5..15} — nakładanie się dosłownie jednej komórki).
+  Odrzucona alternatywa: "zamrożenie" punktu pracy (jedno małe tyknięcie
+  "żeby podłapać zapis" — jak w `sim_measured_afr_reflects_ve_error`, Task 9
+  — potem tylko realne uśpienia bez dalszego tykania) naprawia nakładanie się
+  komórek, ale zawęża `report2` do JEDNEJ komórki (tej, na której akurat
+  kończy się trajektoria Fazy 1) — kruche, bo pierwszy przebieg korekty jest
+  celowo NIEPEŁNY nawet przy pełnej pewności (`cell_change_resistance = 0.2`
+  w `ve_analyze.rs::finalize` zawsze tłumi deltę o 20%, niezależnie od
+  `confidence`), więc trafienie akurat w komórkę o umiarkowanej pewności
+  (0.3-0.7) zostawia rezydualny błąd zbyt duży, by średnia spadła poniżej
+  połowy. **Rozwiązanie:** reconnect (świeży `EcuSimulator` — `reboot()`
+  resetuje WYŁĄCZNIE pamięć ECU, nigdy stanu fizyki silnika, wg własnego
+  doc-commentu; jedyny sposób na cofnięcie zegara silnika to nowe połączenie,
+  które tworzy nowy `SimEngine` z tym samym stałym seedem
+  `XorShift32(0x4F54_5531)`) + ponowne zasianie DOKŁADNIE tych samych binów +
+  flat-50 `veTable`/flat-14.7 `afrTable` + ponowne zaaplikowanie TYCH SAMYCH
+  `edits` (z `report1`) przez `SetCells` + `Burn`, potem ponowne przejechanie
+  DOKŁADNIE tej samej liczby okien (`CAPTURE_WINDOWS`) — silnik nie ma
+  zegara ściennego (Task 9's determinizm), więc odtwarza tę samą trajektorię
+  1:1, trafiając w te same komórki z porównywalną wagą/pewnością co `report1`
+  — uczciwe porównanie średnich "przed/po" nad tym samym zbiorem komórek,
+  zamiast dwóch raportów mierzących różne rzeczy. Zweryfikowane
+  bezpośrednio: `report2`'s dotknięte komórki (indeksy 16/32/48/80/81/97/98/
+  113/114) pokrywają się niemal 1:1 z `report1`'s, a `|delta_pct|` maleje na
+  każdej z nich (np. komórka 113: 9.99% → 3.57%; komórka 97: 7.12% → 2.22%).
+- **`CAPTURE_WINDOWS = 200`** (50 ms symulowanego czasu silnika na okno = 10 s
+  kumulatywnie) — z zapasem ponad ~8 s, które Task 9 empirycznie ustalił jako
+  potrzebne do wyjścia z STARTUP/WARMUP_IDLE w realny punkt pracy pod
+  obciążeniem (`sim_measured_afr_reflects_ve_error`,
+  `crates/simulator/tests/realtime.rs`) — 500 ms (jak sugerował Task 9's
+  brief) zostawia silnik w STARTUP poniżej najniższego binu RPM. Test trwa
+  ~19.3 s (dwa przebiegi `drive_engine` × ~8 s realnego uśpienia + narzut) —
+  dłużej niż orientacyjne "~8-12 s" z briefu 12.1, zaakceptowane świadomie:
+  skrócenie okien ryzykowałoby powrót do marginalnych komórek (`|want-50|`
+  blisko progu 1.0 z asercji kierunku), a stabilność (4 uruchomienia z rzędu
+  zielone, patrz niżej) była ważniejsza niż dosłowne dotrzymanie szacunku
+  czasu z briefu.
+- **Weryfikacja stabilności — 4 uruchomienia z rzędu zielone** (`cargo test
+  ve_analyze_flattens`, ~19.3 s każde), brak `sleep`-owych progów na sztywno:
+  wszystkie asercje (```sample_count >= 80```, ```used_samples > 0```, próg
+  pewności 0.3, kierunek korekty, `mean2 < 0.5 * mean1```) są względne wobec
+  faktycznych danych, nie wobec zahardkodowanych liczb. **Uczciwe
+  zastrzeżenie:** odtworzenie trajektorii nie jest bitowo identyczne
+  (rzeczywisty zegar ścienny steruje kadencją pollera, więc dokładna liczba
+  próbek na komórkę różni się nieznacznie między uruchomieniami) — zapas
+  matematyczny jest wystarczający (przeciętna reszta błędu po jednym
+  przebiegu ≈ 35% dla typowego rozkładu pewności z tego testu, wg wzoru
+  `finalize`'a; próg wymaga < 50%), ale to margines, nie dowód formalny.
+- **Co "flatter" dowodzi (i czego NIE dowodzi):** `mean_abs_confident_delta`
+  (średnia `|delta_pct|` po komórkach z `confidence >= 0.3`) maleje o ponad
+  połowę po JEDNYM przebiegu analyze→apply→re-measure, zmierzone w TYCH
+  SAMYCH warunkach pracy (ta sama trajektoria silnika). To NIE jest dowód
+  zbieżności na nieodwiedzonych punktach siatki (komórki, w które trajektoria
+  nigdy nie trafiła, zostają nietknięte — `confidence = 0`, poprawnie
+  fail-open) ani dowód pełnej, jednokrokowej zbieżności (`cell_change_
+  resistance = 0.2` gwarantuje rezydualny błąd nawet przy pełnej pewności —
+  zgodne z realnym, iteracyjnym workflow tuningu, w którym użytkownik
+  analyze→apply'uje wielokrotnie). Dokładnie to, i tylko to, demo ma
+  udowodnić: "the sim's deliberate VE error got FLATTER" po jednym geście.
+- **12.3 manualny smoke `tauri dev` — NIE wykonany.** Ten krok wymaga
+  rzeczywistej interakcji z natywnym oknem WebView (wpisywanie w komórki,
+  zaznaczanie przeciągnięciem, orbitowanie kamerą 3D, obserwacja białej
+  kropki) — poza zestawem narzędzi dostępnych w tym przebiegu (brak sterownika
+  natywnej aplikacji; przeglądarkowa automatyzacja nie dotyczy natywnego okna
+  Tauri). Automatyczny E2E (12.2) jest weryfikacją referencyjną całej pętli
+  demo; ten krok pozostaje do ręcznego wykonania przez człowieka. Rozmiary
+  bundli z Taska 7.6 potwierdzone tym samym `npm run build` co reszta bramki
+  (bez zmian produkcyjnych w tym tasku): entry `index-*.js` **77.34 kB gz**
+  (budżet < 125 kB), lazy `SurfaceView-*.js` **130.33 kB gz** (budżet ≤ 180 kB)
+  — spójne z pomiarem Taska 7.
+- **Audyt 12.4 — wpisy, których brakowało, dopisane tutaj (reszta już
+  istniała w Tasks 1/2/8 i została tylko zweryfikowana, nie duplikowana):**
+  - **`default_on` (flaga `filter = ..., true/false`) — semantyka
+    nieprzesądzona przez TS, ale zachowanie OpenTune jest jednoznaczne.**
+    `AnalyzeFilterDef::Custom::default_on` (`ve_analyze.rs`, ini crate) jest
+    parsowane verbatim z INI (7. token, domyślnie `true` gdy brak), ale
+    `analysis_bridge.rs::compile_filter` je IGNORUJE (`..` w destrukturyzacji)
+    — każdy sparsowany filtr Custom jest zawsze aktywny; jedyny sposób
+    wyłączenia to `VeAnalyzeParams::disabled_filters` (runtime, po id, Task
+    10). Świadomie zapisane w doc-commencie pola (`ve_analyze.rs`) już od
+    Taska 2; ten wpis tylko domyka lukę w notatniku decyzji.
+  - **Edycja binów osi (X/Y) — poza zakresem M4, odroczona.** Edytor tabel/
+    krzywych (Tasks 5/6) pozwala edytować WYŁĄCZNIE komórki Z (i punkty Y
+    krzywej); same wartości binów (`rpmBins`/`fuelLoadBins`/`x_bins`
+    krzywej) nie mają UI do edycji — zmiana siatki wymagałaby dziś
+    `SetValue` na surowej tablicy. Świadomie odroczone (brief M4 nigdzie nie
+    przypina edycji binów jako wymagania).
+  - **Paste-special — poza zakresem M4, odroczone.** Zaimplementowany jest
+    wyłącznie zwykły paste (`pasteEdits`, Task 4/5: wklejenie TSV 1:1,
+    przycięte do granic siatki); nie ma wariantu "paste special"
+    (np. dodaj/pomnóż względem istniejącej wartości, jak w arkuszach) — nie
+    przypięty przez żaden brief M4.
+  - **`std_Custom` (`filter = std_Custom ; Standard Custom Expression
+    Filter.`) — cicho pomijany, bez odpowiednika silnika.** Udokumentowane w
+    `analysis_bridge.rs::compile_filter`'s doc-commencie od Taska 11: brak
+    `FilterSpec` dla tej wartości standardowej (w przeciwieństwie do
+    `std_xAxisMin` itp.), więc `_ => None` w dopasowaniu — filtr po prostu
+    nigdy nie trafia do `binding.filters`, zero diagnostyki. Realny plik
+    (`speeduino-real-0832dc1d.ini`, l.6008/6026) deklaruje go jako
+    placeholder dla przyszłego wsparcia wyrażeń niestandardowych w
+    TunerStudio; poza zakresem M4.
+  - **Parametry `ve_analyze` na poziomie DTO — nieodsłonięte, silnik zawsze
+    na domyślnych.** `analysis_bridge::run_ve_analyze` woła
+    `VeAnalyzeParams::default()` (Task 11) bez ścieżki, którą frontend
+    mógłby nadpisać `min_weight`/`max_delta_pct`/`lag_records`/etc. przez
+    IPC — `RunVeAnalyze { table, reply }` niesie tylko nazwę tabeli. Świadomy
+    zakres Taska 11 (skupiony na wiązaniu, nie na strojeniu parametrów);
+    odroczone razem z resztą "DTO-level analyze params" do przyszłego zadania,
+    jeśli UI kiedyś potrzebuje np. suwaka progu pewności.
+  - **Zweryfikowane bez zmian (już mają wpisy):** golden-gate allowlist
+    finalna zawartość — sekcja "Golden-gate allowlist — nowe wpisy" (Task 1)
+    + korekty Taska 2 (`groupMenu`/`groupChildMenu` usunięte,
+    `indicator`/`indicatorPanel` rozbite); korekty fixture'ów `lastOffset` —
+    sekcja "Task 1 — Wall #2" (offsety `tests/constants.rs` skorygowane);
+    inwariant tap-above-the-gate — sekcja "Task 8" (`capture_rate_pins_the_
+    tap_invariant` + `poll_interval_never_outpaces_the_coalesce_gate`).
+    M3-serial follow-upy pozostają poza zakresem (bez zmian, brak w tym
+    tasku żadnego dotknięcia serial poller/reconnect).
+- **Staging jak w Task 1-11** — jawne ścieżki
+  (`src-tauri/src/owner_analysis_tests.rs`, `docs/ROADMAP.md`,
+  `docs/notes/m4-decisions.md`); dirty `package.json`'s `allowScripts`
+  (poza zakresem, przedwcześnie odziedziczony z wcześniejszej sesji) nadal
+  niestage'owany.
