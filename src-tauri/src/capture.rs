@@ -80,12 +80,8 @@ impl CaptureBuffer {
     }
 
     /// Export the current rows as a [`opentune_analysis::SampleSet`]: clones,
-    /// column/row order preserved.
-    ///
-    /// Task 0/8 seam: Task 11's `RunVeAnalyze` handler is the production
-    /// caller (not yet wired — the owner arm still stubs `Err`); today this
-    /// is exercised only by this module's unit tests.
-    #[allow(dead_code)]
+    /// column/row order preserved. The owner's `RunVeAnalyze` arm is the
+    /// production caller (rows retained by `StopCapture` precisely for this).
     pub fn to_sample_set(&self) -> opentune_analysis::SampleSet {
         let t_ms = self.rows.iter().map(|(t, _)| *t).collect();
         let rows = self.rows.iter().map(|(_, row)| row.clone()).collect();
