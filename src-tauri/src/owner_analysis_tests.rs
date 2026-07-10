@@ -200,13 +200,26 @@ async fn drive_engine(sim: &opentune_simulator::EcuSimulator, windows: u32) {
     }
 }
 
-/// Windows per capture pass (50 ms simulated engine time each): 200 * 50 ms
-/// = 10 s of cumulative engine time, comfortably past the ~8 s Task 9 found
+/// Windows per capture pass (50 ms simulated engine time each): 210 * 50 ms
+/// = 10.5 s of cumulative engine time, comfortably past the ~8 s Task 9 found
 /// necessary to clear STARTUP/WARMUP_IDLE into a real running-load operating
 /// point (`sim_measured_afr_reflects_ve_error`,
 /// `crates/simulator/tests/realtime.rs`) — see the m4-decisions entry for the
 /// empirical margin.
-const CAPTURE_WINDOWS: u32 = 200;
+///
+/// **Raised from 200 → 210 as a review fast-follow (Task 12 review MEDIUM):**
+/// this is NOT simply "deeper capture = more confidence, so keep raising it."
+/// Measured: past ~245-250 windows the engine's Idle-mode state machine
+/// (`EngineMode::Idle`'s `STATE_TRANSITION_MS = 5_000 ms` roll,
+/// `crates/simulator/src/engine/physics.rs`) has enough deterministic
+/// sim-time to fire its first random transition roll, pulling the trajectory
+/// into a fresh, thinly-sampled cell — confirmed by a jump in
+/// `report1`'s confident-cell set (a new index appears) and the ratio
+/// spiking well past the gate (measured ~0.50-0.59 at 250/260/270 windows,
+/// test-failing). 210 sits inside the pre-transition Idle plateau with a
+/// ~2 s buffer before that cliff — see the m4-decisions entry for the full
+/// sweep.
+const CAPTURE_WINDOWS: u32 = 210;
 
 /// Mean `|delta_pct|` over cells confident enough to matter (mirrors the
 /// brief's `mean_abs`) — 0.0 when no cell clears the confidence bar (an
@@ -235,7 +248,7 @@ fn mean_abs_confident_delta(report: &VeAnalysisReportDto) -> f64 {
 /// Real wall-clock time, not `tokio::time::pause` (no `test-util` feature on
 /// this crate's dev-deps — every timing test in this suite already runs on
 /// the real clock): two `drive_engine` passes of `CAPTURE_WINDOWS` each, ~40
-/// ms real sleep per window, so this test runs ~19 real seconds — longer
+/// ms real sleep per window, so this test runs ~20 real seconds — longer
 /// than the M3 E2E's few seconds, because Task 9's running-load operating
 /// point needs several real seconds of simulated engine time to reach, not
 /// just a couple of poll ticks. Kept in the normal suite regardless, same as

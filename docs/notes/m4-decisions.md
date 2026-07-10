@@ -1174,7 +1174,9 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   skrócenie okien ryzykowałoby powrót do marginalnych komórek (`|want-50|`
   blisko progu 1.0 z asercji kierunku), a stabilność (4 uruchomienia z rzędu
   zielone, patrz niżej) była ważniejsza niż dosłowne dotrzymanie szacunku
-  czasu z briefu.
+  czasu z briefu. **Uwaga (fast-follow z code review, patrz niżej):** ta
+  wartość została później podniesiona do 210 — margines był w praktyce
+  węższy, niż sugerowała stabilność "4/4 zielone".
 - **Weryfikacja stabilności — 4 uruchomienia z rzędu zielone** (`cargo test
   ve_analyze_flattens`, ~19.3 s każde), brak `sleep`-owych progów na sztywno:
   wszystkie asercje (```sample_count >= 80```, ```used_samples > 0```, próg
@@ -1182,10 +1184,84 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   faktycznych danych, nie wobec zahardkodowanych liczb. **Uczciwe
   zastrzeżenie:** odtworzenie trajektorii nie jest bitowo identyczne
   (rzeczywisty zegar ścienny steruje kadencją pollera, więc dokładna liczba
-  próbek na komórkę różni się nieznacznie między uruchomieniami) — zapas
-  matematyczny jest wystarczający (przeciętna reszta błędu po jednym
-  przebiegu ≈ 35% dla typowego rozkładu pewności z tego testu, wg wzoru
-  `finalize`'a; próg wymaga < 50%), ale to margines, nie dowód formalny.
+  próbek na komórkę różni się nieznacznie między uruchomieniami) — margines
+  matematyczny istnieje, ale okazał się węższy niż pierwotnie tu oszacowano.
+  Zobacz fast-follow z code review niżej: "≈ 35%" było teoretycznym
+  szacunkiem ze wzoru, nie pomiarem, i realny margines był bliski bramki.
+- **Fast-follow z code review (MEDIUM, po zamknięciu Taska 12) — margines był
+  węższy niż udokumentowano; `CAPTURE_WINDOWS` podniesiony 200 → 210.**
+  Powyższe "≈ 35%" było szacunkiem teoretycznym wyprowadzonym ze wzoru
+  `finalize`'a, NIE pomiarem — review zainstrumentował asercję (`eprintln!`
+  tuż przed `assert!`, usunięty przed commitem) i zmierzył realny stosunek
+  `mean2/mean1` na 5 kolejnych uruchomieniach przy ówczesnym
+  `CAPTURE_WINDOWS = 200`: **0.428 / 0.431 / 0.480 / 0.459 / 0.445** (średnia
+  ≈ 0.45, najgorszy przypadek 0.48 — ~4% zapasu do bramki `< 0.5`, nie 15
+  punktów procentowych, jak sugerowało "≈ 35%"). Powtórzone niezależnie na
+  tej samej wartości podczas tego fast-followu: **0.380 / 0.493 / 0.495 /
+  0.483 / 0.479** — ten sam rząd wielkości, najgorszy przypadek (0.495)
+  jeszcze bliżej bramki. **Mechanizm flake'a:** trajektoria silnika jest
+  deterministyczna krok-po-kroku (stały seed RNG, `tick_engine` bez zegara
+  ściennego), ale PRÓBKOWANIE przechwytywania jest tempowane zegarem
+  ściennym (`drive_engine`'s 40 ms realnego uśpienia na okno, odbierane
+  przez pollera 25 Hz ownera) — na obciążonym runnerze CI mniej realnych
+  ramek trafia w to samo okno symulowanego czasu ⇒ niższa waga komórki
+  (`sum_w` w `finalize`) ⇒ niższa `confidence` ⇒ blend `current +
+  (raw-current)*confidence*(1-cell_change_resistance)` aplikuje słabszą
+  korektę ⇒ rezydualny błąd (`mean2`) rośnie bliżej bramki `0.5`.
+
+  **Naiwna naprawa ("po prostu podnieś `CAPTURE_WINDOWS`, żeby podnieść
+  pewność") empirycznie NIE działa — pogarsza margines, nie poprawia go.**
+  Zmierzone przy `CAPTURE_WINDOWS = 300`: stosunek 0.53-0.57 na pięciu
+  uruchomieniach — test faktycznie CZERWONY. Przyczyna: tryb `Idle` silnika
+  ma własny losowy zegar przejścia stanu (`STATE_TRANSITION_MS = 5_000 ms`,
+  `crates/simulator/src/engine/physics.rs`) — po ~245-250 oknach
+  (deterministycznie, dla tego seeda RNG) ten zegar wystrzeliwuje pierwszy
+  losowy roll i trajektoria wjeżdża w NOWĄ, ledwo spróbkowaną komórkę siatki
+  (potwierdzone bezpośrednio: zbiór pewnych komórek `report1` zyskuje nowy
+  indeks — 210 przy 250 oknach, 210+211 przy 260/270 oknach), co
+  jednocześnie podnosi `mean1` (nowa komórka ma większy błąd bazowy
+  względem flat-50) i pogarsza stosunek (nowa komórka ma niską pewność,
+  więc słabą korektę w `report2`). Jednorazowe (`--nocapture`, bez potrzeby
+  wielu powtórzeń — trajektoria trybu jest deterministyczna dla danej
+  liczby okien) zamiatanie 210/230/240/250/260/270 zlokalizowało tę
+  "krawędź" między 240 a 250 oknami.
+
+  **Wybrana wartość: `CAPTURE_WINDOWS = 210`** — wewnątrz płaskowyżu trybu
+  `Idle` sprzed przejścia stanu (~2 s zapasu do krawędzi). Zmierzona na 5
+  kolejnych uruchomieniach ze wciąż obecną instrumentacją (`--nocapture`):
+  **0.3637 / 0.3729 / 0.3288 / 0.3809 / 0.3686** — najgorszy przypadek
+  0.3809, poniżej celu ≤ 0.40 z tego fast-followu (~24% zapasu do bramki
+  `0.5`, nie ~4% jak przy 200). Czas trwania tych samych 5 uruchomień:
+  20.23-20.38 s wewnętrznego czasu `cargo test`. Po usunięciu instrumentacji
+  osobne 5 CZYSTYCH uruchomień (`cargo test ve_analyze_flattens`, bez
+  `--nocapture`, bez `eprintln!`) potwierdziło zielony wynik bez wglądu w
+  stosunek (niepotrzebnego na tym etapie): 20.23-20.35 s każde — łącznie 10
+  zielonych uruchomień na dwóch osobnych buildach. Oba czasy dobrze poniżej
+  progu ~45 s (i tylko ~1 s dłużej niż poprzednie 200 okien). **Zbiór pewnych
+  komórek przy 210 oknach: indeksy 16/32/33/48/49/97/98/113/114** — ten sam
+  niskoobrotowy klaster "idle" co przy 200 oknach (wcześniej udokumentowany
+  jako 16/32/48/80/81/97/98/113/114 dla `report2` z oryginalnej
+  implementacji Taska 12), ale NIE identyczny: komórki 80/81 znikają, w ich
+  miejsce pojawiają się 33/49 (~78% pokrycia) — spójne z losowym driftem RPM
+  w trybie `Idle` (`self.rng.range(-10, 10)` w `simulate_rpm`) przy odrobinę
+  dłuższym oknie przechwytywania. Oba zestawy pomierzono w oddzielnych
+  uruchomieniach (200-okienny w oryginalnej sesji Taska 12, 210-okienny w
+  tym fast-followie), więc to porównanie przybliżone, nie kontrolowane —
+  ważne jest tylko to, że ŻADEN z dwóch zestawów nie zawiera komórek
+  progu przejścia stanu (210, 211), czyli tego, przed czym ten fast-follow
+  faktycznie chroni. Wszystkie asercje briefu — w tym
+  `mean2 < 0.5 * mean1` dosłownie (ROADMAP mówi "more than halves") i
+  `sample_count >= 80` — pozostały nietknięte; zmieniona została wyłącznie
+  stała `CAPTURE_WINDOWS` i towarzyszący jej doc-comment. **Uczciwe
+  zastrzeżenie #2:** wszystkie powyższe pomiary są lokalne (ten sam
+  deweloperski Mac, bez współbieżnego obciążenia). Oryginalny mechanizm
+  flake'a dotyczy zajętego runnera CI przechwytującego mniej ramek na okno
+  — tego konkretnego scenariusza nie da się tu odtworzyć. Ruch z ~0.005
+  zapasu absolutnego (najgorszy przypadek 0.495 przy 200 oknach) do ~0.12
+  zapasu (najgorszy przypadek 0.381 przy 210 oknach) idzie we właściwym
+  kierunku właściwą dźwignią, ale nie jest formalnym dowodem, że flake pod
+  realnym obciążeniem CI został wyeliminowany — tylko że margines jest
+  znacznie szerszy niż był.
 - **Co "flatter" dowodzi (i czego NIE dowodzi):** `mean_abs_confident_delta`
   (średnia `|delta_pct|` po komórkach z `confidence >= 0.3`) maleje o ponad
   połowę po JEDNYM przebiegu analyze→apply→re-measure, zmierzone w TYCH
