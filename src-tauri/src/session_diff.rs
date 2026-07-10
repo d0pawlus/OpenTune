@@ -57,6 +57,7 @@ impl Session {
             def,
             tune,
             snapshot,
+            ..
         } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
         let snapshot = snapshot.as_ref().ok_or_else(|| NO_SNAPSHOT.to_string())?;
@@ -102,6 +103,7 @@ mod tests {
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         }
     }
 

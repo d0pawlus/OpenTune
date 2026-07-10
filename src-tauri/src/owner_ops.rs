@@ -49,6 +49,7 @@ pub(super) fn build_session(source: ConnectSource, emit: &Emitter) -> Result<Ses
         def,
         tune: None,
         snapshot: None,
+        offline_origin: false,
     })
 }
 
@@ -104,6 +105,7 @@ pub(super) fn build_offline_session(ini_path: &str) -> Result<Session, String> {
         def,
         tune: Some(tune),
         snapshot: None,
+        offline_origin: true,
     })
 }
 
@@ -145,22 +147,11 @@ pub(super) fn attach_connection(
     Ok(())
 }
 
-/// Guard #2: the connected ECU's signature must match the tune's INI.
+/// Guard #2: the connected ECU's signature must match the tune's INI. Thin
+/// convenience wrapper over [`ActiveConnection::verify_signature`] (the single
+/// source of truth, shared with `Session::write_all_to_ecu`'s pre-write check).
 fn verify_signature(conn: &ActiveConnection, def: &Definition) -> Result<(), String> {
-    match conn {
-        // The simulator is built from `def`, so its identity always matches.
-        ActiveConnection::Sim { .. } => Ok(()),
-        ActiveConnection::Serial { manager } => match manager.state() {
-            ConnectionState::Connected { identity } if identity.matches(&def.comms) => Ok(()),
-            ConnectionState::Connected { identity } => Err(format!(
-                "connected ECU signature `{}` does not match your tune's INI `{}`",
-                identity.signature, def.comms.signature
-            )),
-            _ => {
-                Err("ECU did not report a signature; cannot verify tune compatibility".to_string())
-            }
-        },
-    }
+    conn.verify_signature(&def.comms)
 }
 
 #[cfg(test)]

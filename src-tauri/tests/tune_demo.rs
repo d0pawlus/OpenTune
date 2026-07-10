@@ -34,6 +34,7 @@ fn open_session() -> Session {
         def,
         tune: None,
         snapshot: None,
+        offline_origin: false,
     }
 }
 

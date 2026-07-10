@@ -260,6 +260,12 @@ impl Session {
         } = self;
         let conn = conn.as_ref().ok_or_else(|| NO_CONNECTION.to_string())?;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+        // Defense-in-depth (design spec §Safety guards #2): re-verify the ECU
+        // signature against the tune's INI before writing. The attach path
+        // already checks this, but re-checking here means a whole-tune write
+        // can never trust a signature implicitly — the same equality as
+        // `owner_ops::verify_signature`, via the shared method.
+        conn.verify_signature(&def.comms)?;
         let mut proto = protocol_for(conn, &def.comms)?;
         // Whole-page write in one call — a new access pattern (M2 only ever
         // wrote small deltas). Against the simulator this is accepted in one
@@ -388,6 +394,7 @@ mod tests {
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         }
     }
 
@@ -453,6 +460,7 @@ page = 1
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         };
         s.load_tune().unwrap();
 
@@ -526,6 +534,7 @@ page = 1
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         }
     }
 
@@ -751,6 +760,7 @@ mod offline_tests {
             def,
             tune: Some(tune),
             snapshot: None,
+            offline_origin: true,
         }
     }
 

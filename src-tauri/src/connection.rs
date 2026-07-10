@@ -58,6 +58,43 @@ pub struct Session {
     /// taken by `Session::snapshot_tune`. `None` until a snapshot is taken;
     /// file-based `.msq` snapshots are M6.
     pub snapshot: Option<Tune>,
+    /// `true` when this session originated offline (a tune created blank or
+    /// loaded from a `.msq`, possibly later ATTACHed to a live link);
+    /// `false` for an online session whose tune was FRESH-read from the ECU.
+    ///
+    /// The distinction drives disconnect behavior: an offline-origin tune must
+    /// **survive** a disconnect (drop the link, keep the editable/saveable
+    /// tune — design spec §"Disconnect while editing"), whereas an online tune
+    /// is destroyed so a later connect FRESH-reads rather than ATTACHing a
+    /// stale online tune.
+    pub offline_origin: bool,
+}
+
+impl ActiveConnection {
+    /// Defense-in-depth signature guard (design spec §Safety guards #2): the
+    /// connected ECU's reported signature must match `comms` (the tune's INI).
+    /// Single source of truth for both the attach-time check
+    /// (`owner_ops::verify_signature`) and the pre-write re-check
+    /// (`Session::write_all_to_ecu`).
+    ///
+    /// The simulator is built *from* the definition, so its identity is
+    /// definitionally the def's signature — that arm always matches. The real
+    /// check is the serial arm, comparing the manager's identified signature.
+    pub fn verify_signature(&self, comms: &CommsSettings) -> Result<(), String> {
+        match self {
+            ActiveConnection::Sim { .. } => Ok(()),
+            ActiveConnection::Serial { manager } => match manager.state() {
+                ConnectionState::Connected { identity } if identity.matches(comms) => Ok(()),
+                ConnectionState::Connected { identity } => Err(format!(
+                    "connected ECU signature `{}` does not match your tune's INI `{}`",
+                    identity.signature, comms.signature
+                )),
+                _ => Err(
+                    "ECU did not report a signature; cannot verify tune compatibility".to_string(),
+                ),
+            },
+        }
+    }
 }
 
 // ── Source discriminant (IPC-visible) ────────────────────────────────────────

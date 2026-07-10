@@ -346,6 +346,131 @@ async fn failed_attach_preserves_the_offline_tune() {
     );
 }
 
+// ── Task 4 (final review): Disconnect must NOT destroy an offline tune ───────
+//
+// Design spec §"Disconnect while editing": an offline-origin tune (created
+// blank or opened from a `.msq`, then ATTACHed to a live link) must survive a
+// disconnect — the link drops but the tune stays editable and saveable in
+// offline mode. The old `Command::Disconnect` set `self.session = None`
+// unconditionally, so an offline tune with unsaved edits was destroyed and
+// every later edit/save failed "not connected". This drives the real command
+// path: NewTune → Connect(ATTACH) → Disconnect → SetValue/SaveTune must still
+// succeed → a later Connect re-ATTACHes with the edit intact.
+
+#[tokio::test]
+async fn disconnect_preserves_an_offline_origin_tune() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, _events) = test_owner();
+
+    // Offline session, then ATTACH to the simulator (conn added, tune kept).
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("attach to the simulator");
+
+    // Disconnect: the offline-origin tune must SURVIVE (link dropped, kept).
+    send(&tx, |reply| Command::Disconnect { reply })
+        .await
+        .expect("disconnect");
+
+    // Still editable offline — against the buggy code the session was gone and
+    // this failed "not connected".
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("set_value must still succeed after disconnect (session survived)");
+
+    // Still saveable. Best-effort cleanup runs before the assert so a failing
+    // save never leaks the scratch file.
+    let msq_path = std::env::temp_dir().join(format!(
+        "opentune-disconnect-survive-{}-{:?}.msq",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_file(&msq_path);
+    let save = send(&tx, |reply| Command::SaveTune {
+        path: msq_path.to_string_lossy().into_owned(),
+        reply,
+    })
+    .await;
+    let _ = std::fs::remove_file(&msq_path);
+    save.expect("save_tune must still succeed after disconnect (session survived)");
+
+    // A later Connect re-ATTACHes (offline session still present → ATTACH
+    // branch), and the offline edit is intact across the whole cycle.
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("re-attach to the simulator");
+    assert_eq!(
+        req_fuel(&tx).await,
+        Value::Scalar(12.5),
+        "the offline edit survives disconnect + re-attach"
+    );
+}
+
+// The twin invariant that `offline_origin` exists to protect: an *online*
+// (FRESH-read) tune must STILL be destroyed on disconnect, so a later connect
+// FRESH-reads the ECU rather than ATTACHing a stale online tune. Without this
+// test, weakening the Disconnect guard to `s.tune.is_some()` would leave every
+// other test green while reintroducing a stale-ATTACH data-loss bug.
+
+#[tokio::test]
+async fn disconnect_destroys_an_online_tune() {
+    let (tx, _events) = test_owner();
+    // Online session, tune FRESH-read from the simulator (offline_origin=false).
+    connect_and_load(&tx).await;
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("edit the online tune");
+
+    // Disconnect must DESTROY an online session.
+    send(&tx, |reply| Command::Disconnect { reply })
+        .await
+        .expect("disconnect");
+    let err = send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(13.0),
+        reply,
+    })
+    .await
+    .expect_err("an online tune must NOT survive disconnect");
+    assert!(err.contains("not connected"), "got: {err}");
+
+    // A later connect takes the FRESH branch (session was destroyed, so it is
+    // not the ATTACH case): the new session reads the tune straight from the
+    // ECU rather than re-using a stale one.
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("fresh reconnect");
+    send(&tx, |reply| Command::LoadTune { reply })
+        .await
+        .expect("FRESH re-read after reconnect");
+}
+
 #[tokio::test]
 async fn realtime_flag_commands_reply_ok() {
     let (tx, _events) = test_owner();

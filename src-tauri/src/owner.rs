@@ -254,7 +254,18 @@ impl Owner {
                 let _ = reply.send(self.connect(source).await);
             }
             Command::Disconnect { reply } => {
-                self.session = None;
+                // An offline-origin tune must SURVIVE disconnect (design spec
+                // §"Disconnect while editing"): drop the live link but keep the
+                // session so the tune stays editable/saveable in offline mode.
+                // An online (FRESH-read) tune is destroyed as before, so a
+                // later connect FRESH-reads rather than ATTACHing a stale tune.
+                match self.session.take() {
+                    Some(mut s) if s.offline_origin && s.tune.is_some() => {
+                        s.conn = None;
+                        self.session = Some(s);
+                    }
+                    _ => {} // online (or empty) session: dropped by `take`
+                }
                 // Realtime is explicit-start only — a fresh connection must
                 // not silently resume a previous session's polling.
                 self.polling = false;
@@ -494,6 +505,13 @@ impl Owner {
             .await
             .map_err(|e| format!("attach panicked: {e}"))?;
             self.session = Some(session);
+            // A refused attach may have already emitted `Connected` (serial
+            // `connect_serial` connects before the signature guard rejects) —
+            // correct the UI back to disconnected so it doesn't stay stuck on
+            // a false "Connected". The offline tune itself survived above.
+            if r.is_err() {
+                (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
+            }
             return r;
         }
         self.reset_session();
@@ -540,10 +558,18 @@ impl Owner {
     /// shared body of `new_tune`/`open_tune`: an offline session never
     /// inherits a previous session's live link or polling (same rule as
     /// `Disconnect`/`connect`).
+    ///
+    /// If the torn-down session held a live link, emit `Disconnected` so the
+    /// UI doesn't keep showing a false "connected" after e.g. creating a new
+    /// offline tune while connected.
     fn reset_session(&mut self) {
+        let had_link = matches!(&self.session, Some(s) if s.conn.is_some());
         self.session = None;
         self.polling = false;
         self.poller = None;
+        if had_link {
+            (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
+        }
     }
 
     /// Build a blank offline tune from `ini_path` and make it the current
