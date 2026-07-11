@@ -18,10 +18,21 @@
 //! bodies; Task 10 implements the real algorithm (Task 11 bridges it to
 //! Definition/Tune/SampleSet DTOs).
 
+mod anomaly;
+mod dyno;
 mod grid;
+mod stats;
 mod ve_analyze;
 
+pub use anomaly::{
+    detect_anomaly, Anomaly, AnomalyKind, AnomalyReport, AnomalyThresholds, SensorThreshold,
+};
+pub use dyno::{virtual_dyno, DynoCondition, DynoPoint, VirtualDynoParams, VirtualDynoReport};
 pub use grid::TableGrid;
+pub use stats::{
+    log_stats, Comparison, FilterReasonCount as StatsFilterReasonCount, LogStatsParams,
+    LogStatsReport, SampleFilter, StatsFilterDecision, SummaryStat,
+};
 pub use ve_analyze::ve_analyze;
 
 /// Column-oriented capture: channel names pinned once, one f64 row per frame
@@ -185,3 +196,48 @@ impl std::fmt::Display for AnalyzeError {
 }
 
 impl std::error::Error for AnalyzeError {}
+
+/// Shared validation errors for log-level analysis.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogAnalysisError {
+    MissingChannel(String),
+    ShapeMismatch(String),
+    InvalidParameter(String),
+    InsufficientData(String),
+}
+
+impl std::fmt::Display for LogAnalysisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingChannel(name) => write!(f, "missing channel: {name}"),
+            Self::ShapeMismatch(reason) => write!(f, "sample shape mismatch: {reason}"),
+            Self::InvalidParameter(reason) => write!(f, "invalid parameter: {reason}"),
+            Self::InsufficientData(reason) => write!(f, "insufficient data: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for LogAnalysisError {}
+
+pub(crate) fn validate_samples(samples: &SampleSet) -> Result<(), LogAnalysisError> {
+    if samples.t_ms.len() != samples.rows.len() {
+        return Err(LogAnalysisError::ShapeMismatch(format!(
+            "{} timestamps for {} rows",
+            samples.t_ms.len(),
+            samples.rows.len()
+        )));
+    }
+    if let Some((index, row)) = samples
+        .rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.len() != samples.columns.len())
+    {
+        return Err(LogAnalysisError::ShapeMismatch(format!(
+            "row {index} has {} values for {} columns",
+            row.len(),
+            samples.columns.len()
+        )));
+    }
+    Ok(())
+}

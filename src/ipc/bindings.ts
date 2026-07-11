@@ -117,6 +117,16 @@ export const commands = {
 	 *  a named `[TableEditor]`/`[VeAnalyze]` table (M4 Task 11).
 	 */
 	runVeAnalyze: (table: string) => typedError<VeAnalysisReportDto, string>(__TAURI_INVOKE("run_ve_analyze", { table })),
+	startLog: (path: string, format: LogFormatDto) => typedError<LogStatusDto, string>(__TAURI_INVOKE("start_log", { path, format })),
+	stopLog: () => typedError<LogSummaryDto, string>(__TAURI_INVOKE("stop_log")),
+	addLogMarker: (text: string) => typedError<null, string>(__TAURI_INVOKE("add_log_marker", { text })),
+	logStatus: () => typedError<LogStatusDto, string>(__TAURI_INVOKE("log_status")),
+	openLog: (path: string, format: LogFormatDto) => typedError<LogSummaryDto, string>(__TAURI_INVOKE("open_log", { path, format })),
+	getLogData: (offset: number, limit: number) => typedError<LogDataDto, string>(__TAURI_INVOKE("get_log_data", { offset, limit })),
+	saveLog: (path: string, format: LogFormatDto) => typedError<null, string>(__TAURI_INVOKE("save_log", { path, format })),
+	logStats: (params: LogStatsParamsDto) => typedError<LogStatsReportDto, string>(__TAURI_INVOKE("log_stats", { params })),
+	detectAnomaly: (thresholds: AnomalyThresholdsDto) => typedError<AnomalyReportDto, string>(__TAURI_INVOKE("detect_anomaly", { thresholds })),
+	virtualDyno: (params: VirtualDynoParamsDto) => typedError<VirtualDynoReportDto, string>(__TAURI_INVOKE("virtual_dyno", { params })),
 	/**  Persist the dashboard layout JSON to the app config dir. */
 	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
 	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
@@ -132,6 +142,35 @@ export const events = {
 };
 
 /* Types */
+export type AnomalyDto = {
+	row: number,
+	t_ms: number | null,
+	kind: AnomalyKindDto,
+	channel: string,
+	value: number | null,
+	threshold: string,
+};
+
+export type AnomalyKindDto = "SensorDropout" | "LeanSpike" | "Knock";
+
+export type AnomalyReportDto = {
+	inspected_rows: number,
+	anomalies: AnomalyDto[],
+};
+
+export type AnomalyThresholdsDto = {
+	sensors: SensorThresholdDto[],
+	afr_channel: string,
+	lean_afr: number | null,
+	lean_min_rpm: number | null,
+	rpm_channel: string,
+	load_channel: string,
+	lean_min_load: number | null,
+	knock_channel: string,
+	knock_threshold: number | null,
+	knock_min_rpm: number | null,
+};
+
 export type AppInfo = {
 	name: string,
 	version: string,
@@ -180,6 +219,8 @@ export type CellResultDto = {
 	sample_count: number,
 	confidence: number | null,
 };
+
+export type ComparisonDto = "LessThan" | "LessOrEqual" | "GreaterThan" | "GreaterOrEqual" | "Equal" | "NotEqual";
 
 /**  Which ECU to connect to; deserialized from the frontend command payload. */
 export type ConnectSource = 
@@ -294,6 +335,28 @@ export type DialogDto = {
 	fields: FieldDto[],
 };
 
+export type DynoConditionDto = {
+	row: number,
+	accepted: boolean,
+	reason: string,
+};
+
+export type DynoPointDto = {
+	row: number,
+	t_ms: number | null,
+	speed_m_s: number | null,
+	rpm: number | null,
+	acceleration_m_s2: number | null,
+	inertial_force_n: number | null,
+	aero_force_n: number | null,
+	rolling_force_n: number | null,
+	wheel_power_w: number | null,
+	wheel_hp: number | null,
+	estimated_engine_power_w: number | null,
+	estimated_engine_hp: number | null,
+	estimated_engine_torque_nm: number | null,
+};
+
 /**
  *  IPC projection of [`opentune_model::FieldDiff`] — identical shape, but
  *  (transitively, via [`CellDiffDto`]) narrows the `usize` cell index to
@@ -332,6 +395,11 @@ export type FilterCountDto = {
 	id: string,
 	label: string,
 	count: number,
+};
+
+export type FilterDecisionDto = {
+	row: number,
+	reason: string,
 };
 
 /**  `[FrontPage]` — the default dashboard layout. */
@@ -386,6 +454,56 @@ export type IndicatorDto = {
 	on_fg: string,
 };
 
+/**  Bounded columnar transfer: no object allocation per data point. */
+export type LogDataDto = {
+	offset: number,
+	total_records: number,
+	t_ms: (number | null)[],
+	/**  Field-major columns; non-finite/missing values become `null`. */
+	columns: ((number | null)[])[],
+	markers: MarkerDto[],
+};
+
+export type LogFieldDto = {
+	name: string,
+	units: string,
+};
+
+export type LogFormatDto = "Csv" | "MlgV1";
+
+export type LogStatsParamsDto = {
+	channels: string[],
+	reject_when: SampleFilterDto[],
+};
+
+export type LogStatsReportDto = {
+	total_rows: number,
+	accepted_rows: number,
+	stats: SummaryStatDto[],
+	filtered: ReasonCountDto[],
+	decisions: FilterDecisionDto[],
+};
+
+export type LogStatusDto = {
+	active: boolean,
+	path: string | null,
+	format: LogFormatDto | null,
+	record_count: number,
+};
+
+export type LogSummaryDto = {
+	fields: LogFieldDto[],
+	record_count: number,
+	marker_count: number,
+	duration_ms: number | null,
+};
+
+export type MarkerDto = {
+	record_index: number,
+	t_ms: number | null,
+	text: string,
+};
+
 /**  A top-level menu. */
 export type MenuDto = {
 	label: string,
@@ -417,6 +535,34 @@ export type PortInfoDto = {
 export type RealtimeFrameEvent = {
 	/**  (channel name, physical value) pairs — the full decoded frame, ≤30 Hz. */
 	channels: ([string, number | null])[],
+};
+
+export type ReasonCountDto = {
+	reason: string,
+	count: number,
+};
+
+export type SampleFilterDto = {
+	channel: string,
+	comparison: ComparisonDto,
+	value: number | null,
+	reason: string,
+};
+
+export type SensorThresholdDto = {
+	channel: string,
+	min: number | null,
+	max: number | null,
+};
+
+export type SummaryStatDto = {
+	channel: string,
+	finite_count: number,
+	missing_count: number,
+	min: number | null,
+	max: number | null,
+	mean: number | null,
+	std_dev: number | null,
 };
 
 /**  A table editor definition (bin/cell constant references). */
@@ -482,6 +628,24 @@ export type VeAnalysisReportDto = {
 	filtered: FilterCountDto[],
 	total_samples: number,
 	used_samples: number,
+};
+
+export type VirtualDynoParamsDto = {
+	speed_channel: string,
+	rpm_channel: string,
+	mass_kg: number | null,
+	drag_coefficient: number | null,
+	frontal_area_m2: number | null,
+	rolling_resistance: number | null,
+	drivetrain_loss: number | null,
+	smoothing_window: number,
+	air_density_kg_m3: number | null,
+};
+
+export type VirtualDynoReportDto = {
+	points: DynoPointDto[],
+	conditions: DynoConditionDto[],
+	assumptions: string[],
 };
 
 /* Tauri Specta runtime */

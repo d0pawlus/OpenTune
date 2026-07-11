@@ -2,11 +2,13 @@
 import { useEffect, useLayoutEffect, useState } from "react";
 import { commands, events, type AppInfo } from "./ipc/bindings";
 import { useConnectionStore } from "./stores/connection";
+import { useDatalogStore } from "./stores/datalog";
 import { useRealtimeStore } from "./stores/realtime";
 import { Connect } from "./components/Connect";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { OfflinePanel } from "./components/offline/OfflinePanel";
 import { TunePanel } from "./components/dialogs/TunePanel";
+import { DatalogPanel } from "./components/datalog/DatalogPanel";
 import type { Theme } from "./components/gauges/GaugeCanvas";
 import { t, type Locale } from "./i18n";
 
@@ -41,9 +43,11 @@ function App() {
   // Reflect ≤30 Hz realtime frames into the reflect-only store; canvas
   // gauges read it imperatively (rAF + getState), never via React state.
   useEffect(() => {
-    const unlisten = events.realtimeFrameEvent.listen((e) =>
-      useRealtimeStore.getState().applyFrame(e.payload),
-    );
+    const unlisten = events.realtimeFrameEvent.listen((e) => {
+      if (!useDatalogStore.getState().replaying) {
+        useRealtimeStore.getState().applyFrame(e.payload);
+      }
+    });
     return () => {
       unlisten.then((f) => f());
     };
@@ -80,6 +84,8 @@ function App() {
       <Dashboard locale={locale} theme={theme} />
 
       <TunePanel locale={locale} />
+
+      <DatalogPanel locale={locale} />
 
       <div style={{ marginTop: "2rem" }}>
         <button onClick={toggleLocale}>

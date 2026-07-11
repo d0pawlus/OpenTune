@@ -12,8 +12,9 @@
 //! itself never blocks.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use opentune_datalog::{Field, Log, LogEntry, Marker, Record};
 use opentune_model::Value;
 use opentune_realtime::RealtimePoller;
 use tauri_specta::Event as _;
@@ -23,7 +24,11 @@ use crate::capture::{CaptureBuffer, CAPTURE_CAPACITY};
 #[cfg(test)]
 use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
-use crate::dto::{CaptureStatusDto, CellEditDto, DefinitionDto, FieldDiffDto, VeAnalysisReportDto};
+use crate::dto::{
+    AnomalyReportDto, AnomalyThresholdsDto, CaptureStatusDto, CellEditDto, DefinitionDto,
+    FieldDiffDto, LogDataDto, LogFormatDto, LogStatsParamsDto, LogStatsReportDto, LogStatusDto,
+    LogSummaryDto, VeAnalysisReportDto, VirtualDynoParamsDto, VirtualDynoReportDto,
+};
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use crate::session::PollFrameError;
 use ops::{build_session, link_drop, reconnect_session};
@@ -120,6 +125,48 @@ pub enum Command {
     RunVeAnalyze {
         table: String,
         reply: Reply<VeAnalysisReportDto>,
+    },
+    StartLog {
+        path: String,
+        format: LogFormatDto,
+        reply: Reply<LogStatusDto>,
+    },
+    StopLog {
+        reply: Reply<LogSummaryDto>,
+    },
+    AddLogMarker {
+        text: String,
+        reply: Reply<()>,
+    },
+    LogStatus {
+        reply: Reply<LogStatusDto>,
+    },
+    OpenLog {
+        path: String,
+        format: LogFormatDto,
+        reply: Reply<LogSummaryDto>,
+    },
+    GetLogData {
+        offset: u32,
+        limit: u32,
+        reply: Reply<LogDataDto>,
+    },
+    SaveLog {
+        path: String,
+        format: LogFormatDto,
+        reply: Reply<()>,
+    },
+    LogStats {
+        params: LogStatsParamsDto,
+        reply: Reply<LogStatsReportDto>,
+    },
+    DetectAnomaly {
+        thresholds: AnomalyThresholdsDto,
+        reply: Reply<AnomalyReportDto>,
+    },
+    VirtualDyno {
+        params: VirtualDynoParamsDto,
+        reply: Reply<VirtualDynoReportDto>,
     },
     /// Test-only: hand back the live simulator so tests can drive secl /
     /// reboot scenarios (same access the M2 session tests used directly).
@@ -229,7 +276,17 @@ struct Owner {
     poller: Option<RealtimePoller>,
     capture: Option<CaptureBuffer>,
     capturing: bool,
+    active_log: Option<ActiveLog>,
+    opened_log: Option<Log>,
     emit: Emitter,
+}
+
+struct ActiveLog {
+    path: String,
+    format: LogFormatDto,
+    log: Log,
+    started: Instant,
+    counter: u8,
 }
 
 async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
@@ -239,6 +296,8 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
         poller: None,
         capture: None,
         capturing: false,
+        active_log: None,
+        opened_log: None,
         emit,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
@@ -261,6 +320,10 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
             _ = health_tick.tick(), if owner.wants_health_check() => owner.health_tick().await,
         }
     }
+    // App/task shutdown must not silently discard an in-progress recording.
+    if owner.active_log.is_some() {
+        let _ = owner.stop_log().await;
+    }
 }
 
 impl Owner {
@@ -274,6 +337,11 @@ impl Owner {
                 let _ = reply.send(self.connect(source).await);
             }
             Command::Disconnect { reply } => {
+                let log_result = if self.active_log.is_some() {
+                    self.stop_log().await.map(|_| ())
+                } else {
+                    Ok(())
+                };
                 // An offline-origin tune must SURVIVE disconnect (design spec
                 // §"Disconnect while editing"): drop the live link but keep the
                 // session so the tune stays editable/saveable in offline mode.
@@ -295,7 +363,7 @@ impl Owner {
                 self.capture = None;
                 self.capturing = false;
                 (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(log_result);
             }
             Command::SimulateLinkDrop { reply } => {
                 let _ = reply.send(self.simulate_link_drop().await);
@@ -363,7 +431,9 @@ impl Owner {
             }
             Command::StopRealtime { reply } => {
                 self.polling = false;
-                self.poller = None;
+                if self.active_log.is_none() {
+                    self.poller = None;
+                }
                 let _ = reply.send(Ok(()));
             }
             // Start a fresh capture ring, pinned to the session's declared
@@ -425,6 +495,57 @@ impl Owner {
                 };
                 let _ = reply.send(r);
             }
+            Command::StartLog {
+                path,
+                format,
+                reply,
+            } => {
+                let _ = reply.send(self.start_log(path, format));
+            }
+            Command::StopLog { reply } => {
+                let _ = reply.send(self.stop_log().await);
+            }
+            Command::AddLogMarker { text, reply } => {
+                let _ = reply.send(self.add_log_marker(text));
+            }
+            Command::LogStatus { reply } => {
+                let _ = reply.send(Ok(self.log_status()));
+            }
+            Command::OpenLog {
+                path,
+                format,
+                reply,
+            } => {
+                let _ = reply.send(self.open_log(path, format).await);
+            }
+            Command::GetLogData {
+                offset,
+                limit,
+                reply,
+            } => {
+                let r = self
+                    .opened_log
+                    .as_ref()
+                    .ok_or_else(|| "no log opened".to_string())
+                    .and_then(|log| crate::log_bridge::slice(log, offset, limit));
+                let _ = reply.send(r);
+            }
+            Command::SaveLog {
+                path,
+                format,
+                reply,
+            } => {
+                let _ = reply.send(self.save_log(path, format).await);
+            }
+            Command::LogStats { params, reply } => {
+                let _ = reply.send(self.run_log_stats(params).await);
+            }
+            Command::DetectAnomaly { thresholds, reply } => {
+                let _ = reply.send(self.run_detect_anomaly(thresholds).await);
+            }
+            Command::VirtualDyno { params, reply } => {
+                let _ = reply.send(self.run_virtual_dyno(params).await);
+            }
             #[cfg(test)]
             Command::DebugSimulator { reply } => {
                 let r = match &self.session {
@@ -476,10 +597,10 @@ impl Owner {
         }
     }
 
-    /// True while the poll tick should fire: realtime was explicitly started
-    /// and there is a live session to poll.
+    /// True while acquisition has a consumer. UI realtime and datalogging are
+    /// independent: stopping dashboard updates must never stop an active log.
     fn wants_poll(&self) -> bool {
-        self.polling && self.session.is_some()
+        self.session.is_some() && (self.polling || self.active_log.is_some())
     }
 
     /// Probe an idle live link. During realtime, `poll_tick` is already the
@@ -523,7 +644,7 @@ impl Owner {
         };
         let mut poller = self.poller.take().unwrap_or_default();
         match tokio::task::spawn_blocking(move || {
-            let r = session.poll_frame(&mut poller);
+            let r = session.poll_frame_full(&mut poller);
             (session, poller, r)
         })
         .await
@@ -532,21 +653,25 @@ impl Owner {
                 self.session = Some(session);
                 self.poller = Some(poller);
                 let link_failed = matches!(&r, Err(PollFrameError::Link(_)));
-                if let Ok(Some(frame)) = r {
-                    // Task 8: tap the emitted frame for the capture ring
-                    // BEFORE the event conversion consumes it below (rate
-                    // note: capture.rs documents why this sees full rate).
+                if let Ok(Some((frame, emit_to_ui))) = r {
+                    // Owner-side consumers see every acquired frame, before
+                    // the UI's ≤30 Hz coalescing decision.
                     if self.capturing {
                         if let Some(buf) = self.capture.as_mut() {
                             buf.push(&frame);
                         }
                     }
-                    let channels = frame
-                        .channels
-                        .into_iter()
-                        .map(|c| (c.name, c.value))
-                        .collect();
-                    (self.emit)(OwnerEvent::Realtime(RealtimeFrameEvent { channels }));
+                    if let Some(active) = self.active_log.as_mut() {
+                        active.push(&frame);
+                    }
+                    if emit_to_ui && self.polling {
+                        let channels = frame
+                            .channels
+                            .into_iter()
+                            .map(|c| (c.name, c.value))
+                            .collect();
+                        (self.emit)(OwnerEvent::Realtime(RealtimeFrameEvent { channels }));
+                    }
                 }
                 if link_failed {
                     let _ = self.recover_link().await;
@@ -597,6 +722,9 @@ impl Owner {
     /// `Connecting`/`Connected` are emitted from inside the handshake so a
     /// slow serial connect still shows live progress either way.
     async fn connect(&mut self, source: ConnectSource) -> Result<(), String> {
+        if self.active_log.is_some() {
+            self.stop_log().await?;
+        }
         // ATTACH: an offline tune is loaded — keep it, just add the live link
         // (never overwrite the user's unsaved offline edits with an ECU read).
         if matches!(&self.session, Some(s) if s.conn.is_none() && s.tune.is_some()) {
@@ -666,6 +794,176 @@ impl Owner {
             self.polling = false;
         }
         result
+    }
+
+    fn start_log(&mut self, path: String, format: LogFormatDto) -> Result<LogStatusDto, String> {
+        if self.active_log.is_some() {
+            return Err("a log is already active".into());
+        }
+        if path.is_empty() {
+            return Err("log path must not be empty".into());
+        }
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| NOT_CONNECTED.to_owned())?;
+        let fields = session
+            .def
+            .output_channels
+            .iter()
+            .map(|channel| Field::float(channel.name(), ""))
+            .collect();
+        let mut log = Log::new(fields);
+        log.started_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u32::try_from(duration.as_secs()).unwrap_or(u32::MAX)
+            });
+        self.active_log = Some(ActiveLog {
+            path,
+            format,
+            log,
+            started: Instant::now(),
+            counter: 0,
+        });
+        // Logging requires acquisition, but does not implicitly enable UI
+        // realtime events. `wants_poll` keeps the owner ticking for the log.
+        self.poller.get_or_insert_with(RealtimePoller::default);
+        Ok(self.log_status())
+    }
+
+    async fn stop_log(&mut self) -> Result<LogSummaryDto, String> {
+        let active = self
+            .active_log
+            .take()
+            .ok_or_else(|| "no active log".to_string())?;
+        let path = active.path.clone();
+        let format = active.format;
+        let log = active.log;
+        let result = tokio::task::spawn_blocking(move || {
+            let result = write_log_path(&path, format, &log);
+            (log, result)
+        })
+        .await
+        .map_err(|error| format!("log write panicked: {error}"))?;
+        let (log, write_result) = result;
+        let summary = crate::log_bridge::summary(&log);
+        self.opened_log = Some(log);
+        if !self.polling {
+            self.poller = None;
+        }
+        write_result?;
+        Ok(summary)
+    }
+
+    fn add_log_marker(&mut self, text: String) -> Result<(), String> {
+        if !text.is_ascii() || text.len() > 49 {
+            return Err("MLG v1 marker text must be ASCII and at most 49 bytes".into());
+        }
+        let active = self
+            .active_log
+            .as_mut()
+            .ok_or_else(|| "no active log".to_string())?;
+        let timestamp_10us = active.timestamp();
+        active.log.entries.push(LogEntry::Marker(Marker {
+            counter: active.counter,
+            timestamp_10us,
+            text,
+        }));
+        active.counter = next_counter(active.counter);
+        Ok(())
+    }
+
+    fn log_status(&self) -> LogStatusDto {
+        match &self.active_log {
+            Some(active) => LogStatusDto {
+                active: true,
+                path: Some(active.path.clone()),
+                format: Some(active.format),
+                record_count: saturating_u32(active.log.records().count()),
+            },
+            None => LogStatusDto {
+                active: false,
+                path: None,
+                format: None,
+                record_count: 0,
+            },
+        }
+    }
+
+    async fn open_log(
+        &mut self,
+        path: String,
+        format: LogFormatDto,
+    ) -> Result<LogSummaryDto, String> {
+        let log = tokio::task::spawn_blocking(move || read_log_path(&path, format))
+            .await
+            .map_err(|error| format!("log read panicked: {error}"))??;
+        let summary = crate::log_bridge::summary(&log);
+        self.opened_log = Some(log);
+        Ok(summary)
+    }
+
+    async fn save_log(&mut self, path: String, format: LogFormatDto) -> Result<(), String> {
+        let log = self
+            .opened_log
+            .clone()
+            .ok_or_else(|| "no log opened".to_string())?;
+        tokio::task::spawn_blocking(move || write_log_path(&path, format, &log))
+            .await
+            .map_err(|error| format!("log write panicked: {error}"))?
+    }
+
+    async fn run_log_stats(
+        &mut self,
+        params: LogStatsParamsDto,
+    ) -> Result<LogStatsReportDto, String> {
+        let samples = self.opened_samples()?;
+        tokio::task::spawn_blocking(move || {
+            let params = crate::log_bridge::stats_params(params);
+            opentune_analysis::log_stats(&samples, &params)
+                .map(crate::log_bridge::stats_report)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("log stats panicked: {error}"))?
+    }
+
+    async fn run_detect_anomaly(
+        &mut self,
+        thresholds: AnomalyThresholdsDto,
+    ) -> Result<AnomalyReportDto, String> {
+        let samples = self.opened_samples()?;
+        tokio::task::spawn_blocking(move || {
+            let thresholds = crate::log_bridge::anomaly_params(thresholds);
+            opentune_analysis::detect_anomaly(&samples, &thresholds)
+                .map(crate::log_bridge::anomaly_report)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("anomaly analysis panicked: {error}"))?
+    }
+
+    async fn run_virtual_dyno(
+        &mut self,
+        params: VirtualDynoParamsDto,
+    ) -> Result<VirtualDynoReportDto, String> {
+        let samples = self.opened_samples()?;
+        tokio::task::spawn_blocking(move || {
+            let params = crate::log_bridge::dyno_params(params);
+            opentune_analysis::virtual_dyno(&samples, &params)
+                .map(crate::log_bridge::dyno_report)
+                .map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| format!("virtual dyno panicked: {error}"))?
+    }
+
+    fn opened_samples(&self) -> Result<opentune_analysis::SampleSet, String> {
+        self.opened_log
+            .as_ref()
+            .map(crate::log_bridge::to_samples)
+            .ok_or_else(|| "no log opened".to_string())
     }
 
     /// Merge picks, then emit the tune's *actual* dirty state — read after
@@ -739,6 +1037,61 @@ impl Owner {
     }
 }
 
+impl ActiveLog {
+    fn timestamp(&self) -> u64 {
+        let ticks = self.started.elapsed().as_micros() / 10;
+        u64::try_from(ticks).unwrap_or(u64::MAX)
+    }
+
+    fn push(&mut self, frame: &opentune_realtime::RealtimeFrame) {
+        let values = self
+            .log
+            .fields
+            .iter()
+            .map(|field| {
+                frame
+                    .channels
+                    .iter()
+                    .find(|channel| channel.name == field.name)
+                    .map_or(f64::NAN, |channel| channel.value)
+            })
+            .collect();
+        self.log.entries.push(LogEntry::Record(Record {
+            counter: self.counter,
+            timestamp_10us: self.timestamp(),
+            values,
+        }));
+        self.counter = next_counter(self.counter);
+    }
+}
+
+fn next_counter(counter: u8) -> u8 {
+    if counter == 254 {
+        0
+    } else {
+        counter + 1
+    }
+}
+
+fn read_log_path(path: &str, format: LogFormatDto) -> Result<Log, String> {
+    let file = std::fs::File::open(path).map_err(|error| format!("{path}: {error}"))?;
+    opentune_datalog::read_log(std::io::BufReader::new(file), format.into())
+        .map_err(|error| error.to_string())
+}
+
+fn write_log_path(path: &str, format: LogFormatDto, log: &Log) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|error| format!("{path}: {error}"))?;
+    let mut writer = std::io::BufWriter::new(file);
+    opentune_datalog::write_log(log, &mut writer, format.into())
+        .map_err(|error| error.to_string())?;
+    use std::io::Write as _;
+    writer.flush().map_err(|error| error.to_string())
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
 #[path = "owner_ops.rs"]
 mod ops;
 
@@ -749,3 +1102,7 @@ mod tests;
 #[cfg(test)]
 #[path = "owner_analysis_tests.rs"]
 mod analysis_tests;
+
+#[cfg(test)]
+#[path = "owner_log_tests.rs"]
+mod log_tests;

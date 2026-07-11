@@ -146,35 +146,41 @@ data-driven correction, with a clear view of which logged data drove each
 cell." Interactive `tauri dev` GUI walkthrough not exercised this pass (no
 native-app driver available) — see `docs/notes/m4-decisions.md`.
 
-## M5 — Datalogging & analysis ⬜
+## M5 — Datalogging & analysis ✅
 
 Goal: record, replay, and analyze.
 
-- ⬜ **`analysis` crate (deterministic core):** pure, side-effect-free,
+- ✅ **`analysis` crate (deterministic core):** pure, side-effect-free,
   deterministic, auditable capabilities — `ve_analyze`, `virtual_dyno`,
   `log_stats`, `detect_anomaly`. One engine consumed by AutoTune, the UI, and
   (later) the AI layer. See the
   [design doc](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
-- ⬜ **Virtual dyno:** `analysis::virtual_dyno` estimates WHP/torque curves from a
+- ✅ **Virtual dyno:** `analysis::virtual_dyno` estimates WHP/torque curves from a
   log + vehicle parameters; deterministic and auditable (shows conditions and
   assumptions). UI dyno view consumes it.
-- ⬜ `datalog`: CSV writer first, then MLG read/write (port from an open reference;
+- ✅ `datalog`: CSV writer first, then MLG read/write (port from an open reference;
   note only MLG v1 has a published byte-level spec — see
   [ADR-0006](adr/0006-reuse-existing-parsers.md) and the research doc).
-- ⬜ Frontend datalog viewer (uPlot time-series + scatter), playback synced to
+- ✅ Frontend datalog viewer (uPlot time-series + scatter), playback synced to
   the dashboard.
-- ⬜ **Two-log scatter compare (missing in MegaLogViewer):** overlay/compare two
+- ✅ **Two-log scatter compare (missing in MegaLogViewer):** overlay/compare two
   logs in scatter and time-series views with shared, user-controllable axes — the
   thing users currently export to Excel for.
-- ⬜ **GUI math-channel library (vs TS raw string expressions):** common derived
+- ✅ **GUI math-channel library (vs TS raw string expressions):** common derived
   channels (derivatives, smoothing/filters, data-gating) from a UI, not just a
   free-text expression box.
-- ⬜ Analysis tooling (markers, export).
-- ⬜ **Performance target:** smooth zoom/pan on 100k+ record logs (TS/MLV's known
+- ✅ Analysis tooling (markers, export).
+- ✅ **Performance target:** smooth zoom/pan on 100k+ record logs (TS/MLV's known
   weak spot) — validate against large fixtures.
 
 **Demo:** record a session, replay it, compare two logs, and build a derived
 channel — all without leaving the app or touching Excel.
+
+Implemented with the deterministic analysis core, CSV/MLG v1 round-trips,
+columnar paged IPC, lazy-loaded uPlot charts, A/B overlays, dashboard-synchronised
+playback, GUI-derived channels, markers/export, log statistics, anomaly detection,
+and an auditable virtual dyno. The 100k-record path is test-pinned; see
+[`docs/notes/m5-decisions.md`](notes/m5-decisions.md).
 
 ## M6 — Interop, polish & first release ⬜
 
