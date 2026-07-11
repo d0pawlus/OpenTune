@@ -447,6 +447,55 @@ fn set_cells_rejects_out_of_bounds_and_non_array_untouched() {
 }
 
 #[test]
+fn set_cells_untouched_out_of_range_cell_does_not_block_other_edits() {
+    // M4 final-review fix wave item 3: an UNTOUCHED stored cell outside the
+    // declared [low, high] range (stale tune vs. a newer INI's bounds is a
+    // legitimate real-world state — `load_page` never validates) must not
+    // fail a gesture that edits a DIFFERENT, in-range cell.
+    let mut tune = test_tune();
+    let mut page = vec![0u8; PAGE_SIZE];
+    page[5] = 200; // veTable[5] decodes to 200.0 — outside the [0,100] range
+    tune.load_page(1, page);
+
+    tune.set_cells("veTable", &[(0, 55.0)])
+        .expect("an untouched out-of-range cell must not block edits to other cells");
+
+    let Value::Array(after) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    assert_eq!(after[0], 55.0, "touched cell applied");
+    assert_eq!(
+        tune.page_bytes(1)[5],
+        200,
+        "untouched out-of-range cell's bytes stay byte-identical"
+    );
+    assert!(tune.undo(), "one gesture = one undo step");
+    let Value::Array(undone) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    assert_eq!(undone[0], 0.0, "undo restores the touched cell");
+    assert_eq!(
+        tune.page_bytes(1)[5],
+        200,
+        "untouched out-of-range cell survives undo too"
+    );
+
+    // Touching the OOR cell itself with another OOR value still errors.
+    let mut tune2 = test_tune();
+    let mut page2 = vec![0u8; PAGE_SIZE];
+    page2[5] = 200;
+    tune2.load_page(1, page2);
+    assert_eq!(
+        tune2.set_cells("veTable", &[(5, 150.0)]),
+        Err(ModelError::OutOfRange {
+            name: "veTable".to_string(),
+            value: 150.0
+        }),
+        "touching the OOR cell with another OOR value still errors"
+    );
+}
+
+#[test]
 fn set_cells_value_above_high_is_out_of_range_and_touches_nothing() {
     // Range violations surface as `ModelError::OutOfRange` from
     // `encode_scalar` — `set_cells` shares `set`'s per-element checks.

@@ -151,50 +151,65 @@ impl Tune {
         let after = self.encode_value(&c, &value)?;
 
         let index = self.page_index(c.page);
-        let range = c.offset..c.offset + after.len();
-        let before = self.pages[index][range.clone()].to_vec();
-        if before == after {
-            return Ok(());
-        }
-        self.pages[index][range].copy_from_slice(&after);
-        if !self.dirty.contains(&c.page) {
-            self.dirty.push(c.page);
-        }
-        self.undo.push(Edit {
-            page: c.page,
-            offset: c.offset,
-            before,
-            after,
-        });
-        self.redo.clear();
+        let before = self.pages[index][c.offset..c.offset + after.len()].to_vec();
+        self.commit_bytes(c.page, c.offset, before, after);
         Ok(())
     }
 
     /// Set flat row-major cells of a named array constant. ONE undo [`Edit`]
-    /// per call (a paste/smooth gesture is one undo step). Validates every
-    /// index/value before touching any byte.
+    /// per call (a paste/smooth gesture is one undo step).
+    ///
+    /// Validates and encodes only the TOUCHED `(index, value)` pairs before
+    /// touching any byte — an untouched stored cell outside the constant's
+    /// declared `[low, high]` (a stale tune vs. a newer INI's bounds is a
+    /// legitimate state; `load_page` never range-checks) must never fail a
+    /// gesture that doesn't touch it, and its bytes stay byte-identical.
     pub fn set_cells(&mut self, name: &str, cells: &[(u32, f64)]) -> Result<(), ModelError> {
         if cells.is_empty() {
             return Ok(());
         }
-        let Value::Array(mut xs) = self.get(name)? else {
-            return Err(ModelError::TypeMismatch(format!(
-                "`{name}` is not an array"
-            )));
+        let c = self
+            .def
+            .constant(name)
+            .ok_or_else(|| ModelError::UnknownConstant(name.to_string()))?
+            .clone();
+        let (elem, shape) = match &c.kind {
+            ConstantKind::Array { elem, shape } => (*elem, *shape),
+            _ => {
+                return Err(ModelError::TypeMismatch(format!(
+                    "`{name}` is not an array"
+                )))
+            }
         };
+        let len = shape.rows * shape.cols;
+        let width = codec::width(elem);
+        let endian = self.def.comms.endianness;
+        let scaling = self.scaling(&c)?;
+
+        // Validate + encode only the touched indices — nothing is written
+        // to `self.pages` until every touched cell has passed.
+        let mut touched: Vec<(usize, Vec<u8>)> = Vec::with_capacity(cells.len());
         for (index, value) in cells {
             let i = *index as usize;
-            if i >= xs.len() {
+            if i >= len {
                 return Err(ModelError::TypeMismatch(format!(
-                    "`{name}`: cell index {i} out of bounds ({} elements)",
-                    xs.len()
+                    "`{name}`: cell index {i} out of bounds ({len} elements)"
                 )));
             }
-            xs[i] = *value;
+            let bytes = codec::encode_scalar(&c.name, &scaling, *value, elem, endian)?;
+            touched.push((i, bytes));
         }
-        // Re-encode through `set`: shares range-checking (per element, lo/hi),
-        // dirty tracking, and records exactly ONE undo Edit for the gesture.
-        self.set(name, Value::Array(xs))
+
+        let index = self.page_index(c.page);
+        let region_len = len * width;
+        let before = self.pages[index][c.offset..c.offset + region_len].to_vec();
+        let mut after = before.clone();
+        for (i, bytes) in &touched {
+            let start = i * width;
+            after[start..start + width].copy_from_slice(bytes);
+        }
+        self.commit_bytes(c.page, c.offset, before, after);
+        Ok(())
     }
 
     /// Undo the most recent edit. Returns `false` if there was nothing to
@@ -301,6 +316,28 @@ impl Tune {
             c.page
         );
         &page[c.offset..c.offset + len]
+    }
+
+    /// Splice `after` into a constant's page region and record one undo
+    /// [`Edit`], unless `after` is byte-identical to `before` (a true no-op:
+    /// no dirty flag, no undo entry) — shared by [`Tune::set`] and
+    /// [`Tune::set_cells`].
+    fn commit_bytes(&mut self, page: u16, offset: usize, before: Vec<u8>, after: Vec<u8>) {
+        if before == after {
+            return;
+        }
+        let index = self.page_index(page);
+        self.pages[index][offset..offset + after.len()].copy_from_slice(&after);
+        if !self.dirty.contains(&page) {
+            self.dirty.push(page);
+        }
+        self.undo.push(Edit {
+            page,
+            offset,
+            before,
+            after,
+        });
+        self.redo.clear();
     }
 
     /// Splice `bytes` into a page and mark it dirty (shared by undo/redo).
