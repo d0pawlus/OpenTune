@@ -26,7 +26,7 @@ use opentune_realtime::{RealtimeError, RealtimeFrame, RealtimePoller};
 use opentune_transport::Transport;
 
 use crate::connection::{ActiveConnection, Session};
-use crate::dto::DefinitionDto;
+use crate::dto::{DefinitionDto, ResolvedGaugeBoundsDto};
 use crate::events::TuneDirtyEvent;
 
 pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
@@ -72,6 +72,34 @@ impl Session {
         Ok(names
             .iter()
             .map(|n| tune.get(n).unwrap_or(Value::Scalar(f64::NAN)))
+            .collect())
+    }
+
+    /// Resolve tune-dependent gauge bounds in the backend expression engine.
+    ///
+    /// Bounds fail open independently. The frontend receives `None` for an
+    /// unsupported/unknown expression and renders range-dependent geometry
+    /// neutrally instead of inventing a misleading 0..100 scale.
+    pub fn resolve_gauge_bounds(&self) -> Result<Vec<ResolvedGaugeBoundsDto>, String> {
+        let tune = self.tune.as_ref().ok_or_else(|| NO_TUNE.to_string())?;
+        let resolve = |owner: &str, number: &opentune_ini::Number| {
+            tune.resolve_number(owner, number)
+                .ok()
+                .filter(|value| value.is_finite())
+        };
+        Ok(self
+            .def
+            .gauges
+            .iter()
+            .map(|gauge| ResolvedGaugeBoundsDto {
+                name: gauge.name.clone(),
+                low: resolve(&gauge.name, &gauge.low),
+                high: resolve(&gauge.name, &gauge.high),
+                lo_danger: resolve(&gauge.name, &gauge.lo_danger),
+                lo_warn: resolve(&gauge.name, &gauge.lo_warn),
+                hi_warn: resolve(&gauge.name, &gauge.hi_warn),
+                hi_danger: resolve(&gauge.name, &gauge.hi_danger),
+            })
             .collect())
     }
 
@@ -135,14 +163,16 @@ impl Session {
 
         // Validate + compute target bytes without touching the real tune.
         let mut probe = tune.clone();
-        probe.set(name, value.clone()).map_err(fmt_model_err)?;
+        probe.set(name, value).map_err(fmt_model_err)?;
         let deltas = page_deltas(tune, &probe, &def.pages);
 
         // Reach the wire. If this fails, the real tune is still untouched.
         write_deltas(conn, &def.comms, &deltas)?;
 
-        // Commit to the model now that the ECU has the bytes.
-        tune.set(name, value).map_err(fmt_model_err)?;
+        // Commit the already-validated probe verbatim. Re-running `set`
+        // after the wire write would create a theoretical divergence window
+        // if a future state-dependent validator produced a different result.
+        *tune = probe;
         Ok(dirty_event(tune))
     }
 

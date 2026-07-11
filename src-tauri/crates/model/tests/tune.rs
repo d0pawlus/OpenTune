@@ -371,6 +371,33 @@ fn enum_index_beyond_options_or_capacity_is_out_of_range() {
 }
 
 #[test]
+fn rejected_bits_write_preserves_all_storage_bytes() {
+    let mut mode = scalar("mode", ScalarType::U16, 0, 1.0, 0.0, 0.0);
+    mode.kind = ConstantKind::Bits {
+        storage: ScalarType::U16,
+        bit_lo: 4,
+        bit_hi: 5,
+        options: vec!["Zero".to_string(), "One".to_string()],
+    };
+    let mut t = tune(Endianness::Little, vec![mode]);
+    load1(&mut t, &[0xA5, 0x5A]);
+    let before = t.page_bytes(1).to_vec();
+
+    assert_eq!(
+        t.set("mode", Value::Enum(2)),
+        Err(ModelError::OutOfRange {
+            name: "mode".to_string(),
+            value: 2.0
+        })
+    );
+    assert_eq!(
+        t.page_bytes(1),
+        before,
+        "rejected enum writes must not alter neighboring or field bits"
+    );
+}
+
+#[test]
 fn text_longer_than_declared_len_is_type_mismatch() {
     let mut c = scalar("note", ScalarType::U08, 0, 1.0, 0.0, 0.0);
     c.kind = ConstantKind::Text { len: 4 };

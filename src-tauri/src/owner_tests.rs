@@ -43,6 +43,12 @@ async fn simulator(tx: &OwnerHandle) -> Arc<opentune_simulator::EcuSimulator> {
         .expect("simulator connection present")
 }
 
+async fn owner_state(tx: &OwnerHandle) -> DebugOwnerState {
+    send(tx, |reply| Command::DebugState { reply })
+        .await
+        .expect("owner state")
+}
+
 /// The `reqFuel` value currently reported by the owner's tune.
 async fn req_fuel(tx: &OwnerHandle) -> Value {
     let values = send(tx, |reply| Command::GetValues {
@@ -207,6 +213,10 @@ async fn reboot_on_reconnect_invalidates_and_rereads_tune() {
     })
     .await
     .expect("unburned 15.0 on top");
+    send(&tx, |reply| Command::SnapshotTune { reply })
+        .await
+        .expect("snapshot pre-reboot tune");
+    assert!(owner_state(&tx).await.snapshot_present);
 
     let sim = simulator(&tx).await;
 
@@ -235,6 +245,10 @@ async fn reboot_on_reconnect_invalidates_and_rereads_tune() {
         dirty_events_since(&events, before_drop),
         vec![false],
         "the re-read must emit exactly one clean dirty event"
+    );
+    assert!(
+        !owner_state(&tx).await.snapshot_present,
+        "a reboot must always invalidate the pre-reboot snapshot"
     );
 }
 
@@ -291,16 +305,228 @@ async fn commands_error_when_not_connected() {
 }
 
 #[tokio::test]
-async fn realtime_flag_commands_reply_ok() {
+async fn start_realtime_errors_without_a_session() {
     let (tx, _events) = test_owner();
-    // Explicit start/stop stay valid without a session: the flag arms the
-    // poll tick, which itself no-ops until a session exists.
-    send(&tx, |reply| Command::StartRealtime { reply })
+    let err = send(&tx, |reply| Command::StartRealtime { reply })
         .await
-        .expect("start_realtime replies Ok even without a session");
+        .expect_err("start_realtime must not silently arm without a session");
+    assert!(
+        err.contains("not connected") && err.contains("realtime"),
+        "clear realtime/session diagnostic, got: {err}"
+    );
+    let state = owner_state(&tx).await;
+    assert!(!state.polling);
+    assert!(!state.poller_present);
+
+    // Stop remains idempotent so UI cleanup is always safe.
     send(&tx, |reply| Command::StopRealtime { reply })
         .await
-        .expect("stop_realtime replies Ok even without a session");
+        .expect("stop_realtime remains idempotent");
+}
+
+#[tokio::test]
+async fn panicked_session_operation_disconnects_and_disarms_realtime() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    let before_panic = events.lock().unwrap().len();
+    let err = send(&tx, |reply| Command::DebugPanicSessionOperation { reply })
+        .await
+        .expect_err("forced panic must reach the caller as an error");
+    assert!(err.contains("panicked"), "got: {err}");
+
+    let state = owner_state(&tx).await;
+    assert!(!state.session_present, "panicked session must be discarded");
+    assert!(!state.polling, "polling must be disarmed");
+    assert!(!state.poller_present, "poller state must be cleared");
+    assert!(
+        events.lock().unwrap()[before_panic..].iter().any(|event| {
+            matches!(
+                event,
+                OwnerEvent::Connection(ConnectionStateEvent::Disconnected)
+            )
+        }),
+        "panic must emit Disconnected"
+    );
+
+    let after_panic = events.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        !events.lock().unwrap()[after_panic..]
+            .iter()
+            .any(|event| matches!(event, OwnerEvent::Realtime(_))),
+        "no poll frames may survive panic cleanup"
+    );
+}
+
+#[tokio::test]
+async fn failed_reboot_reread_invalidates_tune_and_snapshot_but_keeps_link() {
+    let (tx, events) = test_owner();
+    connect_and_load(&tx).await;
+
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("set burned value");
+    send(&tx, |reply| Command::Burn { reply })
+        .await
+        .expect("burn");
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(15.0),
+        reply,
+    })
+    .await
+    .expect("set stale unburned value");
+    send(&tx, |reply| Command::SnapshotTune { reply })
+        .await
+        .expect("snapshot");
+
+    let sim = simulator(&tx).await;
+    sim.tick_engine(std::time::Duration::from_secs(50));
+    send(&tx, |reply| Command::SimulateLinkDrop { reply })
+        .await
+        .expect("seed reconnect baseline");
+
+    send(&tx, |reply| Command::DebugFailNextRebootTuneRead { reply })
+        .await
+        .expect("arm reread failure");
+    sim.reboot();
+    let before_drop = events.lock().unwrap().len();
+    let err = send(&tx, |reply| Command::SimulateLinkDrop { reply })
+        .await
+        .expect_err("forced reboot tune reread must fail");
+    assert!(err.contains("tune re-read after ECU reboot failed"));
+
+    let state = owner_state(&tx).await;
+    assert!(state.session_present, "reconnected live link must survive");
+    assert!(
+        !state.tune_loaded,
+        "stale pre-reboot tune must be invalidated"
+    );
+    assert!(
+        !state.snapshot_present,
+        "stale pre-reboot snapshot must be invalidated"
+    );
+    let values_err = send(&tx, |reply| Command::GetValues {
+        names: vec!["reqFuel".into()],
+        reply,
+    })
+    .await
+    .expect_err("invalidated tune must not remain readable");
+    assert!(values_err.contains("no tune loaded"), "got: {values_err}");
+    let _ = simulator(&tx).await;
+    assert!(
+        events.lock().unwrap()[before_drop..].iter().any(|event| {
+            matches!(
+                event,
+                OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+            )
+        }),
+        "the reconnect itself must remain live"
+    );
+
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("live link still permits realtime");
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
+}
+
+#[tokio::test]
+async fn polling_and_commands_are_serialized_by_the_owner() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let held_owner = tx.clone();
+    let held = tokio::spawn(async move {
+        send(&held_owner, |reply| Command::DebugHoldSessionOperation {
+            started: started_tx,
+            release: release_rx,
+            reply,
+        })
+        .await
+    });
+    started_rx.await.expect("held command started");
+
+    let while_held = events.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        !events.lock().unwrap()[while_held..]
+            .iter()
+            .any(|event| matches!(event, OwnerEvent::Realtime(_))),
+        "polling must not interleave with an in-flight command"
+    );
+
+    release_tx.send(()).expect("release held command");
+    held.await
+        .expect("held request task")
+        .expect("held command completes");
+    let resumed_mark = events.lock().unwrap().len();
+    let _ = await_frame_since(&events, resumed_mark).await;
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
+}
+
+#[tokio::test]
+async fn request_reports_owner_gone_and_owner_queue_applies_backpressure() {
+    let (dead_tx, dead_rx) = mpsc::channel(1);
+    drop(dead_rx);
+    let err = request(&dead_tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect_err("closed owner channel");
+    assert_eq!(err, OWNER_GONE);
+
+    let (tx, _events) = test_owner();
+    connect_and_load(&tx).await;
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let held_owner = tx.clone();
+    let held = tokio::spawn(async move {
+        send(&held_owner, |reply| Command::DebugHoldSessionOperation {
+            started: started_tx,
+            release: release_rx,
+            reply,
+        })
+        .await
+    });
+    started_rx.await.expect("held command started");
+
+    for _ in 0..32 {
+        let (reply, _rx) = oneshot::channel();
+        tx.try_send(Command::StopRealtime { reply })
+            .expect("bounded owner queue has advertised capacity");
+    }
+    let (reply, _rx) = oneshot::channel();
+    assert!(
+        matches!(
+            tx.try_send(Command::StopRealtime { reply }),
+            Err(mpsc::error::TrySendError::Full(_))
+        ),
+        "the 33rd queued command must see explicit backpressure"
+    );
+
+    release_tx.send(()).expect("release held command");
+    held.await
+        .expect("held request task")
+        .expect("held command completes");
 }
 
 // ── 6.5 the poll tick: decode → coalesce → emit ─────────────────────────────

@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { create } from "zustand";
 import { commands } from "../ipc/bindings";
-import type { DefinitionDto, TuneDirtyEvent, Value } from "../ipc/bindings";
+import type {
+  DefinitionDto,
+  ResolvedGaugeBoundsDto,
+  TuneDirtyEvent,
+  Value,
+} from "../ipc/bindings";
 
 interface TuneStore {
   /** The definition being rendered, or `null` before it is loaded. */
   definition: DefinitionDto | null;
   /** Current physical values keyed by constant name. */
   values: Record<string, Value>;
+  /** Tune-resolved gauge bounds keyed by gauge name. */
+  gaugeBounds: Record<string, ResolvedGaugeBoundsDto>;
   /**
    * Whether RAM diverges from flash ("modified, not burned"). The backend is
    * the single source of truth — this only ever changes via {@link applyDirty}
@@ -21,6 +28,7 @@ interface TuneStore {
 
   setDefinition: (definition: DefinitionDto | null) => void;
   setValues: (values: Record<string, Value>) => void;
+  setGaugeBounds: (bounds: ResolvedGaugeBoundsDto[]) => void;
   setActiveDialog: (activeDialog: string | null) => void;
 
   /** Reflect a backend `tune_dirty` event. */
@@ -39,10 +47,16 @@ interface TuneStore {
 
 const INITIAL: Pick<
   TuneStore,
-  "definition" | "values" | "dirty" | "dirtyPages" | "activeDialog"
+  | "definition"
+  | "values"
+  | "gaugeBounds"
+  | "dirty"
+  | "dirtyPages"
+  | "activeDialog"
 > = {
   definition: null,
   values: {},
+  gaugeBounds: {},
   dirty: false,
   dirtyPages: [],
   activeDialog: null,
@@ -53,6 +67,10 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
 
   setDefinition: (definition) => set({ definition }),
   setValues: (values) => set({ values }),
+  setGaugeBounds: (bounds) =>
+    set({
+      gaugeBounds: Object.fromEntries(bounds.map((bound) => [bound.name, bound])),
+    }),
   setActiveDialog: (activeDialog) => set({ activeDialog }),
 
   applyDirty: (event) =>

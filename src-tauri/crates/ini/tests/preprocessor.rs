@@ -16,7 +16,7 @@
 //! honoring it would require a filesystem-aware API this crate does not
 //! have. This is a known, documented limitation.
 
-use opentune_ini::preprocess;
+use opentune_ini::{parse_definition, preprocess};
 use std::collections::HashSet;
 
 fn symbols(names: &[&str]) -> HashSet<String> {
@@ -105,4 +105,51 @@ fn passthrough_lines_outside_any_directive_are_kept_verbatim() {
     let ini = "[Constants]\nplain = 1\n";
     let out = preprocess(ini, &symbols(&[]));
     assert_eq!(out.trim(), "[Constants]\nplain = 1".trim());
+}
+
+fn parseable_ini_with(trailing: &str) -> String {
+    format!(
+        r#"[MegaTune]
+signature = "test"
+queryCommand = "Q"
+versionInfo = "S"
+ochGetCommand = "r"
+pageReadCommand = "p"
+pageValueWrite = "w"
+burnCommand = "b"
+blockingFactor = 1
+blockReadTimeout = 1
+
+[Constants]
+pageSize = 1
+page = 1
+
+{trailing}
+"#
+    )
+}
+
+#[test]
+fn unmatched_preprocessor_directives_produce_pointed_diagnostics() {
+    let ini = parseable_ini_with("#endif\n#else\n");
+    let def = parse_definition(&ini).expect("unmatched directives should degrade diagnostically");
+    assert!(def.diagnostics.iter().any(|diagnostic| {
+        diagnostic.section == "Preprocessor"
+            && diagnostic.detail.contains("unmatched #endif")
+            && diagnostic.detail.contains("line")
+    }));
+    assert!(def.diagnostics.iter().any(|diagnostic| {
+        diagnostic.section == "Preprocessor" && diagnostic.detail.contains("unmatched #else")
+    }));
+}
+
+#[test]
+fn unclosed_preprocessor_block_produces_opener_diagnostic() {
+    let ini = parseable_ini_with("#if NEVER_DEFINED\nhidden = 1\n");
+    let def = parse_definition(&ini).expect("unclosed block should degrade diagnostically");
+    assert!(def.diagnostics.iter().any(|diagnostic| {
+        diagnostic.section == "Preprocessor"
+            && diagnostic.detail.contains("unclosed #if")
+            && diagnostic.detail.contains("missing #endif")
+    }));
 }

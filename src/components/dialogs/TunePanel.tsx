@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events } from "../../ipc/bindings";
 import type { DefinitionDto, Value } from "../../ipc/bindings";
 import { isLinkAlive, useConnectionStore } from "../../stores/connection";
@@ -53,6 +53,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
 
   const [conditions, setConditions] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const refreshGeneration = useRef(0);
 
   const constantsByName = definition
     ? Object.fromEntries(definition.constants.map((c) => [c.name, c]))
@@ -60,17 +61,31 @@ export function TunePanel({ locale }: { locale: Locale }) {
 
   // Re-read all values + re-evaluate all conditions from the backend.
   const refresh = useCallback(async (def: DefinitionDto) => {
+    const generation = ++refreshGeneration.current;
     const names = def.constants.map((c) => c.name);
     const valuesRes = await commands.getValues(names);
-    if (valuesRes.status === "ok") {
+    if (
+      valuesRes.status === "ok" &&
+      generation === refreshGeneration.current
+    ) {
       const map: Record<string, (typeof valuesRes.data)[number]> = {};
       names.forEach((name, i) => (map[name] = valuesRes.data[i]));
       useTuneStore.getState().setValues(map);
     }
+    const boundsRes = await commands.resolveGaugeBounds();
+    if (
+      boundsRes.status === "ok" &&
+      generation === refreshGeneration.current
+    ) {
+      useTuneStore.getState().setGaugeBounds(boundsRes.data);
+    }
     const exprs = conditionExprs(def);
     if (exprs.length > 0) {
       const condRes = await commands.evalConditions(exprs);
-      if (condRes.status === "ok") {
+      if (
+        condRes.status === "ok" &&
+        generation === refreshGeneration.current
+      ) {
         const map: Record<string, boolean> = {};
         exprs.forEach((expr, i) => (map[expr] = condRes.data[i]));
         setConditions(map);
@@ -89,6 +104,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
   // this effect untouched — definition/values/dirty simply survive the blip.
   useEffect(() => {
     if (!linkAlive) {
+      refreshGeneration.current += 1;
       useTuneStore.getState().reset();
       return;
     }
@@ -100,17 +116,21 @@ export function TunePanel({ locale }: { locale: Locale }) {
         return;
       }
       const def = defRes.data;
-      useTuneStore.getState().setDefinition(def);
-      const firstDialog =
-        def.menus[0]?.items[0]?.dialog ?? def.dialogs[0]?.name ?? null;
-      useTuneStore.getState().setActiveDialog(firstDialog);
-
       const loadRes = await commands.loadTune();
       if (loadRes.status === "error") {
-        setError(loadRes.error);
+        if (!cancelled) {
+          useTuneStore.getState().reset();
+          setError(loadRes.error);
+        }
         return;
       }
-      if (!cancelled) await refresh(def);
+      if (!cancelled) {
+        useTuneStore.getState().setDefinition(def);
+        const firstDialog =
+          def.menus[0]?.items[0]?.dialog ?? def.dialogs[0]?.name ?? null;
+        useTuneStore.getState().setActiveDialog(firstDialog);
+        await refresh(def);
+      }
     })();
     return () => {
       cancelled = true;
@@ -242,7 +262,10 @@ export function TunePanel({ locale }: { locale: Locale }) {
         </div>
       </div>
 
-      <TuneDiff locale={locale} />
+      <TuneDiff
+        locale={locale}
+        onAfterMerge={() => (definition ? refresh(definition) : Promise.resolve())}
+      />
     </section>
   );
 }

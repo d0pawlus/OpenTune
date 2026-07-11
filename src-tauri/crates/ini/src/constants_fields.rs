@@ -125,6 +125,14 @@ pub(crate) fn parse_number(field: &str) -> Number {
     }
 }
 
+fn number_or_default(fields: &[String], index: usize, default: f64) -> Number {
+    fields
+        .get(index)
+        .filter(|field| !field.trim().is_empty())
+        .map(|field| parse_number(field))
+        .unwrap_or(Number::Lit(default))
+}
+
 pub(crate) fn parse_scalar_type(s: &str) -> Option<ScalarType> {
     match s.trim() {
         "U08" => Some(ScalarType::U08),
@@ -145,6 +153,21 @@ pub(crate) fn scalar_width(t: ScalarType) -> usize {
         ScalarType::U16 | ScalarType::S16 => 2,
         ScalarType::U32 | ScalarType::S32 | ScalarType::F32 => 4,
     }
+}
+
+pub(crate) fn array_byte_size(name: &str, elem: ScalarType, shape: Shape) -> crate::Result<usize> {
+    shape
+        .rows
+        .checked_mul(shape.cols)
+        .and_then(|elements| elements.checked_mul(scalar_width(elem)))
+        .ok_or_else(|| invalid(name, "array shape/byte size overflows platform limits"))
+}
+
+fn checked_running_offset(name: &str, offset: usize, size: usize) -> crate::Result<OffsetCounter> {
+    offset
+        .checked_add(size)
+        .map(OffsetCounter::Known)
+        .ok_or_else(|| invalid(name, "offset + byte size overflows platform limits"))
 }
 
 /// Parse the `[RxC]` / `[N]` array shape syntax. `[N]` is a 1-D array of N
@@ -270,28 +293,16 @@ fn parse_scalar(
         None => return Err(invalid(name, "unparseable offset")),
     };
     let units = fields.get(3).map(|s| unquote(s)).unwrap_or_default();
-    let scale = fields
-        .get(4)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(1.0));
-    let translate = fields
-        .get(5)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let low = fields
-        .get(6)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let high = fields
-        .get(7)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
+    let scale = number_or_default(fields, 4, 1.0);
+    let translate = number_or_default(fields, 5, 0.0);
+    let low = number_or_default(fields, 6, 0.0);
+    let high = number_or_default(fields, 7, 0.0);
     let digits = fields
         .get(8)
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(scalar_type));
+    *running_offset = checked_running_offset(name, offset, scalar_width(scalar_type))?;
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -315,22 +326,10 @@ fn parse_scalar_no_offset(name: &str, fields: &[String]) -> crate::Result<Consta
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised scalar type"))?;
     let units = fields.get(2).map(|s| unquote(s)).unwrap_or_default();
-    let scale = fields
-        .get(3)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(1.0));
-    let translate = fields
-        .get(4)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let low = fields
-        .get(5)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let high = fields
-        .get(6)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
+    let scale = number_or_default(fields, 3, 1.0);
+    let translate = number_or_default(fields, 4, 0.0);
+    let low = number_or_default(fields, 5, 0.0);
+    let high = number_or_default(fields, 6, 0.0);
     let digits = fields
         .get(7)
         .and_then(|s| s.trim().parse::<u8>().ok())
@@ -374,28 +373,17 @@ fn parse_array(
         .and_then(|s| parse_shape(s))
         .ok_or_else(|| invalid(name, "unparseable array shape"))?;
     let units = fields.get(4).map(|s| unquote(s)).unwrap_or_default();
-    let scale = fields
-        .get(5)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(1.0));
-    let translate = fields
-        .get(6)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let low = fields
-        .get(7)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
-    let high = fields
-        .get(8)
-        .map(|s| parse_number(s))
-        .unwrap_or(Number::Lit(0.0));
+    let scale = number_or_default(fields, 5, 1.0);
+    let translate = number_or_default(fields, 6, 0.0);
+    let low = number_or_default(fields, 7, 0.0);
+    let high = number_or_default(fields, 8, 0.0);
     let digits = fields
         .get(9)
         .and_then(|s| s.trim().parse::<u8>().ok())
         .unwrap_or(0);
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(elem) * shape.rows * shape.cols);
+    let byte_size = array_byte_size(name, elem, shape)?;
+    *running_offset = checked_running_offset(name, offset, byte_size)?;
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -441,7 +429,7 @@ fn parse_bits(
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let options: Vec<String> = fields.iter().skip(4).map(|s| unquote(s)).collect();
 
-    *running_offset = OffsetCounter::Known(offset + scalar_width(storage));
+    *running_offset = checked_running_offset(name, offset, scalar_width(storage))?;
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),
@@ -487,7 +475,7 @@ fn parse_string(
         .and_then(|s| s.trim().parse::<usize>().ok())
         .ok_or_else(|| invalid(name, "unparseable string length"))?;
 
-    *running_offset = OffsetCounter::Known(offset + len);
+    *running_offset = checked_running_offset(name, offset, len)?;
 
     Ok(FieldOutcome::Def(ConstantDef {
         name: name.to_string(),

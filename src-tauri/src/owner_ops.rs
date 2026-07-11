@@ -63,6 +63,7 @@ pub(super) fn build_session(source: ConnectSource, emit: &Emitter) -> Result<Ses
 pub(super) fn link_drop(
     mut session: Session,
     emit: &Emitter,
+    fail_tune_reread: bool,
 ) -> (Option<Session>, Result<(), String>) {
     let ActiveConnection::Sim { manager, simulator } = &mut session.conn else {
         return (Some(session), Err(SIM_ONLY.to_owned()));
@@ -79,10 +80,24 @@ pub(super) fn link_drop(
     }
 
     let rebooted = manager.last_reconnect_caused_reidentify();
+    if reconnected && rebooted {
+        // A snapshot belongs to the ECU state that existed before reboot and
+        // can never remain a valid merge baseline afterward.
+        session.snapshot = None;
+    }
     if reconnected && rebooted && session.tune.is_some() {
-        match session.load_tune() {
+        let reread = if fail_tune_reread {
+            Err("forced tune re-read failure".to_owned())
+        } else {
+            session.load_tune()
+        };
+        match reread {
             Ok(ev) => emit(OwnerEvent::TuneDirty(ev)),
             Err(e) => {
+                // Keep the successfully reconnected transport, but never
+                // expose the pre-reboot tune or snapshot as current.
+                session.tune = None;
+                session.snapshot = None;
                 return (
                     Some(session),
                     Err(format!("tune re-read after ECU reboot failed: {e}")),

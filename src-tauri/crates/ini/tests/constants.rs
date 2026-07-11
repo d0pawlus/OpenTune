@@ -31,6 +31,25 @@ fn fixture() -> &'static str {
     include_str!("fixtures/speeduino-constants.ini")
 }
 
+fn constants_ini(body: &str) -> String {
+    format!(
+        r#"[MegaTune]
+signature = "test ECU"
+queryCommand = "Q"
+versionInfo = "S"
+ochGetCommand = "r"
+pageReadCommand = "p"
+pageValueWrite = "w"
+burnCommand = "b"
+blockingFactor = 121
+blockReadTimeout = 1000
+
+[Constants]
+{body}
+"#
+    )
+}
+
 #[test]
 fn parses_constants_and_pages() {
     let def = parse_definition(fixture()).expect("fixture should parse");
@@ -289,4 +308,72 @@ page = 1
 ";
     let def = parse_definition(ini).expect("should parse with big endianness");
     assert_eq!(def.comms.endianness, opentune_ini::Endianness::Big);
+}
+
+#[test]
+fn constant_referencing_undeclared_page_is_rejected() {
+    let ini =
+        constants_ini("pageSize = 4\npage = 2\nvalue = scalar, U08, 0, \"\", 1, 0, 0, 255, 0");
+    let err = parse_definition(&ini).expect_err("page 2 was not declared by pageSize");
+    assert!(matches!(
+        err,
+        IniError::InvalidValue { ref key, ref detail }
+            if key == "value" && detail.contains("undeclared page 2")
+    ));
+}
+
+#[test]
+fn invalid_page_and_page_size_report_the_directive_key() {
+    let invalid_page = constants_ini(
+        "pageSize = 4\npage = not-a-page\nvalue = scalar, U08, 0, \"\", 1, 0, 0, 255, 0",
+    );
+    assert!(matches!(
+        parse_definition(&invalid_page),
+        Err(IniError::InvalidValue { key, .. }) if key == "page"
+    ));
+
+    let invalid_size = constants_ini("pageSize = four\npage = 1");
+    assert!(matches!(
+        parse_definition(&invalid_size),
+        Err(IniError::InvalidValue { key, .. }) if key == "pageSize"
+    ));
+
+    let zero_size = constants_ini("pageSize = 0\npage = 1");
+    assert!(matches!(
+        parse_definition(&zero_size),
+        Err(IniError::InvalidValue { key, .. }) if key == "pageSize"
+    ));
+}
+
+#[test]
+fn empty_numeric_fields_use_defaults_instead_of_empty_expressions() {
+    let ini = constants_ini("pageSize = 4\npage = 1\nvalue = scalar, U08, 0, \"\", , , , ,");
+    let def = parse_definition(&ini).expect("empty optional numbers should use defaults");
+    let value = def.constant("value").expect("value constant");
+    assert_eq!(value.scale, Number::Lit(1.0));
+    assert_eq!(value.translate, Number::Lit(0.0));
+    assert_eq!(value.low, Number::Lit(0.0));
+    assert_eq!(value.high, Number::Lit(0.0));
+}
+
+#[test]
+fn overflowing_array_shape_and_running_offset_are_rejected() {
+    let max = usize::MAX;
+    let shape_overflow = constants_ini(&format!(
+        "pageSize = {max}\npage = 1\nvalue = array, U32, 0, [{max}x2], \"\", 1, 0, 0, 255, 0"
+    ));
+    assert!(matches!(
+        parse_definition(&shape_overflow),
+        Err(IniError::InvalidValue { ref key, ref detail })
+            if key == "value" && detail.contains("overflows")
+    ));
+
+    let offset_overflow = constants_ini(&format!(
+        "pageSize = {max}\npage = 1\nvalue = scalar, U16, {max}, \"\", 1, 0, 0, 255, 0"
+    ));
+    assert!(matches!(
+        parse_definition(&offset_overflow),
+        Err(IniError::InvalidValue { ref key, ref detail })
+            if key == "value" && detail.contains("overflows")
+    ));
 }

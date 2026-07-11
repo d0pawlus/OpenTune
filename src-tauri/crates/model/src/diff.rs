@@ -42,6 +42,26 @@ pub struct CellDiff {
     pub b: f64,
 }
 
+/// One selective merge request.
+///
+/// `All` replaces the complete value (scalar, enum, text, or array).
+/// `Cells` applies only the named array indices from the incoming tune,
+/// preserving every unselected cell in the base tune.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergePick {
+    All(String),
+    Cells { name: String, indices: Vec<usize> },
+}
+
+impl MergePick {
+    /// The constant targeted by this pick.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::All(name) | Self::Cells { name, .. } => name,
+        }
+    }
+}
+
 /// Compare two tunes and return one [`FieldDiff`] per constant whose value
 /// differs, in `Definition::constants` order.
 ///
@@ -105,8 +125,44 @@ fn cell_diffs(a: &Value, b: &Value) -> Vec<CellDiff> {
 /// after merging. This mirrors `Tune::set`'s own "no partial write" — a
 /// rejected pick changes no bytes.
 pub fn merge(base: &mut Tune, incoming: &Tune, picks: &[String]) {
-    for name in picks {
-        let Ok(value) = incoming.get(name) else {
+    let picks: Vec<_> = picks.iter().cloned().map(MergePick::All).collect();
+    merge_picks(base, incoming, &picks);
+}
+
+/// Apply field- or cell-level picks from `incoming` to `base`.
+///
+/// Invalid names, non-array `Cells` picks, and out-of-range indices degrade
+/// per pick: valid selected cells still land, while a pick with no valid
+/// changes records no edit.
+pub fn merge_picks(base: &mut Tune, incoming: &Tune, picks: &[MergePick]) {
+    for pick in picks {
+        let name = pick.name();
+        let value = match pick {
+            MergePick::All(_) => incoming.get(name),
+            MergePick::Cells { indices, .. } => {
+                let (Ok(Value::Array(mut current)), Ok(Value::Array(incoming))) =
+                    (base.get(name), incoming.get(name))
+                else {
+                    continue;
+                };
+                let mut changed = false;
+                for &index in indices {
+                    let (Some(dst), Some(&src)) = (current.get_mut(index), incoming.get(index))
+                    else {
+                        continue;
+                    };
+                    if *dst != src {
+                        *dst = src;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    continue;
+                }
+                Ok(Value::Array(current))
+            }
+        };
+        let Ok(value) = value else {
             continue;
         };
         let _ = base.set(name, value);

@@ -3,6 +3,7 @@ import { useCallback } from "react";
 import type { GaugeDto } from "../../ipc/bindings";
 import { GaugeCanvas, type GaugeDraw, type Theme } from "./GaugeCanvas";
 import { formatValue, zoneColor } from "./gaugeMath";
+import { useResolvedGauge } from "./useResolvedGauge";
 
 const WIDTH = 210;
 const HEIGHT = 96;
@@ -15,6 +16,7 @@ export function DigitalGauge({
   gauge: GaugeDto;
   theme: Theme;
 }) {
+  const resolvedGauge = useResolvedGauge(gauge);
   const draw = useCallback<GaugeDraw>(
     (ctx, value, size, theme) => {
       const cx = size.width / 2;
@@ -22,7 +24,7 @@ export function DigitalGauge({
       ctx.fillStyle = theme.text;
       ctx.textAlign = "center";
       ctx.font = "600 13px system-ui, sans-serif";
-      ctx.fillText(gauge.title, cx, 20);
+      ctx.fillText(resolvedGauge.title, cx, 20);
 
       // Zone-tinted readout ("—" neutral when the channel is unknown).
       ctx.fillStyle =
@@ -31,32 +33,32 @@ export function DigitalGauge({
           : theme[
               zoneColor(
                 value,
-                gauge.lo_danger,
-                gauge.lo_warn,
-                gauge.hi_warn,
-                gauge.hi_danger,
+                resolvedGauge.lo_danger,
+                resolvedGauge.lo_warn,
+                resolvedGauge.hi_warn,
+                resolvedGauge.hi_danger,
               )
             ];
       ctx.font = "700 32px ui-monospace, monospace";
-      ctx.fillText(formatValue(value, gauge.value_digits), cx, 58);
+      ctx.fillText(formatValue(value, resolvedGauge.value_digits), cx, 58);
 
       ctx.fillStyle = theme.text;
       ctx.font = "12px system-ui, sans-serif";
       ctx.globalAlpha = 0.7;
-      ctx.fillText(gauge.units, cx, 80);
+      ctx.fillText(resolvedGauge.units, cx, 80);
       ctx.globalAlpha = 1;
     },
-    [gauge],
+    [resolvedGauge],
   );
 
   return (
     <GaugeCanvas
-      channel={gauge.channel}
+      channel={resolvedGauge.channel}
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
       theme={theme}
-      label={gauge.title}
+      label={resolvedGauge.title}
     />
   );
 }

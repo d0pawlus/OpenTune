@@ -27,9 +27,16 @@ describe("parseLayout (never trusts file content)", () => {
   });
 
   it("returns null for JSON without a slots array", () => {
-    expect(parseLayout("{}", NAMES)).toBeNull();
-    expect(parseLayout('{"slots": 3}', NAMES)).toBeNull();
+    expect(parseLayout('{"version":1}', NAMES)).toBeNull();
+    expect(parseLayout('{"version":1,"slots":3}', NAMES)).toBeNull();
     expect(parseLayout("null", NAMES)).toBeNull();
+  });
+
+  it("returns null when the layout version is missing or unsupported", () => {
+    expect(parseLayout('{"slots":[]}', NAMES)).toBeNull();
+    expect(parseLayout('{"version":0,"slots":[]}', NAMES)).toBeNull();
+    expect(parseLayout('{"version":2,"slots":[]}', NAMES)).toBeNull();
+    expect(parseLayout('{"version":"1","slots":[]}', NAMES)).toBeNull();
   });
 
   it("drops slots naming gauges that no longer exist in the definition", () => {

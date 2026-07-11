@@ -315,3 +315,59 @@ fn burns_page_reports_disconnected_when_device_vanishes() {
         ProtocolError::Transport(TransportError::Disconnected)
     ));
 }
+
+#[test]
+fn page_numbers_above_firmware_byte_range_are_rejected_before_io() {
+    let transport = ScriptedTransport::with_response(Vec::new());
+    let mut proto = MsProtocol::new(plain_comms(), transport);
+
+    let read_err = proto
+        .read_page(PageDef {
+            number: 256,
+            size: 1,
+        })
+        .unwrap_err();
+    assert!(matches!(read_err, ProtocolError::InvalidRequest(_)));
+
+    let write_err = proto.write(256, 0, &[1]).unwrap_err();
+    assert!(matches!(write_err, ProtocolError::InvalidRequest(_)));
+
+    let burn_err = proto.burn(256).unwrap_err();
+    assert!(matches!(burn_err, ProtocolError::InvalidRequest(_)));
+    assert!(
+        proto.transport_ref().sent.is_empty(),
+        "invalid page ids must never reach the transport"
+    );
+}
+
+#[test]
+fn page_read_and_write_lengths_must_fit_u16() {
+    let transport = ScriptedTransport::with_response(Vec::new());
+    let mut proto = MsProtocol::new(plain_comms(), transport);
+    let too_large = usize::from(u16::MAX) + 1;
+
+    let read_err = proto
+        .read_page(PageDef {
+            number: 1,
+            size: too_large,
+        })
+        .unwrap_err();
+    assert!(matches!(read_err, ProtocolError::InvalidRequest(_)));
+
+    let bytes = vec![0u8; too_large];
+    let write_err = proto.write(1, 0, &bytes).unwrap_err();
+    assert!(matches!(write_err, ProtocolError::InvalidRequest(_)));
+    assert!(
+        proto.transport_ref().sent.is_empty(),
+        "oversize requests must never reach the transport"
+    );
+}
+
+#[test]
+fn write_window_must_not_overflow_u16_address_space() {
+    let transport = ScriptedTransport::with_response(Vec::new());
+    let mut proto = MsProtocol::new(plain_comms(), transport);
+    let err = proto.write(1, u16::MAX, &[1, 2]).unwrap_err();
+    assert!(matches!(err, ProtocolError::InvalidRequest(_)));
+    assert!(proto.transport_ref().sent.is_empty());
+}

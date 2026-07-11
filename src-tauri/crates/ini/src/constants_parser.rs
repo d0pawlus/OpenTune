@@ -16,7 +16,9 @@
 //! unknown constructs and to hard-fail only on the specific overflow case
 //! (see `IniError`/`Diagnostic` conventions in `parser.rs`).
 
-use crate::constants_fields::{parse_constant_line, ConstantLineResult, OffsetCounter};
+use crate::constants_fields::{
+    array_byte_size, parse_constant_line, ConstantLineResult, OffsetCounter,
+};
 use crate::{ConstantDef, ConstantKind, Diagnostic, Endianness, IniError, PageDef};
 use std::collections::HashMap;
 
@@ -82,7 +84,14 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
 
         match key {
             "page" => {
-                current_page = value.trim().parse::<u16>().unwrap_or(current_page + 1);
+                current_page =
+                    value
+                        .trim()
+                        .parse::<u16>()
+                        .map_err(|error| IniError::InvalidValue {
+                            key: "page".to_string(),
+                            detail: format!("expected an unsigned 16-bit page number: {error}"),
+                        })?;
                 continue;
             }
             "nPages" => continue, // informational; pages come from pageSize
@@ -90,11 +99,29 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
                 pages = value
                     .split(',')
                     .enumerate()
-                    .map(|(i, tok)| PageDef {
-                        number: (i + 1) as u16,
-                        size: tok.trim().parse::<usize>().unwrap_or(0),
+                    .map(|(i, tok)| {
+                        let number = u16::try_from(i + 1).map_err(|_| IniError::InvalidValue {
+                            key: "pageSize".to_string(),
+                            detail: "declares more than 65535 pages".to_string(),
+                        })?;
+                        let size = tok.trim().parse::<usize>().map_err(|error| {
+                            IniError::InvalidValue {
+                                key: "pageSize".to_string(),
+                                detail: format!(
+                                    "page {number} has invalid byte size `{}`: {error}",
+                                    tok.trim()
+                                ),
+                            }
+                        })?;
+                        if size == 0 {
+                            return Err(IniError::InvalidValue {
+                                key: "pageSize".to_string(),
+                                detail: format!("page {number} must have a non-zero byte size"),
+                            });
+                        }
+                        Ok(PageDef { number, size })
                     })
-                    .collect();
+                    .collect::<crate::Result<Vec<_>>>()?;
                 continue;
             }
             "endianness" => {
@@ -128,7 +155,6 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
         let result = parse_constant_line(key, value, Some(current_page), running);
         match result {
             Ok(ConstantLineResult::Def(def)) => {
-                validate_offset_within_page(&def, &pages)?;
                 constants.push(def);
             }
             Ok(ConstantLineResult::UnknownClass) => {
@@ -144,6 +170,10 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
             }
             Err(e) => return Err(e),
         }
+    }
+
+    for def in &constants {
+        validate_offset_within_page(def, &pages)?;
     }
 
     Ok(ParsedConstants {
@@ -202,10 +232,20 @@ fn parse_endianness(value: &str) -> Option<Endianness> {
 /// A constant's `offset + size` must not exceed its page's declared size.
 fn validate_offset_within_page(def: &ConstantDef, pages: &[PageDef]) -> crate::Result<()> {
     let Some(page) = pages.iter().find(|p| p.number == def.page) else {
-        return Ok(()); // Unknown page number — nothing to validate against.
+        return Err(IniError::InvalidValue {
+            key: def.name.clone(),
+            detail: format!("references undeclared page {}", def.page),
+        });
     };
-    let size = constant_byte_size(def);
-    if def.offset + size > page.size {
+    let size = constant_byte_size(def)?;
+    let end = def
+        .offset
+        .checked_add(size)
+        .ok_or_else(|| IniError::InvalidValue {
+            key: def.name.clone(),
+            detail: "offset + byte size overflows platform limits".to_string(),
+        })?;
+    if end > page.size {
         return Err(IniError::InvalidValue {
             key: def.name.clone(),
             detail: format!(
@@ -217,12 +257,12 @@ fn validate_offset_within_page(def: &ConstantDef, pages: &[PageDef]) -> crate::R
     Ok(())
 }
 
-fn constant_byte_size(def: &ConstantDef) -> usize {
+fn constant_byte_size(def: &ConstantDef) -> crate::Result<usize> {
     use crate::constants_fields::scalar_width;
-    match &def.kind {
+    Ok(match &def.kind {
         ConstantKind::Scalar(t) => scalar_width(*t),
-        ConstantKind::Array { elem, shape } => scalar_width(*elem) * shape.rows * shape.cols,
+        ConstantKind::Array { elem, shape } => array_byte_size(&def.name, *elem, *shape)?,
         ConstantKind::Bits { storage, .. } => scalar_width(*storage),
         ConstantKind::Text { len } => *len,
-    }
+    })
 }

@@ -27,6 +27,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::get_definition,
             tune_commands::load_tune,
             tune_commands::get_values,
+            tune_commands::resolve_gauge_bounds,
             tune_commands::set_value,
             tune_commands::burn_tune,
             tune_commands::undo_tune,
@@ -170,6 +171,7 @@ mod binding_gen {
         for needle in [
             "getDefinition",
             "loadTune",
+            "resolveGaugeBounds",
             "setValue",
             "burnTune",
             "undoTune",
@@ -177,6 +179,8 @@ mod binding_gen {
             "evalConditions",
             "TuneDirtyEvent",
             "DefinitionDto",
+            "ResolvedGaugeBoundsDto",
+            "MergePickDto",
             "DialogDto",
             "ConstantKindDto",
         ] {

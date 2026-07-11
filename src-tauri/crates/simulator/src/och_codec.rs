@@ -124,12 +124,12 @@ pub(crate) fn block_size(def: &Definition) -> usize {
     }
     def.output_channels
         .iter()
-        .map(|channel| match channel {
-            OutputChannelDef::Scalar { offset, kind, .. } => offset + width(*kind),
+        .filter_map(|channel| match channel {
+            OutputChannelDef::Scalar { offset, kind, .. } => offset.checked_add(width(*kind)),
             OutputChannelDef::Bits {
                 offset, storage, ..
-            } => offset + width(*storage),
-            OutputChannelDef::Computed { .. } => 0,
+            } => offset.checked_add(width(*storage)),
+            OutputChannelDef::Computed { .. } => None,
         })
         .max()
         .unwrap_or(0)
@@ -168,7 +168,10 @@ fn write_scalar(block: &mut [u8], offset: usize, kind: ScalarType, endian: Endia
             Endianness::Big => (raw as f32).to_be_bytes().to_vec(),
         },
     };
-    if let Some(dst) = block.get_mut(offset..offset + bytes.len()) {
+    let Some(end) = offset.checked_add(bytes.len()) else {
+        return;
+    };
+    if let Some(dst) = block.get_mut(offset..end) {
         dst.copy_from_slice(&bytes);
     }
 }
@@ -203,7 +206,10 @@ fn write_bits(
     if bit_lo > bit_hi || bit_hi >= storage_bits {
         return;
     }
-    let Some(region) = block.get_mut(offset..offset + w) else {
+    let Some(end) = offset.checked_add(w) else {
+        return;
+    };
+    let Some(region) = block.get_mut(offset..end) else {
         return;
     };
     let mut pattern: u64 = 0;
@@ -240,6 +246,14 @@ mod tests {
         // Offset past the block: skipped, never a panic.
         write_scalar(&mut block, 2, ScalarType::U16, Endianness::Little, 1.0);
         assert_eq!(block, vec![255, 0x12, 0x34]);
+        write_scalar(
+            &mut block,
+            usize::MAX,
+            ScalarType::U16,
+            Endianness::Little,
+            1.0,
+        );
+        assert_eq!(block, vec![255, 0x12, 0x34]);
     }
 
     #[test]
@@ -249,6 +263,16 @@ mod tests {
         assert_eq!(block[0], 0b1010_0101);
         // Malformed range (hi past the storage): skipped.
         write_bits(&mut block, 0, ScalarType::U08, 4, 9, Endianness::Little, 1);
+        assert_eq!(block[0], 0b1010_0101);
+        write_bits(
+            &mut block,
+            usize::MAX,
+            ScalarType::U16,
+            0,
+            0,
+            Endianness::Little,
+            1,
+        );
         assert_eq!(block[0], 0b1010_0101);
     }
 
@@ -262,5 +286,28 @@ mod tests {
         def.comms.och_block_size = 0;
         // Fixture channels end at tps (U08 @7) → smallest covering block = 8.
         assert_eq!(block_size(&def), 8);
+
+        let scalar = def
+            .output_channels
+            .iter_mut()
+            .find_map(|channel| match channel {
+                OutputChannelDef::Scalar { offset, .. } => Some(offset),
+                _ => None,
+            })
+            .expect("fixture has a scalar channel");
+        *scalar = usize::MAX;
+        for channel in &mut def.output_channels {
+            match channel {
+                OutputChannelDef::Scalar { offset, .. } | OutputChannelDef::Bits { offset, .. } => {
+                    *offset = usize::MAX
+                }
+                OutputChannelDef::Computed { .. } => {}
+            }
+        }
+        assert_eq!(
+            block_size(&def),
+            0,
+            "overflowing channel extents are ignored rather than panicking"
+        );
     }
 }

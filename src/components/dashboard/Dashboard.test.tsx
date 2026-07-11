@@ -66,8 +66,17 @@ const definition = (overrides?: Partial<DefinitionDto>): DefinitionDto => ({
   ...overrides,
 });
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((fulfill) => {
+    resolve = fulfill;
+  });
+  return { promise, resolve };
+}
+
 describe("Dashboard", () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     // jsdom has no 2D context — gauges fail open to inert canvases.
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
     useConnectionStore.setState({
@@ -112,6 +121,37 @@ describe("Dashboard", () => {
     expect(screen.getByRole("img", { name: "Coolant" })).toBeTruthy();
     expect(screen.getByRole("img", { name: "Running" })).toBeTruthy();
     expect(screen.getByText("Dashboard")).toBeTruthy();
+  });
+
+  it("does not flash the empty state while the layout is loading", async () => {
+    const load =
+      deferred<Awaited<ReturnType<typeof ipc.commands.loadLayout>>>();
+    vi.mocked(ipc.commands.loadLayout).mockReturnValueOnce(load.promise);
+    useTuneStore.setState({
+      definition: definition({
+        gauges: [],
+        frontpage: { gauge_slots: [], indicators: [] },
+      }),
+    });
+
+    render(<Dashboard locale="en" theme="default" />);
+    const dashboard = screen.getByRole("region", { name: "Dashboard" });
+    expect(dashboard.getAttribute("aria-busy")).toBe("true");
+    expect(screen.queryByText("No gauges defined by this INI")).toBeNull();
+    expect(
+      (screen.getByRole("button", { name: "Edit layout" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    await act(async () => {
+      load.resolve({ status: "ok", data: null });
+      await load.promise;
+    });
+
+    expect(
+      await screen.findByText("No gauges defined by this INI"),
+    ).toBeTruthy();
+    expect(dashboard.getAttribute("aria-busy")).toBe("false");
   });
 
   it("prefers a persisted layout over the FrontPage defaults", async () => {
@@ -164,6 +204,55 @@ describe("Dashboard", () => {
     await waitFor(() =>
       expect(ipc.commands.stopRealtime).toHaveBeenCalledTimes(1),
     );
+    expect(
+      await screen.findByRole("button", { name: "Start live" }),
+    ).toBeTruthy();
+  });
+
+  it("disables start and suppresses duplicate requests while pending", async () => {
+    const start =
+      deferred<Awaited<ReturnType<typeof ipc.commands.startRealtime>>>();
+    vi.mocked(ipc.commands.startRealtime).mockReturnValueOnce(start.promise);
+    render(<Dashboard locale="en" theme="default" />);
+
+    const button = (await screen.findByRole("button", {
+      name: "Start live",
+    })) as HTMLButtonElement;
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(ipc.commands.startRealtime).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+
+    await act(async () => {
+      start.resolve({ status: "ok", data: null });
+      await start.promise;
+    });
+    expect(
+      await screen.findByRole("button", { name: "Stop live" }),
+    ).toBeTruthy();
+  });
+
+  it("disables stop and suppresses duplicate requests while pending", async () => {
+    render(<Dashboard locale="en" theme="default" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start live" }));
+    const button = (await screen.findByRole("button", {
+      name: "Stop live",
+    })) as HTMLButtonElement;
+    const stop =
+      deferred<Awaited<ReturnType<typeof ipc.commands.stopRealtime>>>();
+    vi.mocked(ipc.commands.stopRealtime).mockReturnValueOnce(stop.promise);
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(ipc.commands.stopRealtime).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+
+    await act(async () => {
+      stop.resolve({ status: "ok", data: null });
+      await stop.promise;
+    });
     expect(
       await screen.findByRole("button", { name: "Start live" }),
     ).toBeTruthy();
@@ -236,6 +325,32 @@ describe("Dashboard", () => {
     // saveLayout promise before calling setEditing(false), so this is a
     // separate, later DOM update than the saveLayout call above — assert it
     // with its own waitFor rather than assuming it's already flushed.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Bind gauge")).toBeNull(),
+    );
+  });
+
+  it("disables save and suppresses duplicate requests while pending", async () => {
+    const save =
+      deferred<Awaited<ReturnType<typeof ipc.commands.saveLayout>>>();
+    vi.mocked(ipc.commands.saveLayout).mockReturnValueOnce(save.promise);
+    render(<Dashboard locale="en" theme="default" />);
+    await screen.findByRole("img", { name: "Engine Speed" });
+    fireEvent.click(screen.getByRole("button", { name: "Edit layout" }));
+    const button = screen.getByRole("button", {
+      name: "Save layout",
+    }) as HTMLButtonElement;
+
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(ipc.commands.saveLayout).toHaveBeenCalledTimes(1);
+    expect(button.disabled).toBe(true);
+
+    await act(async () => {
+      save.resolve({ status: "ok", data: null });
+      await save.promise;
+    });
     await waitFor(() =>
       expect(screen.queryByLabelText("Bind gauge")).toBeNull(),
     );

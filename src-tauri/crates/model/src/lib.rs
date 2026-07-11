@@ -12,6 +12,6 @@ mod edit;
 mod tune;
 mod value;
 
-pub use diff::{diff, merge, CellDiff, FieldDiff};
+pub use diff::{diff, merge, merge_picks, CellDiff, FieldDiff, MergePick};
 pub use tune::{ModelError, Tune};
 pub use value::Value;

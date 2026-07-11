@@ -216,6 +216,14 @@ impl Tune {
         opentune_ini::eval_bool(expr, &lookup)
     }
 
+    /// Resolve one INI number/expression against the current tune.
+    ///
+    /// Used by backend-owned UI projections such as gauge bounds so the
+    /// frontend never needs a second expression evaluator.
+    pub fn resolve_number(&self, owner: &str, number: &Number) -> Result<f64, ModelError> {
+        self.resolve(owner, number)
+    }
+
     /// The page numbers with unburned edits, sorted ascending.
     pub fn dirty_pages(&self) -> Vec<u16> {
         let mut pages = self.dirty.clone();

@@ -13,7 +13,7 @@ use opentune_ini::{
     ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, FrontPageDef, GaugeDef,
     IndicatorDef, MenuDef, Number, TableDef,
 };
-use opentune_model::{CellDiff, FieldDiff, Value};
+use opentune_model::{CellDiff, FieldDiff, MergePick, Value};
 
 /// The UI-facing projection of a [`Definition`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
@@ -140,6 +140,21 @@ pub struct GaugeDto {
     pub label_digits: u32,
     /// `gaugeCategory`, for grouping menus.
     pub category: String,
+}
+
+/// Gauge bounds resolved against the currently loaded tune.
+///
+/// Each bound fails open independently: `None` means the INI expression
+/// could not be resolved and geometry using that bound must render neutral.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct ResolvedGaugeBoundsDto {
+    pub name: String,
+    pub low: Option<f64>,
+    pub high: Option<f64>,
+    pub lo_danger: Option<f64>,
+    pub lo_warn: Option<f64>,
+    pub hi_warn: Option<f64>,
+    pub hi_danger: Option<f64>,
 }
 
 /// `[FrontPage]` — the default dashboard layout.
@@ -335,6 +350,26 @@ pub struct CellDiffDto {
     pub index: u32,
     pub a: f64,
     pub b: f64,
+}
+
+/// A field-level or cell-level selective merge request from the frontend.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum MergePickDto {
+    All { name: String },
+    Cells { name: String, indices: Vec<u32> },
+}
+
+impl From<MergePickDto> for MergePick {
+    fn from(value: MergePickDto) -> Self {
+        match value {
+            MergePickDto::All { name } => Self::All(name),
+            MergePickDto::Cells { name, indices } => Self::Cells {
+                name,
+                indices: indices.into_iter().map(|index| index as usize).collect(),
+            },
+        }
+    }
 }
 
 impl From<FieldDiff> for FieldDiffDto {

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { useCallback, useState } from "react";
+import { Fragment, useCallback, useState } from "react";
 import { commands } from "../../ipc/bindings";
-import type { FieldDiffDto, Value } from "../../ipc/bindings";
+import type {
+  FieldDiffDto,
+  MergePickDto,
+  Value,
+} from "../../ipc/bindings";
 import { t, type Locale } from "../../i18n";
 import "./diff.css";
 
@@ -10,12 +14,24 @@ import "./diff.css";
  * checkbox is checked, in a stable (insertion) order. Extracted so the
  * selection logic is unit-testable without rendering the table.
  */
-export function buildMergePayload(
-  selection: Record<string, boolean>,
-): string[] {
-  return Object.entries(selection)
-    .filter(([, picked]) => picked)
-    .map(([name]) => name);
+export interface MergeSelection {
+  [name: string]: {
+    all: boolean;
+    cells: Record<number, boolean>;
+  };
+}
+
+export function buildMergePayload(selection: MergeSelection): MergePickDto[] {
+  return Object.entries(selection).flatMap(([name, pick]) => {
+    if (pick.all) return [{ type: "all" as const, name }];
+    const indices = Object.entries(pick.cells)
+      .filter(([, selected]) => selected)
+      .map(([index]) => Number(index))
+      .filter(Number.isSafeInteger);
+    return indices.length > 0
+      ? [{ type: "cells" as const, name, indices }]
+      : [];
+  });
 }
 
 /** Render a `Value` compactly for a diff table cell. */
@@ -31,6 +47,7 @@ function formatValue(value: Value): string {
 
 interface TuneDiffProps {
   locale: Locale;
+  onAfterMerge?: () => Promise<void>;
 }
 
 /**
@@ -42,27 +59,38 @@ interface TuneDiffProps {
  * lists differing constants with a per-row "take" checkbox; "merge
  * selected" writes the picks live to the ECU and re-compares.
  */
-export function TuneDiff({ locale }: TuneDiffProps) {
+export function TuneDiff({
+  locale,
+  onAfterMerge = async () => {},
+}: TuneDiffProps) {
   const [hasSnapshot, setHasSnapshot] = useState(false);
   const [diffs, setDiffs] = useState<FieldDiffDto[] | null>(null);
-  const [selection, setSelection] = useState<Record<string, boolean>>({});
+  const [selection, setSelection] = useState<MergeSelection>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const compare = useCallback(async () => {
-    setBusy(true);
-    setError(null);
+  const loadDiff = useCallback(async (clearError: boolean) => {
+    if (clearError) setError(null);
     const res = await commands.diffTune();
     if (res.status === "error") {
-      setError(res.error);
+      setError((current) => current ?? res.error);
+      setHasSnapshot(false);
+      setDiffs(null);
     } else {
       setDiffs(res.data);
       setSelection({});
     }
-    setBusy(false);
   }, []);
 
+  const compare = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    await loadDiff(true);
+    setBusy(false);
+  }, [busy, loadDiff]);
+
   const snapshot = useCallback(async () => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     const res = await commands.snapshotTune();
@@ -72,23 +100,44 @@ export function TuneDiff({ locale }: TuneDiffProps) {
       return;
     }
     setHasSnapshot(true);
+    await loadDiff(false);
     setBusy(false);
-    await compare();
-  }, [compare]);
+  }, [busy, loadDiff]);
 
-  const toggle = (name: string) =>
-    setSelection((s) => ({ ...s, [name]: !s[name] }));
+  const toggleAll = (name: string) =>
+    setSelection((current) => ({
+      ...current,
+      [name]: {
+        all: !current[name]?.all,
+        cells: {},
+      },
+    }));
+
+  const toggleCell = (name: string, index: number) =>
+    setSelection((current) => ({
+      ...current,
+      [name]: {
+        all: false,
+        cells: {
+          ...current[name]?.cells,
+          [index]: !current[name]?.cells[index],
+        },
+      },
+    }));
 
   const mergeSelected = useCallback(async () => {
+    if (busy) return;
     const picks = buildMergePayload(selection);
     if (picks.length === 0) return;
     setBusy(true);
     setError(null);
     const res = await commands.mergeTune(picks);
     if (res.status === "error") setError(res.error);
+    await onAfterMerge();
+    // Refresh the diff without clearing a partial-merge/write error.
+    await loadDiff(false);
     setBusy(false);
-    await compare();
-  }, [selection, compare]);
+  }, [busy, selection, onAfterMerge, loadDiff]);
 
   const picked = buildMergePayload(selection).length;
 
@@ -138,19 +187,38 @@ export function TuneDiff({ locale }: TuneDiffProps) {
           </thead>
           <tbody>
             {diffs.map((d) => (
-              <tr key={d.name}>
+              <Fragment key={d.name}>
+              <tr>
                 <td>
                   <input
                     type="checkbox"
                     aria-label={d.name}
-                    checked={!!selection[d.name]}
-                    onChange={() => toggle(d.name)}
+                    checked={!!selection[d.name]?.all}
+                    onChange={() => toggleAll(d.name)}
                   />
                 </td>
                 <td className="tune-diff-name">{d.name}</td>
                 <td>{formatValue(d.a)}</td>
                 <td>{formatValue(d.b)}</td>
               </tr>
+              {d.cells.map((cell) => (
+                <tr key={`${d.name}-${cell.index}`} className="tune-diff-cell">
+                  <td>
+                    <input
+                      type="checkbox"
+                      aria-label={`${d.name}[${cell.index}]`}
+                      checked={!!selection[d.name]?.cells[cell.index]}
+                      onChange={() => toggleCell(d.name, cell.index)}
+                    />
+                  </td>
+                  <td>
+                    {d.name}[{cell.index}]
+                  </td>
+                  <td>{String(cell.a ?? "—")}</td>
+                  <td>{String(cell.b ?? "—")}</td>
+                </tr>
+              ))}
+              </Fragment>
             ))}
           </tbody>
         </table>

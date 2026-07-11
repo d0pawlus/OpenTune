@@ -95,6 +95,18 @@ describe("Field", () => {
     expect(input.value).toBe("12.5");
   });
 
+  it("rejects a draft that converts to Infinity", () => {
+    const onChange = vi.fn();
+    render(
+      <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={onChange} />,
+    );
+    const input = screen.getByLabelText("reqFuel") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "1e309" } });
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input.value).toBe("12.5");
+  });
+
   it("resets the draft when the backend value prop changes", () => {
     const { rerender } = render(
       <Field constant={scalar} value={{ Scalar: 12.5 }} onChange={() => {}} />,

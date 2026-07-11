@@ -25,8 +25,10 @@
 //! they are skipped here (handled by `parser::parse_comms`) so they don't
 //! get misparsed as unknown channel kinds.
 
-use crate::constants_fields::{parse_bit_range, parse_scalar_type, split_fields, unquote};
-use crate::{Diagnostic, OutputChannelDef};
+use crate::constants_fields::{
+    parse_bit_range, parse_scalar_type, scalar_width, split_fields, unquote,
+};
+use crate::{Diagnostic, IniError, OutputChannelDef};
 
 /// The result of parsing the `[OutputChannels]` section.
 pub struct ParsedOutputChannels {
@@ -40,7 +42,10 @@ const HEADER_KEYS: [&str; 2] = ["ochGetCommand", "ochBlockSize"];
 
 /// Parse every `[OutputChannels]` section in the (already-preprocessed) INI
 /// text.
-pub fn parse_output_channels(ini_text: &str) -> ParsedOutputChannels {
+pub fn parse_output_channels(
+    ini_text: &str,
+    och_block_size: u32,
+) -> crate::Result<ParsedOutputChannels> {
     let mut channels = Vec::new();
     let mut diagnostics = Vec::new();
     let mut in_section = false;
@@ -73,15 +78,18 @@ pub fn parse_output_channels(ini_text: &str) -> ParsedOutputChannels {
         }
 
         match parse_channel_line(name, value) {
-            Some(def) => channels.push(def),
+            Some(def) => {
+                validate_channel_bounds(&def, och_block_size)?;
+                channels.push(def);
+            }
             None => diagnostics.push(unrecognised(name)),
         }
     }
 
-    ParsedOutputChannels {
+    Ok(ParsedOutputChannels {
         channels,
         diagnostics,
-    }
+    })
 }
 
 /// Parse one `name = ...` line inside `[OutputChannels]`.
@@ -161,6 +169,45 @@ fn parse_bits(name: &str, fields: &[String]) -> Option<OutputChannelDef> {
         bit_lo,
         bit_hi,
     })
+}
+
+fn validate_channel_bounds(def: &OutputChannelDef, och_block_size: u32) -> crate::Result<()> {
+    let (name, offset, width) = match def {
+        OutputChannelDef::Scalar {
+            name, kind, offset, ..
+        } => (name, *offset, scalar_width(*kind)),
+        OutputChannelDef::Bits {
+            name,
+            storage,
+            offset,
+            ..
+        } => (name, *offset, scalar_width(*storage)),
+        OutputChannelDef::Computed { .. } => return Ok(()),
+    };
+
+    let end = offset
+        .checked_add(width)
+        .ok_or_else(|| IniError::InvalidValue {
+            key: name.clone(),
+            detail: "output-channel offset + width overflows platform limits".to_string(),
+        })?;
+
+    if och_block_size != 0 {
+        let block_size = usize::try_from(och_block_size).map_err(|_| IniError::InvalidValue {
+            key: "ochBlockSize".to_string(),
+            detail: format!("{och_block_size} does not fit this platform's address space"),
+        })?;
+        if end > block_size {
+            return Err(IniError::InvalidValue {
+                key: name.clone(),
+                detail: format!(
+                    "output-channel offset {offset} + width {width} exceeds ochBlockSize {block_size}"
+                ),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn unrecognised(name: &str) -> Diagnostic {

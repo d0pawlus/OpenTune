@@ -9,14 +9,11 @@ import {
   gaugeGeometry,
   zoneColor,
 } from "./gaugeMath";
+import { useResolvedGauge } from "./useResolvedGauge";
 
 const WIDTH = 210;
 const HEIGHT = 160;
 const TRACK_WIDTH = 12;
-
-/** Neutral drawable range when an INI bound is an `{ expr }` (→ `null`). */
-export const FALLBACK_LOW = 0;
-export const FALLBACK_HIGH = 100;
 
 /** Classic 270° sweep gauge: zone-colored value arc, needle and readout. */
 export function RoundGauge({
@@ -26,10 +23,20 @@ export function RoundGauge({
   gauge: GaugeDto;
   theme: Theme;
 }) {
+  const resolvedGauge = useResolvedGauge(gauge);
   const draw = useCallback<GaugeDraw>(
     (ctx, value, size, theme) => {
-      const low = gauge.low ?? FALLBACK_LOW;
-      const high = gauge.high ?? FALLBACK_HIGH;
+      const low = resolvedGauge.low;
+      const high = resolvedGauge.high;
+      const hasRange =
+        low !== null &&
+        high !== null &&
+        Number.isFinite(low) &&
+        Number.isFinite(high) &&
+        high > low;
+      const range = hasRange
+        ? { low: low as number, high: high as number }
+        : null;
       const cx = size.width / 2;
       const cy = size.height / 2 + 14;
       const radius = Math.min(size.width, size.height) / 2 - 14;
@@ -50,14 +57,14 @@ export function RoundGauge({
       ctx.stroke();
       ctx.globalAlpha = 1;
 
-      if (value !== undefined) {
-        const { angle } = gaugeGeometry(value, low, high);
+      if (value !== undefined && range) {
+        const { angle } = gaugeGeometry(value, range.low, range.high);
         const zone = zoneColor(
           value,
-          gauge.lo_danger,
-          gauge.lo_warn,
-          gauge.hi_warn,
-          gauge.hi_danger,
+          resolvedGauge.lo_danger,
+          resolvedGauge.lo_warn,
+          resolvedGauge.hi_warn,
+          resolvedGauge.hi_danger,
         );
         // Value arc in the zone color.
         ctx.strokeStyle = theme[zone];
@@ -80,34 +87,42 @@ export function RoundGauge({
       ctx.fillStyle = theme.text;
       ctx.textAlign = "center";
       ctx.font = "600 13px system-ui, sans-serif";
-      ctx.fillText(gauge.title, cx, 18);
+      ctx.fillText(resolvedGauge.title, cx, 18);
       ctx.font = "700 24px ui-monospace, monospace";
-      ctx.fillText(formatValue(value, gauge.value_digits), cx, cy + 8);
+      ctx.fillText(
+        formatValue(value, resolvedGauge.value_digits),
+        cx,
+        cy + 8,
+      );
       ctx.font = "12px system-ui, sans-serif";
       ctx.globalAlpha = 0.7;
-      ctx.fillText(gauge.units, cx, cy + 26);
+      ctx.fillText(resolvedGauge.units, cx, cy + 26);
       ctx.font = "10px system-ui, sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText(formatValue(low, gauge.label_digits), 10, size.height - 6);
+      ctx.fillText(
+        range ? formatValue(range.low, resolvedGauge.label_digits) : "—",
+        10,
+        size.height - 6,
+      );
       ctx.textAlign = "right";
       ctx.fillText(
-        formatValue(high, gauge.label_digits),
+        range ? formatValue(range.high, resolvedGauge.label_digits) : "—",
         size.width - 10,
         size.height - 6,
       );
       ctx.globalAlpha = 1;
     },
-    [gauge],
+    [resolvedGauge],
   );
 
   return (
     <GaugeCanvas
-      channel={gauge.channel}
+      channel={resolvedGauge.channel}
       width={WIDTH}
       height={HEIGHT}
       draw={draw}
       theme={theme}
-      label={gauge.title}
+      label={resolvedGauge.title}
     />
   );
 }
