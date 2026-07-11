@@ -364,8 +364,12 @@ mod tests {
         let mut def = plain_definition();
         def.comms.signature = "wrong firmware".to_string();
         let emitted = std::sync::Mutex::new(Vec::new());
+        // `.err()` first: `ActiveConnection` (the Ok type) is a live-transport
+        // enum with no `Debug`, so `expect_err` (which needs `T: Debug`) won't
+        // compile — drop the Ok value before asserting on the message.
         let error = connect_simulator(&def, &|state| emitted.lock().unwrap().push(state))
-            .expect_err("wrong INI must fail");
+            .err()
+            .expect("wrong INI must fail");
         assert!(error.contains("signature mismatch"));
         assert!(matches!(
             emitted.into_inner().unwrap().as_slice(),
