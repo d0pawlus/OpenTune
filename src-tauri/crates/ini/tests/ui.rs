@@ -28,11 +28,31 @@
 //! header comment for full provenance and the exact construct set it
 //! exercises.
 
-use opentune_ini::{parse_definition, Diagnostic, FieldKind};
+use opentune_ini::{parse_definition, Diagnostic, FieldKind, Number};
 
 fn fixture() -> &'static str {
     include_str!("fixtures/speeduino-ui.ini")
 }
+
+/// The minimal `[MegaTune]` block every inline fixture in this file needs to
+/// satisfy `parse_comms`'s required fields — shared so each test's INI body
+/// only has to supply the section(s) it actually exercises.
+const COMMS_HEADER: &str = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   pageActivationDelay  = 10
+   blockReadTimeout     = 2000
+   interWriteDelay      = 10
+   blockingFactor       = 251
+   endianness           = little
+   messageEnvelopeFormat = msEnvelope_1.0
+   ochGetCommand        = "r"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+"#;
 
 #[test]
 fn parses_ui() {
@@ -150,22 +170,8 @@ fn parses_ui() {
 /// fixture's happy path stays diagnostic-free.
 #[test]
 fn table_and_curve_referencing_missing_constant_records_diagnostic_not_panic() {
-    let ini = r#"
-[MegaTune]
-   signature            = "speeduino 202504-dev"
-   queryCommand         = "Q"
-   versionInfo          = "S"
-   pageActivationDelay  = 10
-   blockReadTimeout     = 2000
-   interWriteDelay      = 10
-   blockingFactor       = 251
-   endianness           = little
-   messageEnvelopeFormat = msEnvelope_1.0
-   ochGetCommand        = "r"
-   pageReadCommand      = "p%2i%2o%2c"
-   pageValueWrite       = "M%2i%2o%2c%v"
-   burnCommand          = "b%2i"
-
+    let ini = format!(
+        r#"{COMMS_HEADER}
 [Constants]
     pageSize = 4
 page = 1
@@ -181,9 +187,10 @@ page = 1
    curve = time_accel_tpsdot_curve, "TPS based AE"
       xBins = missingCurveXBins, TPSdot
       yBins = missingCurveYBins
-"#;
+"#
+    );
 
-    let def = parse_definition(ini).expect("parse must not fail on a missing cross-reference");
+    let def = parse_definition(&ini).expect("parse must not fail on a missing cross-reference");
 
     assert_eq!(def.tables.len(), 1);
     assert_eq!(def.tables[0].x_bins, "missingXBins");
@@ -241,22 +248,8 @@ page = 1
 /// contract documented on `ui_dialog_parser.rs`, not a silent drop.
 #[test]
 fn unknown_dialog_keyword_records_diagnostic_not_dropped_silently() {
-    let ini = r#"
-[MegaTune]
-   signature            = "speeduino 202504-dev"
-   queryCommand         = "Q"
-   versionInfo          = "S"
-   pageActivationDelay  = 10
-   blockReadTimeout     = 2000
-   interWriteDelay      = 10
-   blockingFactor       = 251
-   endianness           = little
-   messageEnvelopeFormat = msEnvelope_1.0
-   ochGetCommand        = "r"
-   pageReadCommand      = "p%2i%2o%2c"
-   pageValueWrite       = "M%2i%2o%2c%v"
-   burnCommand          = "b%2i"
-
+    let ini = format!(
+        r#"{COMMS_HEADER}
 [Constants]
     pageSize = 4
 page = 1
@@ -264,9 +257,10 @@ page = 1
 [UserDefined]
    dialog = engine_constants_southwest, "Speeduino Board"
       frobnicator = "X", someVar
-"#;
+"#
+    );
 
-    let def = parse_definition(ini).expect("parse must not fail on an unknown dialog keyword");
+    let def = parse_definition(&ini).expect("parse must not fail on an unknown dialog keyword");
 
     assert_eq!(def.dialogs.len(), 1);
     let dialog = &def.dialogs[0];
@@ -283,4 +277,116 @@ page = 1
         "expected a Diagnostic naming the unknown dialog keyword `frobnicator`, got: {:?}",
         def.diagnostics
     );
+}
+
+/// M4 Task 2: the FULL `[TableEditor]`/`[CurveEditor]` attribute set — real
+/// grammar verbatim from `speeduino.ini` @ 0832dc1d (l.4935-4948 table header
+/// + l.4621-4630 curve), not just the M2-era `xBins`/`yBins`/`zBins` subset.
+#[test]
+fn parses_full_table_and_curve_attributes() {
+    let ini = format!(
+        r#"{COMMS_HEADER}
+[Constants]
+    pageSize = 288, 288
+
+page = 2
+      veTable    = array,  U08,   0, [16x16], "%",   1.0, 0.0, 0.0, 255.0, 0
+      rpmBins    = array,  U08, 256, [16],  "RPM", 100.0, 0.0, 100.0, 25500.0, 0
+      fuelLoadBins = array, U08, 272, [16], "kPa", 1.0, 0.0, 0.0, 511.0, 0
+page = 1
+      taeBins    = array,  U08,   0, [4], "%/s", 10.0, 0.0, 0.0, 2550.0, 0
+      taeRates   = array,  U08,   4, [4], "%",    1.0, 0.0, 0.0, 255.0, 0
+
+[TableEditor]
+   table = veTable1Tbl,  veTable1Map,  "VE Table",   2
+      topicHelp   = "http://wiki.speeduino.com/en/configuration/VE_table"
+      xBins       = rpmBins,  rpm
+      yBins       = fuelLoadBins, fuelLoad
+      xyLabels    = "RPM", "Fuel Load: "
+      zBins       = veTable
+      gridHeight  = 2.0
+      gridOrient  = 250,   0, 340
+      upDownLabel = "(RICHER)", "(LEANER)"
+
+[CurveEditor]
+      curve = time_accel_tpsdot_curve, "TPS based AE"
+            columnLabel = "TPSdot", "Added"
+            xAxis = 0, 1200, 6
+            yAxis = 0, 250, 4
+            xBins = taeBins, TPSdot
+            yBins = taeRates
+            size  = 400, 400
+"#
+    );
+    let def = parse_definition(&ini).expect("parses");
+    let t = def.table("veTable1Tbl").expect("table by id");
+    assert_eq!(t.map3d_id, "veTable1Map");
+    assert_eq!(t.title, "VE Table");
+    assert_eq!(t.page, 2);
+    assert_eq!(
+        (t.x_bins.as_str(), t.x_channel.as_str()),
+        ("rpmBins", "rpm")
+    );
+    assert_eq!(
+        (t.y_bins.as_str(), t.y_channel.as_str()),
+        ("fuelLoadBins", "fuelLoad")
+    );
+    assert_eq!(t.z, "veTable");
+    assert_eq!(t.xy_labels, vec!["RPM", "Fuel Load: "]);
+    assert!((t.grid_height - 2.0).abs() < 1e-9);
+    assert_eq!(t.grid_orient, vec![250.0, 0.0, 340.0]);
+    assert_eq!(t.up_down_label, vec!["(RICHER)", "(LEANER)"]);
+    assert_eq!(
+        t.help,
+        "http://wiki.speeduino.com/en/configuration/VE_table"
+    );
+    let c = def.curve("time_accel_tpsdot_curve").expect("curve by id");
+    assert_eq!(c.title, "TPS based AE");
+    assert_eq!(c.column_labels, vec!["TPSdot", "Added"]);
+    let x = c.x_axis.as_ref().expect("xAxis");
+    assert_eq!(
+        (x.min.clone(), x.max.clone(), x.divisions),
+        (Number::Lit(0.0), Number::Lit(1200.0), 6)
+    );
+    assert_eq!(
+        (c.x_bins.as_str(), c.x_channel.as_str()),
+        ("taeBins", "TPSdot")
+    );
+    assert_eq!(c.y_bins, "taeRates");
+    assert_eq!(c.size, vec![400.0, 400.0]);
+}
+
+/// M4 Task 6 fold-in (sanctioned scope, Task 2 review): a curve's repeated
+/// `yBins` must keep the FIRST occurrence, not the last. The frozen
+/// `CurveDef::y_bins` doc contract is "the editable data array", and the
+/// real file's only multi-series curve (`warmup_analyzer_curve`,
+/// l.4915-4923 @ 0832dc1d) declares the editable `[Constants]` series first
+/// (`yBins = wueRates`) followed by a read-only `[PcVariables]` analyzer
+/// output (`yBins = wueRecommended`) plus a `lineLabel` legend (still
+/// untracked — `CurveDef` has no multi-series slot). Last-wins would bind
+/// the curve editor to the read-only PC variable instead of the editable
+/// one; `xBins` and every other curve attribute stay last-wins (they never
+/// repeat in the real file).
+#[test]
+fn curve_repeated_y_bins_keeps_the_first_editable_series() {
+    let ini = format!(
+        r#"{COMMS_HEADER}
+[Constants]
+    pageSize = 288, 288
+
+page = 1
+      wueRates       = array,  U08,   0, [10], "%",    1.0, 0.0, 0.0, 255.0, 0
+
+[PcVariables]
+      wueRecommended = array, S16, [10], "AFR", 0.1, 0.0, -4.0, 4.0, 1
+
+[CurveEditor]
+      curve = warmup_analyzer_curve, "Warmup Enrichment"
+            yBins = wueRates
+            yBins = wueRecommended
+"#
+    );
+    let def = parse_definition(&ini).expect("parses");
+    let c = def.curve("warmup_analyzer_curve").expect("curve by id");
+    assert_eq!(c.y_bins, "wueRates");
 }

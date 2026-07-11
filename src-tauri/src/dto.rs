@@ -10,8 +10,8 @@
 //! both the correct API boundary and what keeps the generated bindings valid.
 
 use opentune_ini::{
-    ConstantDef, ConstantKind, Definition, DialogDef, FieldKind, FrontPageDef, GaugeDef,
-    IndicatorDef, MenuDef, Number, TableDef,
+    ConstantDef, ConstantKind, CurveAxis, CurveDef, Definition, DialogDef, FieldKind, FrontPageDef,
+    GaugeDef, IndicatorDef, MenuDef, Number, TableDef,
 };
 use opentune_model::{CellDiff, FieldDiff, Value};
 
@@ -28,10 +28,15 @@ pub struct DefinitionDto {
     pub constants: Vec<ConstantDto>,
     /// Table editors (rendered as a minimal grid in M2; full editor is M4).
     pub tables: Vec<TableDto>,
+    /// Curve (2-D) editors (M4).
+    pub curves: Vec<CurveDto>,
     /// `[GaugeConfigurations]` entries backing the dashboard (M3).
     pub gauges: Vec<GaugeDto>,
     /// `[FrontPage]` — the default dashboard layout (M3).
     pub frontpage: FrontPageDto,
+    /// `[TableEditor]` ids that carry a `[VeAnalyze]` map — the frontend's
+    /// "show AutoTune here" signal (M4 Task 11).
+    pub analyze_tables: Vec<String>,
 }
 
 /// A top-level menu.
@@ -110,9 +115,40 @@ pub enum ConstantKindDto {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct TableDto {
     pub name: String,
+    pub title: String,
+    pub page: u32,
     pub x_bins: String,
+    /// Output channel driving the live X cursor ("" when the INI names none).
+    pub x_channel: String,
     pub y_bins: String,
+    pub y_channel: String,
     pub z: String,
+    pub xy_labels: Vec<String>,
+    pub up_down_label: Vec<String>,
+    pub help: String,
+}
+
+/// Curve axis bounds when literal (an `{expr}` bound resolves to `None` —
+/// the frontend falls back to data extents).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct AxisDto {
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub divisions: u32,
+}
+
+/// A curve editor definition (M4).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CurveDto {
+    pub name: String,
+    pub title: String,
+    pub column_labels: Vec<String>,
+    pub x_axis: Option<AxisDto>,
+    pub y_axis: Option<AxisDto>,
+    pub x_bins: String,
+    pub x_channel: String,
+    pub y_bins: String,
+    pub gauge: String,
 }
 
 /// A gauge's display rules (title, unit label, thresholds, digits) — the UI
@@ -174,8 +210,14 @@ impl From<&Definition> for DefinitionDto {
             dialogs: def.dialogs.iter().map(DialogDto::from).collect(),
             constants: def.constants.iter().map(ConstantDto::from).collect(),
             tables: def.tables.iter().map(TableDto::from).collect(),
+            curves: def.curves.iter().map(CurveDto::from).collect(),
             gauges: def.gauges.iter().map(GaugeDto::from).collect(),
             frontpage: FrontPageDto::from(&def.frontpage),
+            analyze_tables: def
+                .ve_analyze
+                .iter()
+                .flat_map(|v| v.maps.iter().map(|m| m.table.clone()))
+                .collect(),
         }
     }
 }
@@ -258,9 +300,42 @@ impl From<&TableDef> for TableDto {
     fn from(t: &TableDef) -> Self {
         Self {
             name: t.name.clone(),
+            title: t.title.clone(),
+            page: t.page,
             x_bins: t.x_bins.clone(),
+            x_channel: t.x_channel.clone(),
             y_bins: t.y_bins.clone(),
+            y_channel: t.y_channel.clone(),
             z: t.z.clone(),
+            xy_labels: t.xy_labels.clone(),
+            up_down_label: t.up_down_label.clone(),
+            help: t.help.clone(),
+        }
+    }
+}
+
+impl From<&CurveDef> for CurveDto {
+    fn from(c: &CurveDef) -> Self {
+        Self {
+            name: c.name.clone(),
+            title: c.title.clone(),
+            column_labels: c.column_labels.clone(),
+            x_axis: c.x_axis.as_ref().map(AxisDto::from),
+            y_axis: c.y_axis.as_ref().map(AxisDto::from),
+            x_bins: c.x_bins.clone(),
+            x_channel: c.x_channel.clone(),
+            y_bins: c.y_bins.clone(),
+            gauge: c.gauge.clone(),
+        }
+    }
+}
+
+impl From<&CurveAxis> for AxisDto {
+    fn from(a: &CurveAxis) -> Self {
+        Self {
+            min: lit(&a.min),
+            max: lit(&a.max),
+            divisions: a.divisions,
         }
     }
 }
@@ -358,6 +433,81 @@ impl From<CellDiff> for CellDiffDto {
     }
 }
 
+// ── M4: table cell edits / capture / VE analysis (Task 0 seam, Tasks 3/8/11) ─
+
+/// One flat cell edit for [`crate::owner::Command::SetCells`] — command
+/// *input*, hence `Deserialize` in addition to the usual `Serialize`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct CellEditDto {
+    pub index: u32,
+    pub value: f64,
+}
+
+/// The realtime-capture ring buffer's status (Task 8).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CaptureStatusDto {
+    pub capturing: bool,
+    pub sample_count: u32,
+    pub duration_ms: f64,
+    pub dropped: u32,
+}
+
+/// IPC projection of `opentune_analysis::CellResult`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct CellResultDto {
+    pub current: f64,
+    pub proposed: f64,
+    pub delta_pct: f64,
+    pub hit_weight: f64,
+    pub sample_count: u32,
+    pub confidence: f64,
+}
+
+impl From<opentune_analysis::CellResult> for CellResultDto {
+    fn from(c: opentune_analysis::CellResult) -> Self {
+        Self {
+            current: c.current,
+            proposed: c.proposed,
+            delta_pct: c.delta_pct,
+            hit_weight: c.hit_weight,
+            sample_count: c.sample_count,
+            confidence: c.confidence,
+        }
+    }
+}
+
+/// IPC projection of `opentune_analysis::FilterCount`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct FilterCountDto {
+    pub id: String,
+    pub label: String,
+    pub count: u32,
+}
+
+impl From<opentune_analysis::FilterCount> for FilterCountDto {
+    fn from(f: opentune_analysis::FilterCount) -> Self {
+        Self {
+            id: f.id,
+            label: f.label,
+            count: f.count,
+        }
+    }
+}
+
+/// IPC projection of `opentune_analysis::VeAnalysisReport` (the `table` field
+/// is the bridge's own addition — the report itself doesn't name the table
+/// it corrects, since the engine is table-agnostic).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct VeAnalysisReportDto {
+    pub table: String,
+    pub x_len: u32,
+    pub y_len: u32,
+    pub cells: Vec<CellResultDto>,
+    pub filtered: Vec<FilterCountDto>,
+    pub total_samples: u32,
+    pub used_samples: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +592,44 @@ mod tests {
             "the shipped INI must parse without degradation, got {:?}",
             def.diagnostics
         );
+    }
+
+    #[test]
+    fn bundled_definition_projects_its_ve_analyze_map_as_analyze_tables() {
+        // The Task 9 bundled INI declares one `[VeAnalyze]` map, correcting
+        // `veTable1Tbl` — the frontend's "show AutoTune here" signal.
+        let def = load_definition_from_str(BUNDLED_INI).expect("parses");
+        let dto = DefinitionDto::from(&def);
+        assert_eq!(dto.analyze_tables, vec!["veTable1Tbl".to_string()]);
+    }
+
+    #[test]
+    fn cell_result_dto_and_filter_count_dto_project_field_for_field() {
+        let cell = opentune_analysis::CellResult {
+            current: 50.0,
+            proposed: 54.0,
+            delta_pct: 8.0,
+            hit_weight: 24.0,
+            sample_count: 24,
+            confidence: 1.0,
+        };
+        let dto = CellResultDto::from(cell);
+        assert_eq!(dto.current, 50.0);
+        assert_eq!(dto.proposed, 54.0);
+        assert_eq!(dto.delta_pct, 8.0);
+        assert_eq!(dto.hit_weight, 24.0);
+        assert_eq!(dto.sample_count, 24);
+        assert_eq!(dto.confidence, 1.0);
+
+        let filter = opentune_analysis::FilterCount {
+            id: "minCltFilter".to_string(),
+            label: "Minimum CLT".to_string(),
+            count: 3,
+        };
+        let dto = FilterCountDto::from(filter);
+        assert_eq!(dto.id, "minCltFilter");
+        assert_eq!(dto.label, "Minimum CLT");
+        assert_eq!(dto.count, 3);
     }
 
     #[test]

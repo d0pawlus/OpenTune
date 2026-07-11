@@ -1,0 +1,84 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.autotune {
+  --at-hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--at-hairline);
+  color: var(--color-text);
+}
+
+.at-title {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.at-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+}
+
+.at-samples {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+
+.at-error {
+  margin: 0.5rem 0 0;
+  color: var(--color-danger);
+  font-size: 0.85rem;
+}
+
+.at-grid {
+  margin-top: var(--space-md);
+  overflow-x: auto;
+}
+
+.at-subtitle {
+  margin: var(--space-md) 0 0.3rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.at-filtered {
+  margin: var(--space-md) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  opacity: 0.85;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+}
+
+.at-apply {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+
+.at-threshold {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.at-threshold input {
+  width: 4rem;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--at-hairline);
+  border-radius: 0.3rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.at-empty {
+  margin: var(--space-md) 0 0;
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

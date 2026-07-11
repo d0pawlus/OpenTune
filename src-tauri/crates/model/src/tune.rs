@@ -151,22 +151,64 @@ impl Tune {
         let after = self.encode_value(&c, &value)?;
 
         let index = self.page_index(c.page);
-        let range = c.offset..c.offset + after.len();
-        let before = self.pages[index][range.clone()].to_vec();
-        if before == after {
+        let before = self.pages[index][c.offset..c.offset + after.len()].to_vec();
+        self.commit_bytes(c.page, c.offset, before, after);
+        Ok(())
+    }
+
+    /// Set flat row-major cells of a named array constant. ONE undo [`Edit`]
+    /// per call (a paste/smooth gesture is one undo step).
+    ///
+    /// Validates and encodes only the TOUCHED `(index, value)` pairs before
+    /// touching any byte — an untouched stored cell outside the constant's
+    /// declared `[low, high]` (a stale tune vs. a newer INI's bounds is a
+    /// legitimate state; `load_page` never range-checks) must never fail a
+    /// gesture that doesn't touch it, and its bytes stay byte-identical.
+    pub fn set_cells(&mut self, name: &str, cells: &[(u32, f64)]) -> Result<(), ModelError> {
+        if cells.is_empty() {
             return Ok(());
         }
-        self.pages[index][range].copy_from_slice(&after);
-        if !self.dirty.contains(&c.page) {
-            self.dirty.push(c.page);
+        let c = self
+            .def
+            .constant(name)
+            .ok_or_else(|| ModelError::UnknownConstant(name.to_string()))?
+            .clone();
+        let (elem, shape) = match &c.kind {
+            ConstantKind::Array { elem, shape } => (*elem, *shape),
+            _ => {
+                return Err(ModelError::TypeMismatch(format!(
+                    "`{name}` is not an array"
+                )))
+            }
+        };
+        let len = shape.rows * shape.cols;
+        let width = codec::width(elem);
+        let endian = self.def.comms.endianness;
+        let scaling = self.scaling(&c)?;
+
+        // Validate + encode only the touched indices — nothing is written
+        // to `self.pages` until every touched cell has passed.
+        let mut touched: Vec<(usize, Vec<u8>)> = Vec::with_capacity(cells.len());
+        for (index, value) in cells {
+            let i = *index as usize;
+            if i >= len {
+                return Err(ModelError::TypeMismatch(format!(
+                    "`{name}`: cell index {i} out of bounds ({len} elements)"
+                )));
+            }
+            let bytes = codec::encode_scalar(&c.name, &scaling, *value, elem, endian)?;
+            touched.push((i, bytes));
         }
-        self.undo.push(Edit {
-            page: c.page,
-            offset: c.offset,
-            before,
-            after,
-        });
-        self.redo.clear();
+
+        let index = self.page_index(c.page);
+        let region_len = len * width;
+        let before = self.pages[index][c.offset..c.offset + region_len].to_vec();
+        let mut after = before.clone();
+        for (i, bytes) in &touched {
+            let start = i * width;
+            after[start..start + width].copy_from_slice(bytes);
+        }
+        self.commit_bytes(c.page, c.offset, before, after);
         Ok(())
     }
 
@@ -239,6 +281,15 @@ impl Tune {
         &self.pages[self.page_index(page)]
     }
 
+    /// The definition this tune's pages/constants are shaped by.
+    ///
+    /// Public accessor for out-of-crate consumers (e.g. `project`'s `.msq`
+    /// read/write) that need the signature, pages, and constants but must
+    /// not reach into `Tune`'s private byte state.
+    pub fn definition(&self) -> &Definition {
+        &self.def
+    }
+
     /// Index into `self.pages` for a page **number**.
     ///
     /// # Panics
@@ -265,6 +316,28 @@ impl Tune {
             c.page
         );
         &page[c.offset..c.offset + len]
+    }
+
+    /// Splice `after` into a constant's page region and record one undo
+    /// [`Edit`], unless `after` is byte-identical to `before` (a true no-op:
+    /// no dirty flag, no undo entry) — shared by [`Tune::set`] and
+    /// [`Tune::set_cells`].
+    fn commit_bytes(&mut self, page: u16, offset: usize, before: Vec<u8>, after: Vec<u8>) {
+        if before == after {
+            return;
+        }
+        let index = self.page_index(page);
+        self.pages[index][offset..offset + after.len()].copy_from_slice(&after);
+        if !self.dirty.contains(&page) {
+            self.dirty.push(page);
+        }
+        self.undo.push(Edit {
+            page,
+            offset,
+            before,
+            after,
+        });
+        self.redo.clear();
     }
 
     /// Splice `bytes` into a page and mark it dirty (shared by undo/redo).

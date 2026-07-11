@@ -1,0 +1,61 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+.curve-editor {
+  --ce-hairline: color-mix(in oklch, var(--color-text) 15%, transparent);
+  margin-top: var(--space-md);
+  color: var(--color-text);
+}
+
+.ce-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.ce-error {
+  margin: 0.5rem 0 0;
+  color: oklch(55% 0.2 25);
+  font-size: 0.85rem;
+}
+
+.ce-preview {
+  margin: var(--space-md) 0 0;
+}
+
+.curve-preview {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  height: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--ce-hairline);
+  border-radius: 0.4rem;
+}
+
+.curve-cursor {
+  pointer-events: none;
+}
+
+.ce-caption {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
+  text-align: center;
+}
+
+/* The single keyboard surface: reuses the table-editor grid on a 1xN row —
+   wide curves scroll inside their container, never the page. */
+.ce-surface {
+  margin-top: var(--space-md);
+  overflow-x: auto;
+  outline: none;
+}
+
+.ce-surface:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-accent);
+  border-radius: 0.2rem;
+}
+
+.ce-empty {
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

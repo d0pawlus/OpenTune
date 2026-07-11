@@ -30,17 +30,18 @@ fn open_session() -> Session {
     let def = Arc::new(load_definition_from_str(BUNDLED_INI).expect("bundled INI parses"));
     let conn = connect_simulator(def.as_ref(), &|_| {}).expect("simulator connects");
     Session {
-        conn,
+        conn: Some(conn),
         def,
         tune: None,
         snapshot: None,
+        offline_origin: false,
     }
 }
 
 /// Read `reqFuel`'s raw little-endian U16 straight off the ECU, bypassing the
 /// tune — the independent oracle that a write actually reached the wire.
 fn ecu_req_fuel_raw(session: &Session) -> u16 {
-    let ActiveConnection::Sim { simulator, .. } = &session.conn else {
+    let Some(ActiveConnection::Sim { simulator, .. }) = &session.conn else {
         panic!("demo runs on the simulator");
     };
     let page = *session.def.pages.iter().find(|p| p.number == 1).unwrap();
@@ -77,7 +78,7 @@ fn m2_demo_open_edit_live_write_burn_undo_redo() {
     let ev = s.burn().expect("burn");
     assert!(!ev.dirty, "burning clears the badge");
     // Reboot restores RAM from flash; a burned value survives.
-    if let ActiveConnection::Sim { simulator, .. } = &s.conn {
+    if let Some(ActiveConnection::Sim { simulator, .. }) = &s.conn {
         simulator.reboot();
     }
     s.load_tune().expect("reload after reboot");

@@ -13,13 +13,16 @@
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "rust:fmt": "cargo fmt --manifest-path src-tauri/Cargo.toml --all --check",
-    "rust:clippy": "cargo clippy --workspace --manifest-path src-tauri/Cargo.toml -- -D warnings"
+    "rust:clippy": "cargo clippy --workspace --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "rust:test": "cargo test --workspace --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "three": "^0.182.0",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -28,6 +31,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
+    "@types/three": "^0.182.0",
     "@typescript-eslint/eslint-plugin": "^8.61.1",
     "@typescript-eslint/parser": "^8.61.1",
     "@vitejs/plugin-react": "^4.6.0",

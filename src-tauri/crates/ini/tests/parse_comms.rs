@@ -70,6 +70,73 @@ fn returns_error_when_signature_is_absent() {
 }
 
 #[test]
+fn comms_keys_scattered_into_constants_and_output_channels() {
+    // Layout mirrors reference/speeduino.ini @ 0832dc1d l.4-10 + l.240-274 + l.5352-5353.
+    let ini = r#"
+[MegaTune]
+   queryCommand   = "Q"
+   signature      = "speeduino 202504-dev"
+   versionInfo    = "S"
+
+[Constants]
+    pageSize            = 128,   288
+    pageReadCommand     = "p%2i%2o%2c", "p%2i%2o%2c"
+    pageValueWrite      = "M%2i%2o%2c%v", "M%2i%2o%2c%v"
+    burnCommand         = "b%2i", "b%2i"
+    blockingFactor      = 121
+    blockReadTimeout    = 2000
+
+page = 1
+      reqFuel    = scalar, U16,  0, "ms",   0.1,  0.0,  0.0,  6553.5,  1
+
+[OutputChannels]
+  ochGetCommand    = "r\$tsCanId\x30%2o%2c"
+  ochBlockSize     =  139
+"#;
+    let comms = opentune_ini::parse_comms(ini).expect("scattered keys must resolve");
+    assert_eq!(comms.signature, "speeduino 202504-dev");
+    assert_eq!(comms.page_read_command, "p%2i%2o%2c"); // first list element
+    assert_eq!(comms.page_value_write, "M%2i%2o%2c%v");
+    assert_eq!(comms.burn_command, "b%2i");
+    assert_eq!(comms.blocking_factor, 121);
+    assert_eq!(comms.block_read_timeout_ms, 2000);
+    assert_eq!(comms.och_get_command, r"r\$tsCanId\x30%2o%2c");
+    assert_eq!(comms.och_block_size, 139);
+}
+
+#[test]
+fn megatune_value_wins_when_key_is_also_scattered_into_constants() {
+    // A synthetic both-declared case (never observed in the real file — see
+    // `parser::parse_comms`'s doc comment): `blockingFactor` appears in BOTH
+    // `[MegaTune]` and `[Constants]` with different values. The dedicated
+    // comms section must win over the scattered one, pinning the
+    // find_raw/extract_scattered_comms ordering fix (M4 Task 2).
+    let ini = r#"
+[MegaTune]
+   signature      = "speeduino 202504-dev"
+   queryCommand   = "Q"
+   versionInfo    = "S"
+   ochGetCommand  = "r"
+   pageReadCommand = "p%2i%2o%2c"
+   pageValueWrite = "M%2i%2o%2c%v"
+   burnCommand    = "b%2i"
+   blockingFactor = 251
+   blockReadTimeout = 2000
+
+[Constants]
+    pageSize = 128
+    blockingFactor = 121
+page = 1
+      reqFuel = scalar, U16, 0, "ms", 0.1, 0.0, 0.0, 6553.5, 1
+"#;
+    let comms = opentune_ini::parse_comms(ini).expect("must parse");
+    assert_eq!(
+        comms.blocking_factor, 251,
+        "the [MegaTune] value must win over the scattered [Constants] one"
+    );
+}
+
+#[test]
 fn parses_tuner_studio_section_alias() {
     // Some firmwares use [TunerStudio] instead of [MegaTune].
     let ini = "[TunerStudio]\n\
@@ -85,4 +152,21 @@ fn parses_tuner_studio_section_alias() {
     let c = parse_comms(ini).expect("should parse [TunerStudio] section");
     assert_eq!(c.signature, "rusEFI v1.0");
     assert_eq!(c.blocking_factor, 64);
+}
+
+#[test]
+fn raw_real_ini_resolves_scattered_keys_from_live_if_branches() {
+    // Final-review finding: called on RAW (unpreprocessed) text, parse_comms
+    // used to collect scattered keys from EVERY `#if` branch and resolve
+    // last-wins to the dead trailing `#if COMMS_COMPAT` value
+    // (blockingFactor 121) instead of the `#else` branch's 251 that
+    // parse_definition yields on the same file. parse_comms now preprocesses
+    // internally (same empty symbol set as parse_definition), so both entry
+    // points agree.
+    let raw = include_str!("fixtures/speeduino-real-0832dc1d.ini");
+    let comms = parse_comms(raw).expect("raw real INI parses");
+    assert_eq!(
+        comms.blocking_factor, 251,
+        "raw-text entry point must match parse_definition's preprocessed value"
+    );
 }

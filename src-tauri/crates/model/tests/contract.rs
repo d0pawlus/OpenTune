@@ -65,6 +65,7 @@ fn hand_built_definition() -> Definition {
             gauge_slots: Vec::new(),
             indicators: Vec::new(),
         },
+        ve_analyze: None,
     }
 }
 
@@ -84,3 +85,7 @@ fn new_tune_zeroes_pages_sized_from_definition() {
     assert_eq!(bytes.len(), def.pages[0].size);
     assert!(bytes.iter().all(|&b| b == 0));
 }
+
+// The M4 Task 0 `set_cells` signature pin lived here while the body was a
+// `todo!()` stub; Task 3 implemented it, and the real behaviour tests in
+// `tests/tune.rs` (`set_cells_*`) exercise that exact signature.

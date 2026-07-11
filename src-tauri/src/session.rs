@@ -30,10 +30,20 @@ use crate::dto::DefinitionDto;
 use crate::events::TuneDirtyEvent;
 
 pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
+pub(crate) const NO_CONNECTION: &str = "no ECU connection — this operation needs a live link";
 const NO_OCH_BLOCK: &str =
     "the loaded INI declares no ochBlockSize — realtime polling is unavailable";
 const SERIAL_UNSUPPORTED: &str = "live page operations are not yet wired for serial \
     connections (M3: persist MsProtocol in ConnectionManager); use the simulator for M2";
+
+/// A poll failure classified for the owner. Only link failures enter M1's
+/// reconnect state machine; definition/configuration failures remain local and
+/// must not create a reconnect storm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PollFrameError {
+    Link(String),
+    Configuration(String),
+}
 
 impl Session {
     /// The UI-facing projection of the parsed definition (menus, dialogs,
@@ -48,6 +58,7 @@ impl Session {
         let Session {
             conn, def, tune, ..
         } = self;
+        let conn = conn.as_ref().ok_or_else(|| NO_CONNECTION.to_string())?;
         let mut fresh = Tune::new(Arc::clone(def));
         let mut proto = protocol_for(conn, &def.comms)?;
         for page in &def.pages {
@@ -75,6 +86,21 @@ impl Session {
             .collect())
     }
 
+    /// Probe the manager-owned live protocol while realtime polling is idle.
+    /// A failure is a concrete link-loss signal for the owner.
+    pub(crate) fn check_link(&mut self) -> Result<(), String> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| NO_CONNECTION.to_string())?;
+        match conn {
+            ActiveConnection::Sim { manager, .. } => manager.check_link(),
+            ActiveConnection::Serial { manager } => manager.check_link(),
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
     /// One realtime poll tick (M3 Task 6.5): read the full och block through
     /// the connection, hand it to the coalescing `poller`
     /// ([`RealtimePoller::poll_once`] decodes + gates emission to ≤30 Hz),
@@ -88,18 +114,25 @@ impl Session {
     /// a later glitch reconnect compares against a stale baseline, falsely
     /// detects a reboot, and the owner's reboot path re-reads the tune,
     /// silently discarding unburned edits.
-    pub fn poll_frame(
+    pub(crate) fn poll_frame(
         &mut self,
         poller: &mut RealtimePoller,
-    ) -> Result<Option<RealtimeFrame>, String> {
+    ) -> Result<Option<RealtimeFrame>, PollFrameError> {
         let Session { conn, def, .. } = self;
-        let len = u16::try_from(def.comms.och_block_size)
-            .map_err(|_| format!("ochBlockSize {} exceeds u16", def.comms.och_block_size))?;
+        let Some(conn) = conn.as_mut() else {
+            return Ok(None); // offline: no live link, so no frame to report
+        };
+        let len = u16::try_from(def.comms.och_block_size).map_err(|_| {
+            PollFrameError::Configuration(format!(
+                "ochBlockSize {} exceeds u16",
+                def.comms.och_block_size
+            ))
+        })?;
         if len == 0 {
-            return Err(NO_OCH_BLOCK.to_string());
+            return Err(PollFrameError::Configuration(NO_OCH_BLOCK.to_string()));
         }
 
-        let mut proto = protocol_for(conn, &def.comms)?;
+        let mut proto = protocol_for(conn, &def.comms).map_err(PollFrameError::Configuration)?;
         let polled_secl = std::cell::Cell::new(None);
         let read_block = || {
             let block = proto
@@ -120,8 +153,8 @@ impl Session {
         }
 
         result.map_err(|e| match e {
-            RealtimeError::Poll(detail) => detail,
-            RealtimeError::NotConnected => "not connected".to_string(),
+            RealtimeError::Poll(detail) => PollFrameError::Link(detail),
+            RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
         })
     }
 
@@ -136,13 +169,40 @@ impl Session {
         // Validate + compute target bytes without touching the real tune.
         let mut probe = tune.clone();
         probe.set(name, value.clone()).map_err(fmt_model_err)?;
-        let deltas = page_deltas(tune, &probe, &def.pages);
 
-        // Reach the wire. If this fails, the real tune is still untouched.
-        write_deltas(conn, &def.comms, &deltas)?;
+        // Wire the change only when connected; offline sessions edit the model
+        // in place (the RAM-vs-flash distinction collapses to model-only).
+        if let Some(conn) = conn.as_ref() {
+            let deltas = page_deltas(tune, &probe, &def.pages);
+            write_deltas(conn, &def.comms, &deltas)?;
+        }
 
         // Commit to the model now that the ECU has the bytes.
         tune.set(name, value).map_err(fmt_model_err)?;
+        Ok(dirty_event(tune))
+    }
+
+    /// Write individual table cells live: validate on a clone, push only the
+    /// changed byte span to the ECU, then commit. One call = one undo step.
+    pub fn set_cells(
+        &mut self,
+        name: &str,
+        cells: &[(u32, f64)],
+    ) -> Result<TuneDirtyEvent, String> {
+        let Session {
+            conn, def, tune, ..
+        } = self;
+        let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+
+        let mut probe = tune.clone();
+        probe.set_cells(name, cells).map_err(fmt_model_err)?;
+
+        if let Some(conn) = conn.as_ref() {
+            let deltas = page_deltas(tune, &probe, &def.pages);
+            write_deltas(conn, &def.comms, &deltas)?;
+        }
+
+        tune.set_cells(name, cells).map_err(fmt_model_err)?;
         Ok(dirty_event(tune))
     }
 
@@ -158,10 +218,12 @@ impl Session {
         if !tune.undo() {
             return Ok(dirty_event(tune));
         }
-        let deltas = page_deltas(&before, tune, &def.pages);
-        if let Err(e) = write_deltas(conn, &def.comms, &deltas) {
-            tune.redo(); // reverse the undo so tune matches the ECU
-            return Err(e);
+        if let Some(conn) = conn.as_ref() {
+            let deltas = page_deltas(&before, tune, &def.pages);
+            if let Err(e) = write_deltas(conn, &def.comms, &deltas) {
+                tune.redo(); // reverse the undo so tune matches the ECU
+                return Err(e);
+            }
         }
         Ok(dirty_event(tune))
     }
@@ -177,10 +239,12 @@ impl Session {
         if !tune.redo() {
             return Ok(dirty_event(tune));
         }
-        let deltas = page_deltas(&before, tune, &def.pages);
-        if let Err(e) = write_deltas(conn, &def.comms, &deltas) {
-            tune.undo(); // reverse the redo
-            return Err(e);
+        if let Some(conn) = conn.as_ref() {
+            let deltas = page_deltas(&before, tune, &def.pages);
+            if let Err(e) = write_deltas(conn, &def.comms, &deltas) {
+                tune.undo(); // reverse the redo
+                return Err(e);
+            }
         }
         Ok(dirty_event(tune))
     }
@@ -194,6 +258,7 @@ impl Session {
             conn, def, tune, ..
         } = self;
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+        let conn = conn.as_ref().ok_or_else(|| NO_CONNECTION.to_string())?;
         let dirty = tune.dirty_pages();
         let mut proto = protocol_for(conn, &def.comms)?;
         for page in &dirty {
@@ -212,6 +277,38 @@ impl Session {
             .iter()
             .map(|e| tune.eval_condition(e).unwrap_or(true))
             .collect())
+    }
+
+    /// Push the entire tune to the ECU: write every page's bytes, then burn
+    /// each page. Used by the offline "Write to ECU" action, which has no
+    /// read baseline to diff against. Requires a live connection.
+    pub fn write_all_to_ecu(&mut self) -> Result<TuneDirtyEvent, String> {
+        let Session {
+            conn, def, tune, ..
+        } = self;
+        let conn = conn.as_ref().ok_or_else(|| NO_CONNECTION.to_string())?;
+        let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
+        // Defense-in-depth (design spec §Safety guards #2): re-verify the ECU
+        // signature against the tune's INI before writing. The attach path
+        // already checks this, but re-checking here means a whole-tune write
+        // can never trust a signature implicitly — the same equality as
+        // `owner_ops::verify_signature`, via the shared method.
+        conn.verify_signature(&def.comms)?;
+        let mut proto = protocol_for(conn, &def.comms)?;
+        // Whole-page write in one call — a new access pattern (M2 only ever
+        // wrote small deltas). Against the simulator this is accepted in one
+        // shot; real serial write (when it lifts SERIAL_UNSUPPORTED) MUST
+        // chunk each page into `comms.blocking_factor`-sized spans.
+        for page in &def.pages {
+            proto
+                .write(page.number, 0, tune.page_bytes(page.number))
+                .map_err(|e| e.to_string())?;
+        }
+        for page in &def.pages {
+            proto.burn(page.number).map_err(|e| e.to_string())?;
+        }
+        tune.mark_burned();
+        Ok(dirty_event(tune))
     }
 
     /// The tune's current dirty-state event, if a tune is loaded.
@@ -321,17 +418,18 @@ mod tests {
         let def = Arc::new(load_definition_from_str(BUNDLED_INI).expect("bundled INI parses"));
         let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
         Session {
-            conn,
+            conn: Some(conn),
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         }
     }
 
     /// Read a page straight off the ECU (bypassing the tune) — this is the
     /// "reached the wire" oracle for set/undo/redo/burn.
     fn ecu_page(session: &Session, number: u16) -> Vec<u8> {
-        let ActiveConnection::Sim { simulator, .. } = &session.conn else {
+        let Some(ActiveConnection::Sim { simulator, .. }) = &session.conn else {
             panic!("expected simulator connection");
         };
         let page = *session
@@ -386,10 +484,11 @@ page = 1
         let def = Arc::new(load_definition_from_str(ini).expect("test INI parses"));
         let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
         let mut s = Session {
-            conn,
+            conn: Some(conn),
             def,
             tune: None,
             snapshot: None,
+            offline_origin: false,
         };
         s.load_tune().unwrap();
 
@@ -431,6 +530,94 @@ page = 1
         assert!(!s.tune.as_ref().unwrap().is_dirty());
     }
 
+    /// A session over an inline INI that declares a 2-D array constant —
+    /// the bundled sample INI has none (M4 Task 3 fixture).
+    fn array_session() -> Session {
+        let ini = r#"
+[MegaTune]
+   signature            = "speeduino 202504-dev"
+   queryCommand         = "Q"
+   versionInfo          = "S"
+   blockReadTimeout     = 2000
+   blockingFactor       = 121
+   endianness           = little
+   ochGetCommand        = "A"
+   pageReadCommand      = "p%2i%2o%2c"
+   pageValueWrite       = "M%2i%2o%2c%v"
+   burnCommand          = "b%2i"
+
+[Constants]
+    endianness      = little
+    nPages          = 1
+    pageSize        = 64
+
+page = 1
+      veTable = array,  U08,  0, [4x8], "%",  1.0, 0.0, 0.0, 255.0,  0
+      reqFuel = scalar, U16, 32,        "ms", 0.1, 0.0, 0.0, 6553.5, 1
+"#;
+        let def = Arc::new(load_definition_from_str(ini).expect("array INI parses"));
+        let conn = connect_simulator(&def, &|_| {}).expect("simulator connects");
+        Session {
+            conn: Some(conn),
+            def,
+            tune: None,
+            snapshot: None,
+            offline_origin: false,
+        }
+    }
+
+    #[test]
+    fn set_cells_reaches_the_wire_as_one_contiguous_span() {
+        let mut s = array_session();
+        s.load_tune().unwrap();
+
+        // One gesture: two adjacent cells plus one far cell.
+        let before = s.tune.clone().unwrap();
+        let ev = s
+            .set_cells("veTable", &[(0, 5.0), (1, 7.0), (12, 9.0)])
+            .expect("set_cells");
+        assert!(ev.dirty, "a cell gesture dirties the tune");
+        assert_eq!(ev.dirty_pages, vec![1]);
+
+        // (a) the session tune reflects the edited cells...
+        let Value::Array(cells) = s.tune.as_ref().unwrap().get("veTable").unwrap() else {
+            panic!("veTable is an array");
+        };
+        assert_eq!((cells[0], cells[1], cells[12]), (5.0, 7.0, 9.0));
+
+        // ...and the bytes reached ECU RAM (scale 1.0 → raw == physical).
+        let page = ecu_page(&s, 1);
+        assert_eq!((page[0], page[1], page[12]), (5, 7, 9));
+
+        // (b) the wire span is exactly first_changed..=last_changed — ONE
+        // contiguous span. The far cell stretches it: the documented
+        // trade-off of `page_deltas`, where the untouched bytes in between
+        // are rewritten with identical values.
+        let deltas = page_deltas(&before, s.tune.as_ref().unwrap(), &s.def.pages);
+        assert_eq!(deltas.len(), 1, "one page, one span");
+        let (page_no, start, bytes) = &deltas[0];
+        assert_eq!((*page_no, *start), (1, 0));
+        assert_eq!(bytes.len(), 13, "spans cell 0 through cell 12 inclusive");
+        assert_eq!(bytes[..2], [5, 7]);
+        assert_eq!(bytes[12], 9);
+        assert!(
+            bytes[2..12].iter().all(|&b| b == 0),
+            "in-between bytes rewritten with identical (unchanged) values"
+        );
+    }
+
+    #[test]
+    fn set_cells_rejected_gesture_leaves_wire_and_tune_untouched() {
+        let mut s = array_session();
+        s.load_tune().unwrap();
+        // Cell 1 is out of range (high = 255) → the whole gesture fails
+        // on the validation clone, before any wire I/O.
+        let err = s.set_cells("veTable", &[(0, 5.0), (1, 999.0)]).unwrap_err();
+        assert!(err.contains("out of range"), "got: {err}");
+        assert_eq!(&ecu_page(&s, 1)[0..2], &[0, 0], "nothing written");
+        assert!(!s.tune.as_ref().unwrap().is_dirty());
+    }
+
     #[test]
     fn undo_and_redo_reach_the_wire() {
         let mut s = session();
@@ -463,7 +650,7 @@ page = 1
         assert!(!ev.dirty, "burn clears dirty");
 
         // Reboot restores RAM from flash; a burned value survives.
-        if let ActiveConnection::Sim { simulator, .. } = &s.conn {
+        if let Some(ActiveConnection::Sim { simulator, .. }) = &s.conn {
             simulator.reboot();
         }
         s.load_tune().unwrap();
@@ -480,7 +667,7 @@ page = 1
         s.load_tune().unwrap();
         s.set_value("reqFuel", Value::Scalar(12.5)).unwrap();
         // No burn.
-        if let ActiveConnection::Sim { simulator, .. } = &s.conn {
+        if let Some(ActiveConnection::Sim { simulator, .. }) = &s.conn {
             simulator.reboot();
         }
         s.load_tune().unwrap();
@@ -534,5 +721,92 @@ page = 1
             "must reflect the edit even read independently of set_value's own Ok"
         );
         assert_eq!(ev.dirty_pages, vec![1]);
+    }
+}
+
+// ── Offline-session unit tests (Task 2: no live ECU link) ────────────────────
+
+#[cfg(test)]
+mod offline_tests {
+    use super::*;
+    use opentune_ini::{
+        CommsSettings, ConstantDef, ConstantKind, Definition, Endianness, EnvelopeFormat,
+        FrontPageDef, Number, PageDef, ScalarType,
+    };
+    use opentune_model::{Tune, Value};
+    use std::sync::Arc;
+
+    fn offline_session() -> Session {
+        let comms = CommsSettings {
+            signature: "test-sig".into(),
+            query_command: "Q".into(),
+            version_info: "S".into(),
+            och_get_command: "r".into(),
+            page_read_command: "p".into(),
+            page_value_write: "M".into(),
+            burn_command: "b".into(),
+            blocking_factor: 251,
+            page_activation_delay_ms: 0,
+            block_read_timeout_ms: 1000,
+            inter_write_delay_ms: 0,
+            endianness: Endianness::Little,
+            envelope: EnvelopeFormat::MsEnvelope10,
+            och_block_size: 0,
+        };
+        let def = Arc::new(Definition {
+            comms,
+            pages: vec![PageDef { number: 1, size: 8 }],
+            constants: vec![ConstantDef {
+                name: "rpm".into(),
+                page: 1,
+                offset: 0,
+                kind: ConstantKind::Scalar(ScalarType::U08),
+                scale: Number::Lit(1.0),
+                translate: Number::Lit(0.0),
+                units: String::new(),
+                low: Number::Lit(0.0),
+                high: Number::Lit(255.0),
+                digits: 0,
+            }],
+            pc_variables: vec![],
+            menus: vec![],
+            dialogs: vec![],
+            tables: vec![],
+            curves: vec![],
+            diagnostics: vec![],
+            output_channels: vec![],
+            gauges: vec![],
+            frontpage: FrontPageDef {
+                gauge_slots: vec![],
+                indicators: vec![],
+            },
+            ve_analyze: None,
+        });
+        let tune = Tune::new(Arc::clone(&def));
+        Session {
+            conn: None,
+            def,
+            tune: Some(tune),
+            snapshot: None,
+            offline_origin: true,
+        }
+    }
+
+    #[test]
+    fn set_value_commits_offline_without_a_wire() {
+        let mut s = offline_session();
+        s.set_value("rpm", Value::Scalar(42.0)).unwrap();
+        assert_eq!(
+            s.tune.as_ref().unwrap().get("rpm").unwrap(),
+            Value::Scalar(42.0)
+        );
+    }
+
+    #[test]
+    fn burn_offline_reports_no_connection() {
+        let mut s = offline_session();
+        s.set_value("rpm", Value::Scalar(42.0)).unwrap();
+        let err = s.burn().unwrap_err();
+        assert_eq!(err, NO_CONNECTION);
     }
 }

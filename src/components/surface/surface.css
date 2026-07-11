@@ -1,0 +1,20 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+.surface-view {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.surface-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none; /* OrbitControls drives pointer gestures itself */
+}
+
+.surface-unavailable {
+  margin: 0;
+  padding: var(--space-md, 1rem);
+  font-size: 0.85rem;
+  opacity: 0.7;
+}

@@ -46,6 +46,10 @@ where
     last_secl: u8,
     /// Set true when `secl` went backwards on the last reconnect (ECU rebooted).
     last_reconnect_caused_reidentify: bool,
+    /// The live protocol/transport. Keeping it here makes the manager an actual
+    /// connection owner: health checks can detect an unplug after the handshake,
+    /// and reconnect atomically replaces the dead link.
+    protocol: Option<MsProtocol<T>>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -62,6 +66,7 @@ where
             state: ConnectionState::Disconnected,
             last_secl: 0,
             last_reconnect_caused_reidentify: false,
+            protocol: None,
             _marker: std::marker::PhantomData,
         }
     }
@@ -99,6 +104,29 @@ where
         self.last_reconnect_caused_reidentify
     }
 
+    /// Probe the live link through the INI-defined output-channel command.
+    ///
+    /// The owner calls this while realtime polling is idle. Any transport or
+    /// protocol error is a drop signal and should enter the reconnect loop.
+    pub fn check_link(&mut self) -> Result<u8> {
+        let proto = self.protocol.as_mut().ok_or(ProtocolError::Transport(
+            opentune_transport::TransportError::Disconnected,
+        ))?;
+        let secl = proto.read_secl()?;
+        // A small backwards jump is a reboot signal. Preserve the old baseline
+        // and let the owner enter reconnect so the normal re-identify/re-read
+        // path runs. The one legitimate backwards transition is u8 wrap.
+        let wrapped = self.last_secl >= 250 && secl <= 5;
+        if secl < self.last_secl && !wrapped {
+            return Err(ProtocolError::MalformedResponse(format!(
+                "ECU second counter moved backwards ({} -> {secl})",
+                self.last_secl
+            )));
+        }
+        self.last_secl = secl;
+        Ok(secl)
+    }
+
     /// Open transport, run MS handshake, read `secl` baseline, → Connected.
     /// GREEN: test 1 `initial_connect_reaches_connected`.
     pub fn connect(&mut self) -> Result<ConnectionState> {
@@ -109,11 +137,22 @@ where
         transport.open().map_err(ProtocolError::Transport)?;
         let mut proto = MsProtocol::new(self.comms.clone(), transport);
         let identity = proto.identify()?;
+        if !identity.matches(&self.comms) {
+            let error = ProtocolError::SignatureMismatch {
+                reported: identity.signature,
+                expected: self.comms.signature.clone(),
+            };
+            self.state = ConnectionState::Failed {
+                reason: error.to_string(),
+            };
+            return Err(error);
+        }
         // Capture baseline secl so reconnect can detect backwards movement.
         self.last_secl = proto.read_secl().unwrap_or(0);
 
         let connected = ConnectionState::Connected { identity };
         self.state = connected.clone();
+        self.protocol = Some(proto);
         Ok(connected)
     }
 
@@ -123,7 +162,21 @@ where
     /// - secl went backwards → reboot; `last_reconnect_caused_reidentify = true`
     ///   (GREEN: test 4).
     pub fn reconnect_collect_states(&mut self) -> Vec<ConnectionState> {
+        self.reconnect_collect_states_with_retry_hook(|_| {})
+    }
+
+    /// Reconnect with a callback after each failed non-terminal attempt.
+    ///
+    /// Production uses [`Self::reconnect_collect_states`]. The hook lets the
+    /// simulator demo restore its deliberately dropped link only after proving
+    /// that one real reconnect attempt failed.
+    pub fn reconnect_collect_states_with_retry_hook(
+        &mut self,
+        mut on_failed_attempt: impl FnMut(u32),
+    ) -> Vec<ConnectionState> {
         let mut emitted = Vec::new();
+        let mut last_error = None;
+        self.protocol = None;
 
         for attempt in 1..=self.config.max_attempts {
             let reconnecting = ConnectionState::Reconnecting { attempt };
@@ -136,36 +189,60 @@ where
                 std::thread::sleep(delay);
             }
 
-            let result: Result<ConnectionState> = (|| {
+            let result: Result<(ConnectionState, MsProtocol<T>, u8)> = (|| {
                 let mut transport = (self.factory)()?;
                 transport.open().map_err(ProtocolError::Transport)?;
                 let mut proto = MsProtocol::new(self.comms.clone(), transport);
                 let identity = proto.identify()?;
+                if !identity.matches(&self.comms) {
+                    return Err(ProtocolError::SignatureMismatch {
+                        reported: identity.signature,
+                        expected: self.comms.signature.clone(),
+                    });
+                }
 
                 // secl resync: detect reboot when counter went backwards.
                 let new_secl = proto.read_secl().unwrap_or(self.last_secl);
-                self.last_reconnect_caused_reidentify = new_secl < self.last_secl;
-                self.last_secl = new_secl;
 
                 let connected = ConnectionState::Connected { identity };
-                self.state = connected.clone();
-                Ok(connected)
+                Ok((connected, proto, new_secl))
             })();
 
             match result {
-                Ok(state) => {
+                Ok((state, proto, new_secl)) => {
+                    self.last_reconnect_caused_reidentify = new_secl < self.last_secl;
+                    self.last_secl = new_secl;
+                    self.protocol = Some(proto);
+                    self.state = state.clone();
                     emitted.push(state);
                     return emitted;
                 }
-                Err(_) => { /* retry */ }
+                Err(error @ ProtocolError::SignatureMismatch { .. }) => {
+                    let failed = ConnectionState::Failed {
+                        reason: error.to_string(),
+                    };
+                    self.state = failed.clone();
+                    emitted.push(failed);
+                    return emitted;
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    on_failed_attempt(attempt);
+                }
             }
         }
 
         let failed = ConnectionState::Failed {
-            reason: format!(
-                "reconnect failed after {} attempts",
-                self.config.max_attempts
-            ),
+            reason: match last_error {
+                Some(detail) => format!(
+                    "reconnect failed after {} attempts: {detail}",
+                    self.config.max_attempts
+                ),
+                None => format!(
+                    "reconnect failed after {} attempts",
+                    self.config.max_attempts
+                ),
+            },
         };
         self.state = failed.clone();
         emitted.push(failed);

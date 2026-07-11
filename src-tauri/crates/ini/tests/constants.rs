@@ -91,9 +91,14 @@ fn parses_constants_and_pages() {
     }
 
     // ── 2-D table array, offset resolved via `lastOffset` ───────────
-    // wueRates occupies bytes [2, 12) → lastOffset resolves to 12.
+    // M4 correction (real speeduino.ini @ 0832dc1d l.640-645/675-679):
+    // `lastOffset` resolves to the previous field's START, not the running
+    // end — veTable ALIASES wueRates's own offset (2), it does not follow
+    // it. (The M2-era expectation of 12 pinned the old, incorrect
+    // running-end semantics; `Definition`'s shape is unchanged, only this
+    // resolved value is.)
     let ve = def.constant("veTable").expect("veTable");
-    assert_eq!(ve.offset, 12);
+    assert_eq!(ve.offset, 2);
     match &ve.kind {
         ConstantKind::Array { elem, shape } => {
             assert_eq!(*elem, ScalarType::U08);
@@ -109,11 +114,12 @@ fn parses_constants_and_pages() {
     assert_eq!(stoich.scale, Number::Lit(0.1));
 
     // ── expression-scaled constant, offset via `lastOffset` ─────────
-    // veTable occupies bytes [12, 28) → lastOffset resolves to 28... but
-    // `stoich` itself occupies offset 28 (1 byte) first, so ego_min_lambda
-    // (declared after stoich) resolves to 29.
+    // M4 correction: `lastOffset` aliases the previous field's START.
+    // `stoich` starts at 28, so `ego_min_lambda` (declared right after)
+    // resolves to 28 too — the AFR↔Lambda alias shape from the real file
+    // (was 29 under the old, incorrect running-end semantics).
     let ego = def.constant("ego_min_lambda").expect("ego_min_lambda");
-    assert_eq!(ego.offset, 29);
+    assert_eq!(ego.offset, 28);
     assert_eq!(ego.scale, Number::Expr("0.1 / stoich".to_string()));
     assert_eq!(ego.low, Number::Expr("7 / stoich".to_string()));
     assert_eq!(ego.high, Number::Expr("25 / stoich".to_string()));
@@ -122,14 +128,19 @@ fn parses_constants_and_pages() {
     // ── `#if CELSIUS`/`#else`/`#endif` gate ─────────────────────────
     // `parse_definition` preprocesses with an empty active-symbol set, so
     // `CELSIUS` is inactive and the `#else` (Fahrenheit) branch survives.
+    // M4 correction: `coolantGate`'s `lastOffset` aliases `ego_min_lambda`'s
+    // start (28), chaining the alias further (was 30 under the old
+    // running-end semantics).
     let coolant_gate = def.constant("coolantGate").expect("coolantGate");
-    assert_eq!(coolant_gate.offset, 30);
+    assert_eq!(coolant_gate.offset, 28);
     assert_eq!(coolant_gate.units, "F");
     assert_eq!(coolant_gate.scale, Number::Lit(1.8));
 
     // ── string constant ──────────────────────────────────────────────
+    // M4 correction: same alias chain, continued (was 31 under the old
+    // running-end semantics).
     let name = def.constant("engineName").expect("engineName");
-    assert_eq!(name.offset, 31);
+    assert_eq!(name.offset, 28);
     assert_eq!(name.kind, ConstantKind::Text { len: 12 });
 
     // ── pc_variables (no offset field) ──────────────────────────────
@@ -225,12 +236,195 @@ page = 1
 
     // An explicit numeric offset on the same page is unaffected by the
     // poison and re-anchors the running counter for constants after it.
+    // M4 correction: `lastOffset` resolves to the previous field's START
+    // (aliasing `recovered`, offset 5), not its end (was 6 under the old,
+    // incorrect running-end semantics — see `last_offset_is_previous_field_
+    // start` / real speeduino.ini @ 0832dc1d).
     let recovered = def.constant("recovered").expect("recovered");
     assert_eq!(recovered.offset, 5);
     let resumed = def.constant("resumed").expect("resumed");
     assert_eq!(
-        resumed.offset, 6,
+        resumed.offset, 5,
         "lastOffset resolves correctly again once re-anchored by an explicit offset"
+    );
+}
+
+#[test]
+fn pc_variables_support_array_bits_and_string_classes_not_just_scalar() {
+    // Wall #3 (discovered running the M4 golden gate, not predicted by the
+    // task brief): real speeduino.ini's `[PcVariables]` section (l.50-154 @
+    // 0832dc1d) uses `array`/`bits`/`string` classes extensively (e.g.
+    // `wueAFR = array, S16, [10], "AFR", 0.1, 0.0, -4.0, 4.0, 1`,
+    // `tsCanId = bits, U08, [0:3], "CAN ID 0", ...`,
+    // `AUXin00Alias = string, ASCII, 20`), but `parse_constant_line` only
+    // wired `("scalar", None)` for the no-offset (`[PcVariables]`) case —
+    // every other class fell through to `UnknownClass`. This is a grammar
+    // gap in an already-modeled section (`[PcVariables]` scalars already
+    // work), so it's fixed here rather than allowlisted.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[PcVariables]
+   wueAFR = array, S16, [10], \"AFR\", 0.1, 0.0, -4.0, 4.0, 1
+   tsCanId = bits, U08, [0:3], \"CAN ID 0\", \"CAN ID 1\", \"INVALID\"
+   AUXin00Alias = string, ASCII, 20
+";
+    let def = parse_definition(ini).expect("PcVariables array/bits/string must parse");
+    assert!(
+        def.diagnostics.is_empty(),
+        "expected zero diagnostics; got {:?}",
+        def.diagnostics
+    );
+
+    let wue_afr = def
+        .pc_variables
+        .iter()
+        .find(|c| c.name == "wueAFR")
+        .expect("wueAFR pc_variable");
+    match &wue_afr.kind {
+        ConstantKind::Array { elem, shape } => {
+            assert_eq!(*elem, ScalarType::S16);
+            assert_eq!(*shape, Shape { rows: 10, cols: 1 });
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+    assert_eq!(wue_afr.units, "AFR");
+    assert_eq!(wue_afr.low, Number::Lit(-4.0));
+    assert_eq!(wue_afr.high, Number::Lit(4.0));
+
+    let ts_can_id = def
+        .pc_variables
+        .iter()
+        .find(|c| c.name == "tsCanId")
+        .expect("tsCanId pc_variable");
+    match &ts_can_id.kind {
+        ConstantKind::Bits {
+            storage,
+            bit_lo,
+            bit_hi,
+            options,
+        } => {
+            assert_eq!(*storage, ScalarType::U08);
+            assert_eq!(*bit_lo, 0);
+            assert_eq!(*bit_hi, 3);
+            assert_eq!(
+                options,
+                &vec![
+                    "CAN ID 0".to_string(),
+                    "CAN ID 1".to_string(),
+                    "INVALID".to_string(),
+                ]
+            );
+        }
+        other => panic!("expected Bits, got {other:?}"),
+    }
+
+    let aux_alias = def
+        .pc_variables
+        .iter()
+        .find(|c| c.name == "AUXin00Alias")
+        .expect("AUXin00Alias pc_variable");
+    assert_eq!(aux_alias.kind, ConstantKind::Text { len: 20 });
+}
+
+#[test]
+fn scattered_metadata_keys_in_constants_are_silently_skipped() {
+    // Real speeduino.ini l.240-274 carries TS metadata / comms keys inside
+    // the `[Constants]` header block, before any `page = N` line. These are
+    // neither an unknown constant `class` nor page data — they must produce
+    // zero diagnostics and must not poison the running offset counter for
+    // the page that follows.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages              = 1
+    pageSize            = 10
+    pageReadCommand     = \"p%2i%2o%2c\", \"p%2i%2o%2c\"
+
+page = 1
+      first  = scalar, U08, 0, \"units\", 1.0, 0.0, 0.0, 255, 0
+      second = scalar, U08, lastOffset, \"units\", 1.0, 0.0, 0.0, 255, 0
+";
+    let def = parse_definition(ini).expect("metadata keys must not break parsing");
+    assert!(
+        def.diagnostics.is_empty(),
+        "expected zero diagnostics; got {:?}",
+        def.diagnostics
+    );
+    assert!(def.constant("first").is_some());
+    assert!(
+        def.constant("second").is_some(),
+        "a following lastOffset constant must still resolve (not poisoned) \
+         after the metadata keys; diagnostics: {:?}",
+        def.diagnostics
+    );
+}
+
+#[test]
+fn last_offset_is_previous_field_start() {
+    // reference/speeduino.ini @ 0832dc1d l.640-645 + l.675-679: every real
+    // `lastOffset` use ALIASES the immediately-preceding field (AFR↔Lambda
+    // views over the same bytes). TS semantics: lastOffset = the previous
+    // field's START offset, not the running end.
+    let ini = r#"
+[MegaTune]
+   signature      = "test"
+   queryCommand   = "Q"
+   versionInfo    = "S"
+   ochGetCommand  = "r"
+   pageReadCommand = "p%2i%2o%2c"
+   pageValueWrite = "M%2i%2o%2c%v"
+   burnCommand    = "b%2i"
+   blockingFactor = 121
+   blockReadTimeout = 2000
+
+[Constants]
+    pageSize = 288
+
+page = 1
+      lambdaTable = array,  U08,          0, [16x16], "Lambda", 0.006, 0.0, 0.0, 2.0, 3
+      afrTable    = array,  U08, lastOffset, [16x16], "AFR",    0.1,   0.0, 7.0, 25.5, 1
+      rpmBinsAFR  = array,  U08, 256, [16], "RPM", 100.0, 0.0, 100.0, 25500.0, 0
+      ego_min_afr    = scalar, U08, 272, "AFR", 0.1, 0.0, 7.0, 25.0, 1
+      ego_min_lambda = scalar, U08, lastOffset, "Lambda", 0.006, 0.0, 0.0, 2.0, 3
+"#;
+    let def = opentune_ini::parse_definition(ini).expect("aliased page must parse");
+    let lambda = def.constant("lambdaTable").unwrap();
+    let afr = def.constant("afrTable").unwrap();
+    assert_eq!(
+        (lambda.offset, afr.offset),
+        (0, 0),
+        "afrTable aliases lambdaTable"
+    );
+    let e_afr = def.constant("ego_min_afr").unwrap();
+    let e_lambda = def.constant("ego_min_lambda").unwrap();
+    assert_eq!(
+        e_lambda.offset, e_afr.offset,
+        "scalar alias shares its byte"
+    );
+    assert!(
+        def.diagnostics.is_empty(),
+        "no diagnostics: {:?}",
+        def.diagnostics
     );
 }
 
@@ -257,6 +451,84 @@ page = 1
 ";
     let err = parse_definition(ini).expect_err("offset beyond page size must be a hard error");
     assert!(matches!(err, IniError::InvalidValue { .. }));
+}
+
+#[test]
+fn scalar_offset_overflow_degrades_to_diagnostic_not_panic() {
+    // M4 final-review fix wave item 1: `def.offset + size` used unchecked
+    // `usize` arithmetic. This offset is `usize::MAX` (the exact adversarial
+    // line from the finding) — `offset + size` overflows. Must degrade to a
+    // Diagnostic + skip, never panic (debug) or silently wrap (release).
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 128
+
+page = 1
+a = scalar, U08, 18446744073709551615, \"u\", 1, 0, 0, 255, 0
+";
+    let def =
+        parse_definition(ini).expect("an overflowing offset must degrade, never panic/hard-error");
+    assert!(
+        def.constant("a").is_none(),
+        "the overflowing constant must be skipped, not stored"
+    );
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "Constants" && d.detail.contains('a')),
+        "expected a diagnostic naming `a`; got {:?}",
+        def.diagnostics
+    );
+}
+
+#[test]
+fn array_shape_overflow_degrades_to_diagnostic_not_panic() {
+    // Same item, the `constant_byte_size` half: `scalar_width * rows * cols`
+    // overflows for this adversarial shape (the exact line from the finding).
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 128
+
+page = 1
+a = array, U32, 0, [4294967295x4294967295], \"u\", 1, 0, 0, 255, 0
+";
+    let def = parse_definition(ini)
+        .expect("an overflowing array shape must degrade, never panic/hard-error");
+    assert!(
+        def.constant("a").is_none(),
+        "the overflowing constant must be skipped, not stored"
+    );
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "Constants" && d.detail.contains('a')),
+        "expected a diagnostic naming `a`; got {:?}",
+        def.diagnostics
+    );
 }
 
 #[test]

@@ -12,7 +12,7 @@ mod decode;
 mod poll;
 
 pub use decode::decode_frame;
-pub use poll::RealtimePoller;
+pub use poll::{RealtimePoller, DEFAULT_EMIT_INTERVAL};
 
 /// One decoded channel value in physical units, or a diagnostic if it failed.
 #[derive(Debug, Clone, PartialEq)]

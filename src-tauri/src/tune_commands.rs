@@ -12,7 +12,7 @@
 use opentune_model::Value;
 use tauri::State;
 
-use crate::dto::{DefinitionDto, FieldDiffDto};
+use crate::dto::{CellEditDto, DefinitionDto, FieldDiffDto};
 use crate::owner::{request, Command, OwnerHandle};
 
 /// Return the parsed firmware definition (menus, dialogs, constants, …) for
@@ -53,6 +53,19 @@ pub async fn set_value(
     owner: State<'_, OwnerHandle>,
 ) -> Result<(), String> {
     request(&owner, |reply| Command::SetValue { name, value, reply })
+        .await
+        .map(|_| ())
+}
+
+/// Write individual cells of an array constant (a table-editor gesture).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_cells(
+    name: String,
+    cells: Vec<CellEditDto>,
+    owner: State<'_, OwnerHandle>,
+) -> Result<(), String> {
+    request(&owner, |reply| Command::SetCells { name, cells, reply })
         .await
         .map(|_| ())
 }
