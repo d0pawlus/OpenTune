@@ -356,7 +356,14 @@ fn finalize(
     sample_count: u32,
     params: &VeAnalyzeParams,
 ) -> CellResult {
-    if current == 0.0 || sum_w < params.min_weight {
+    // Fail-open guard family (M4 final-review fix wave item 2):
+    // - `!current.is_finite()`: a non-finite decoded cell (NaN/±inf, e.g.
+    //   blank/erased ECU flash read as an F32 bit pattern) must never reach
+    //   `.clamp()` below — propose no correction rather than panic.
+    // - `sum_w <= 0.0`: an unhit cell's 0.0/0.0 mean must never leak through
+    //   as NaN, regardless of `min_weight` (so `min_weight <= 0` — a
+    //   legitimate "include every cell" knob — can't divide by zero).
+    if !current.is_finite() || current == 0.0 || sum_w <= 0.0 || sum_w < params.min_weight {
         return CellResult {
             current,
             proposed: current,

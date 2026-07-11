@@ -218,6 +218,48 @@ fn same_input_is_bitwise_identical() {
 }
 
 #[test]
+fn non_finite_current_cell_is_skipped_not_panicked() {
+    // M4 final-review fix wave item 2: a VE grid cell that decodes to NaN
+    // (e.g. blank/erased ECU flash read as an F32 bit pattern) must never
+    // reach `f64::clamp`'s `min <= max` assert. Cell 0 gets plenty of
+    // weighted hits (min_weight default 1.0) so the OLD code would run the
+    // full mean/variance/blend/clamp pipeline and panic.
+    let mut grid = flat_grid(50.0);
+    grid.z[0] = f64::NAN;
+    let s = samples(vec![vec![1000.0, 20.0, 29.4, 100.0]; 10]);
+    let r = ve_analyze(&s, &grid, &flat_grid(14.7), &binding(), &params(0)).unwrap();
+    assert!(r.cells[0].proposed.is_nan(), "no correction proposed");
+    assert_eq!(r.cells[0].confidence, 0.0);
+
+    // +/-inf current must degrade the same way (inf - inf = NaN also trips
+    // the same assert).
+    let mut grid_inf = flat_grid(50.0);
+    grid_inf.z[0] = f64::INFINITY;
+    let r2 = ve_analyze(&s, &grid_inf, &flat_grid(14.7), &binding(), &params(0)).unwrap();
+    assert!(r2.cells[0].proposed.is_infinite());
+    assert_eq!(r2.cells[0].confidence, 0.0);
+}
+
+#[test]
+fn min_weight_non_positive_never_lets_an_unhit_cell_divide_by_zero() {
+    // M4 final-review fix wave item 2: `sum_w < min_weight` alone doesn't
+    // exclude `sum_w == 0.0` when `min_weight <= 0` — an unhit cell's
+    // 0.0/0.0 mean must never leak into `proposed`/`delta_pct` as NaN.
+    let mut p = params(0);
+    p.min_weight = 0.0;
+    // No samples at all: every cell has sum_w == 0.
+    let s = samples(vec![]);
+    let r = ve_analyze(&s, &flat_grid(50.0), &flat_grid(14.7), &binding(), &p).unwrap();
+    assert!(
+        r.cells
+            .iter()
+            .all(|c| c.proposed == 50.0 && c.confidence == 0.0),
+        "an unhit cell must stay unchanged, never NaN: {:?}",
+        r.cells
+    );
+}
+
+#[test]
 fn missing_binding_channel_is_a_hard_error() {
     let s = SampleSet {
         columns: vec!["rpm".into()],
