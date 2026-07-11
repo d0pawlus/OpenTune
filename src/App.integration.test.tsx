@@ -208,6 +208,48 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
     expect(container.firstChild).toBeNull();
     expect(useTuneStore.getState().definition).toBeNull();
   });
+
+  // Regression guard: the assembled app must surface a Tables nav when the
+  // definition carries tables. Every other fixture uses `tables: []`, so this
+  // is the only end-to-end exercise of the definition → TunePanel tables-nav
+  // wiring — the exact path a stale dev-server render made look broken during
+  // the M4 smoke test.
+  it("renders a Tables nav button per definition table over the live link", async () => {
+    const table = (
+      name: string,
+      title: string,
+    ): DefinitionDto["tables"][number] => ({
+      name,
+      title,
+      page: 2,
+      x_bins: `${name}_x`,
+      x_channel: "rpm",
+      y_bins: `${name}_y`,
+      y_channel: "fuelLoad",
+      z: `${name}_z`,
+      xy_labels: [],
+      up_down_label: [],
+      help: "",
+    });
+    vi.mocked(ipc.commands.getDefinition).mockResolvedValue({
+      status: "ok",
+      data: {
+        ...definition,
+        tables: [
+          table("veTable1Tbl", "VE Table"),
+          table("afrTable1Tbl", "AFR Target Table"),
+        ],
+        analyze_tables: ["veTable1Tbl"],
+      },
+    });
+
+    await renderConnected();
+
+    await screen.findByRole("button", { name: "VE Table" });
+    expect(
+      screen.getByRole("button", { name: "AFR Target Table" }),
+    ).toBeTruthy();
+  });
 });
 
 /**
