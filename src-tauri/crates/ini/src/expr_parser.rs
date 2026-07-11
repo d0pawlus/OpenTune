@@ -257,13 +257,15 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    // unary := "!" unary | "-" unary | primary
+    // unary := "!" unary | "+" unary | "-" unary | primary
     fn parse_unary(&mut self) -> Result<f64, ExprError> {
         self.enter()?;
         self.skip_whitespace();
         let result = if self.eat_char('!') {
             let val = self.parse_unary();
             val.map(|v| bool_to_f64(!truthy(v)))
+        } else if self.eat_char('+') {
+            self.parse_unary()
         } else if self.eat_char('-') {
             self.parse_unary().map(|v| -v)
         } else {
@@ -300,17 +302,42 @@ impl<'a> Parser<'a> {
 
     fn parse_number(&mut self) -> Result<f64, ExprError> {
         let start = self.pos();
-        let mut saw_dot = false;
-        while let Some((_, c)) = self.chars.peek().copied() {
-            if c.is_ascii_digit() {
+        let mut saw_digit = false;
+
+        while matches!(self.chars.peek(), Some((_, c)) if c.is_ascii_digit()) {
+            saw_digit = true;
+            self.chars.next();
+        }
+        if matches!(self.chars.peek(), Some((_, '.'))) {
+            self.chars.next();
+            while matches!(self.chars.peek(), Some((_, c)) if c.is_ascii_digit()) {
+                saw_digit = true;
                 self.chars.next();
-            } else if c == '.' && !saw_dot {
-                saw_dot = true;
-                self.chars.next();
-            } else {
-                break;
             }
         }
+        if !saw_digit {
+            return Err(ExprError::Syntax(format!(
+                "invalid number literal at byte {start}"
+            )));
+        }
+
+        if matches!(self.chars.peek(), Some((_, 'e' | 'E'))) {
+            self.chars.next();
+            if matches!(self.chars.peek(), Some((_, '+' | '-'))) {
+                self.chars.next();
+            }
+            let mut saw_exponent_digit = false;
+            while matches!(self.chars.peek(), Some((_, c)) if c.is_ascii_digit()) {
+                saw_exponent_digit = true;
+                self.chars.next();
+            }
+            if !saw_exponent_digit {
+                return Err(ExprError::Syntax(format!(
+                    "invalid exponent at byte {start}"
+                )));
+            }
+        }
+
         let end = self.pos();
         self.src[start..end]
             .parse::<f64>()

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opentune_datalog::{Field, Log, LogEntry, Marker, Record};
-use opentune_model::Value;
+use opentune_model::{MergePick, Value};
 use opentune_realtime::RealtimePoller;
 use tauri_specta::Event as _;
 use tokio::sync::{mpsc, oneshot};
@@ -27,7 +27,8 @@ use crate::connection::{ConnectSource, Session};
 use crate::dto::{
     AnomalyReportDto, AnomalyThresholdsDto, CaptureStatusDto, CellEditDto, DefinitionDto,
     FieldDiffDto, LogDataDto, LogFormatDto, LogStatsParamsDto, LogStatsReportDto, LogStatusDto,
-    LogSummaryDto, VeAnalysisReportDto, VirtualDynoParamsDto, VirtualDynoReportDto,
+    LogSummaryDto, MergePickDto, ResolvedGaugeBoundsDto, VeAnalysisReportDto, VirtualDynoParamsDto,
+    VirtualDynoReportDto,
 };
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use crate::session::PollFrameError;
@@ -92,8 +93,11 @@ pub enum Command {
         reply: Reply<Vec<FieldDiffDto>>,
     },
     MergeTune {
-        picks: Vec<String>,
+        picks: Vec<MergePickDto>,
         reply: Reply<Option<TuneDirtyEvent>>,
+    },
+    ResolveGaugeBounds {
+        reply: Reply<Vec<ResolvedGaugeBoundsDto>>,
     },
     /// Task 6 fills the realtime handlers; for now they just flip the flag.
     StartRealtime {
@@ -198,6 +202,38 @@ pub enum Command {
     WriteTuneToEcu {
         reply: Reply<()>,
     },
+    /// Test-only: panic inside a session `spawn_blocking` operation.
+    #[cfg(test)]
+    DebugPanicSessionOperation {
+        reply: Reply<()>,
+    },
+    /// Test-only: hold the session operation until `release` is signalled.
+    #[cfg(test)]
+    DebugHoldSessionOperation {
+        started: oneshot::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+        reply: Reply<()>,
+    },
+    /// Test-only: make the next reboot-triggered tune re-read fail.
+    #[cfg(test)]
+    DebugFailNextRebootTuneRead {
+        reply: Reply<()>,
+    },
+    /// Test-only: inspect owner-private safety state.
+    #[cfg(test)]
+    DebugState {
+        reply: Reply<DebugOwnerState>,
+    },
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugOwnerState {
+    pub session_present: bool,
+    pub tune_loaded: bool,
+    pub snapshot_present: bool,
+    pub polling: bool,
+    pub poller_present: bool,
 }
 
 /// An event the owner wants delivered to the frontend. Decouples the loop
@@ -279,6 +315,8 @@ struct Owner {
     active_log: Option<ActiveLog>,
     opened_log: Option<Log>,
     emit: Emitter,
+    #[cfg(test)]
+    fail_next_reboot_tune_read: bool,
 }
 
 struct ActiveLog {
@@ -299,6 +337,8 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
         active_log: None,
         opened_log: None,
         emit,
+        #[cfg(test)]
+        fail_next_reboot_tune_read: false,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
@@ -424,10 +464,20 @@ impl Owner {
             Command::MergeTune { picks, reply } => {
                 let _ = reply.send(self.merge_tune(picks).await);
             }
+            Command::ResolveGaugeBounds { reply } => {
+                let _ = reply.send(self.with_session(|s| s.resolve_gauge_bounds()).await);
+            }
             Command::StartRealtime { reply } => {
-                self.polling = true;
-                self.poller = Some(RealtimePoller::default());
-                let _ = reply.send(Ok(()));
+                let r = if self.session.is_some() {
+                    self.polling = true;
+                    self.poller = Some(RealtimePoller::default());
+                    Ok(())
+                } else {
+                    self.polling = false;
+                    self.poller = None;
+                    Err(format!("{NOT_CONNECTED} — cannot start realtime"))
+                };
+                let _ = reply.send(r);
             }
             Command::StopRealtime { reply } => {
                 self.polling = false;
@@ -587,6 +637,53 @@ impl Owner {
                 self.emit_dirty(&r);
                 let _ = reply.send(r.map(|_| ()));
             }
+            #[cfg(test)]
+            Command::DebugPanicSessionOperation { reply } => {
+                let r = self
+                    .with_session(|_| -> Result<(), String> {
+                        panic!("forced session operation panic")
+                    })
+                    .await;
+                let _ = reply.send(r);
+            }
+            #[cfg(test)]
+            Command::DebugHoldSessionOperation {
+                started,
+                release,
+                reply,
+            } => {
+                let r = self
+                    .with_session(move |_| {
+                        let _ = started.send(());
+                        release
+                            .recv()
+                            .map_err(|_| "test session-operation release dropped".to_owned())
+                    })
+                    .await;
+                let _ = reply.send(r);
+            }
+            #[cfg(test)]
+            Command::DebugFailNextRebootTuneRead { reply } => {
+                self.fail_next_reboot_tune_read = true;
+                let _ = reply.send(Ok(()));
+            }
+            #[cfg(test)]
+            Command::DebugState { reply } => {
+                let state = DebugOwnerState {
+                    session_present: self.session.is_some(),
+                    tune_loaded: self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.tune.is_some()),
+                    snapshot_present: self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.snapshot.is_some()),
+                    polling: self.polling,
+                    poller_present: self.poller.is_some(),
+                };
+                let _ = reply.send(Ok(state));
+            }
         }
     }
 
@@ -680,7 +777,7 @@ impl Owner {
             // Panicked mid-poll: the session is lost (poisoned-equivalent,
             // same as `with_session`); subsequent commands report
             // "not connected" and the poll gate stays disarmed.
-            Err(_) => self.polling = false,
+            Err(_) => self.lose_session_after_panic(),
         }
     }
 
@@ -705,8 +802,21 @@ impl Owner {
                 self.session = Some(session);
                 r
             }
-            Err(e) => Err(format!("session operation panicked: {e}")),
+            Err(e) => {
+                let error = format!("session operation panicked: {e}");
+                self.lose_session_after_panic();
+                Err(error)
+            }
         }
+    }
+
+    /// A panicked blocking operation cannot safely hand its moved session
+    /// back. Fully disarm realtime and tell the UI that the live link is gone.
+    fn lose_session_after_panic(&mut self) {
+        self.session = None;
+        self.polling = false;
+        self.poller = None;
+        (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
     }
 
     /// Connect to an ECU. Branches on whether an offline tune is already
@@ -755,9 +865,15 @@ impl Owner {
         // a brand-new session, reading the tune from the ECU.
         self.reset_session();
         let emit = Arc::clone(&self.emit);
-        let session = tokio::task::spawn_blocking(move || build_session(source, &emit))
-            .await
-            .map_err(|e| format!("connect panicked: {e}"))??;
+        let session = match tokio::task::spawn_blocking(move || build_session(source, &emit)).await
+        {
+            Ok(result) => result?,
+            Err(e) => {
+                let error = format!("connect panicked: {e}");
+                self.lose_session_after_panic();
+                return Err(error);
+            }
+        };
         self.session = Some(session);
         Ok(())
     }
@@ -770,9 +886,21 @@ impl Owner {
             return Err(NOT_CONNECTED.to_owned());
         };
         let emit = Arc::clone(&self.emit);
-        let (session, r) = tokio::task::spawn_blocking(move || link_drop(session, &emit))
-            .await
-            .map_err(|e| format!("link drop panicked: {e}"))?;
+        #[cfg(test)]
+        let fail_tune_reread = std::mem::take(&mut self.fail_next_reboot_tune_read);
+        #[cfg(not(test))]
+        let fail_tune_reread = false;
+        let (session, r) =
+            match tokio::task::spawn_blocking(move || link_drop(session, &emit, fail_tune_reread))
+                .await
+            {
+                Ok(result) => result,
+                Err(e) => {
+                    let error = format!("link drop panicked: {e}");
+                    self.lose_session_after_panic();
+                    return Err(error);
+                }
+            };
         self.session = session;
         r
     }
@@ -969,10 +1097,14 @@ impl Owner {
     /// Merge picks, then emit the tune's *actual* dirty state — read after
     /// the merge attempt regardless of `Ok`/`Err`, because a merge can abort
     /// mid-batch after earlier picks already committed (M2 behavior).
-    async fn merge_tune(&mut self, picks: Vec<String>) -> Result<Option<TuneDirtyEvent>, String> {
+    async fn merge_tune(
+        &mut self,
+        picks: Vec<MergePickDto>,
+    ) -> Result<Option<TuneDirtyEvent>, String> {
+        let picks: Vec<MergePick> = picks.into_iter().map(MergePick::from).collect();
         let (result, event) = self
             .with_session(move |s| {
-                let result = s.merge_tune(&picks);
+                let result = s.merge_picks(&picks);
                 Ok((result, s.current_dirty_event()))
             })
             .await?;

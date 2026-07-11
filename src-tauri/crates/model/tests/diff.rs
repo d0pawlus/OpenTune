@@ -11,7 +11,7 @@ mod common;
 
 use common::{scalar, tune};
 use opentune_ini::{ConstantKind, Endianness, Number, ScalarType, Shape};
-use opentune_model::{diff, merge, CellDiff, Value};
+use opentune_model::{diff, merge, merge_picks, CellDiff, MergePick, Value};
 
 /// A 2x2 `U08` array constant ("map") at offset 8, scale 1.0.
 fn table_const() -> opentune_ini::ConstantDef {
@@ -122,6 +122,39 @@ fn a_side_only_error_is_skipped_without_panicking() {
     assert!(diff(&a, &b).is_empty());
 }
 
+#[test]
+fn diffs_text_and_enum_values_as_whole_fields() {
+    let mut text = scalar("label", ScalarType::U08, 0, 1.0, 0.0, 0.0);
+    text.kind = ConstantKind::Text { len: 8 };
+    let mut mode = scalar("mode", ScalarType::U08, 8, 1.0, 0.0, 0.0);
+    mode.kind = ConstantKind::Bits {
+        storage: ScalarType::U08,
+        bit_lo: 0,
+        bit_hi: 1,
+        options: vec!["Off".to_string(), "On".to_string(), "Auto".to_string()],
+    };
+
+    let mut a = tune(Endianness::Little, vec![text.clone(), mode.clone()]);
+    a.set("label", Value::Text("alpha".to_string())).unwrap();
+    a.set("mode", Value::Enum(1)).unwrap();
+
+    let mut b = tune(Endianness::Little, vec![text, mode]);
+    b.set("label", Value::Text("beta".to_string())).unwrap();
+    b.set("mode", Value::Enum(2)).unwrap();
+
+    let diffs = diff(&a, &b);
+    assert_eq!(diffs.len(), 2);
+    let text_diff = diffs.iter().find(|entry| entry.name == "label").unwrap();
+    assert_eq!(text_diff.a, Value::Text("alpha".to_string()));
+    assert_eq!(text_diff.b, Value::Text("beta".to_string()));
+    assert!(text_diff.cells.is_empty());
+
+    let enum_diff = diffs.iter().find(|entry| entry.name == "mode").unwrap();
+    assert_eq!(enum_diff.a, Value::Enum(1));
+    assert_eq!(enum_diff.b, Value::Enum(2));
+    assert!(enum_diff.cells.is_empty());
+}
+
 // ---------- 8.3 — merge ----------
 
 #[test]
@@ -187,4 +220,68 @@ fn merge_skips_an_unknown_pick_without_touching_base() {
         "an unresolvable pick name is a no-op, not a panic"
     );
     assert!(!base.undo(), "the no-op pick recorded no edit");
+}
+
+#[test]
+fn merge_selected_cells_preserves_unpicked_cells_and_is_one_undo_step() {
+    let map = table_const();
+    let mut base = tune(Endianness::Little, vec![map.clone()]);
+    base.set("map", Value::Array(vec![1.0, 2.0, 3.0, 4.0]))
+        .unwrap();
+    let mut incoming = tune(Endianness::Little, vec![map]);
+    incoming
+        .set("map", Value::Array(vec![10.0, 20.0, 30.0, 40.0]))
+        .unwrap();
+
+    merge_picks(
+        &mut base,
+        &incoming,
+        &[MergePick::Cells {
+            name: "map".to_string(),
+            indices: vec![1, 3],
+        }],
+    );
+
+    assert_eq!(
+        base.get("map").unwrap(),
+        Value::Array(vec![1.0, 20.0, 3.0, 40.0])
+    );
+    assert!(base.undo());
+    assert_eq!(
+        base.get("map").unwrap(),
+        Value::Array(vec![1.0, 2.0, 3.0, 4.0])
+    );
+}
+
+#[test]
+fn merge_cell_pick_ignores_invalid_indices_and_non_arrays() {
+    let map = table_const();
+    let rpm = scalar("rpmK", ScalarType::U08, 0, 1.0, 0.0, 255.0);
+    let mut base = tune(Endianness::Little, vec![map.clone(), rpm.clone()]);
+    let mut incoming = tune(Endianness::Little, vec![map, rpm]);
+    incoming
+        .set("map", Value::Array(vec![10.0, 20.0, 30.0, 40.0]))
+        .unwrap();
+    incoming.set("rpmK", Value::Scalar(50.0)).unwrap();
+
+    merge_picks(
+        &mut base,
+        &incoming,
+        &[
+            MergePick::Cells {
+                name: "map".to_string(),
+                indices: vec![usize::MAX],
+            },
+            MergePick::Cells {
+                name: "rpmK".to_string(),
+                indices: vec![0],
+            },
+        ],
+    );
+
+    assert_eq!(
+        base.get("map").unwrap(),
+        Value::Array(vec![0.0, 0.0, 0.0, 0.0])
+    );
+    assert_eq!(base.get("rpmK").unwrap(), Value::Scalar(0.0));
 }

@@ -27,6 +27,7 @@
 //!   tracks *that a symbol is defined* for `#ifdef`/`#ifndef`, not its
 //!   value.
 
+use crate::Diagnostic;
 use std::collections::HashSet;
 
 /// One entry on the conditional-nesting stack while scanning.
@@ -41,6 +42,12 @@ struct Frame {
     /// Whether the *enclosing* scope is active. A nested frame can never
     /// emit lines the parent has already suppressed.
     parent_active: bool,
+    /// Source line and directive that opened this frame, used for pointed
+    /// diagnostics when EOF arrives before a matching `#endif`.
+    opener_line: usize,
+    opener: &'static str,
+    /// Once `#else` has appeared, another `#else` or any `#elif` is invalid.
+    saw_else: bool,
 }
 
 impl Frame {
@@ -62,16 +69,37 @@ impl Frame {
 /// build profile); `#define`/`#set`/`#unset` mutate a working copy as
 /// scanning proceeds top-to-bottom.
 pub fn preprocess(ini_text: &str, active_symbols: &HashSet<String>) -> String {
+    preprocess_with_diagnostics(ini_text, active_symbols).text
+}
+
+pub(crate) struct Preprocessed {
+    pub(crate) text: String,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+pub(crate) fn preprocess_with_diagnostics(
+    ini_text: &str,
+    active_symbols: &HashSet<String>,
+) -> Preprocessed {
     let mut symbols: HashSet<String> = active_symbols.clone();
     let mut stack: Vec<Frame> = Vec::new();
     let mut out_lines: Vec<&str> = Vec::new();
+    let mut diagnostics = Vec::new();
 
-    for raw_line in ini_text.lines() {
+    for (line_index, raw_line) in ini_text.lines().enumerate() {
+        let line_number = line_index + 1;
         let trimmed = raw_line.trim_start();
         let currently_active = stack.last().is_none_or(Frame::active);
 
         if let Some(directive) = parse_directive(trimmed) {
-            apply_directive(directive, &mut symbols, &mut stack, currently_active);
+            apply_directive(
+                directive,
+                &mut symbols,
+                &mut stack,
+                currently_active,
+                line_number,
+                &mut diagnostics,
+            );
             continue;
         }
 
@@ -80,7 +108,17 @@ pub fn preprocess(ini_text: &str, active_symbols: &HashSet<String>) -> String {
         }
     }
 
-    out_lines.join("\n")
+    for frame in stack {
+        diagnostics.push(preprocessor_diagnostic(format!(
+            "line {}: unclosed {} directive (missing #endif)",
+            frame.opener_line, frame.opener
+        )));
+    }
+
+    Preprocessed {
+        text: out_lines.join("\n"),
+        diagnostics,
+    }
 }
 
 /// A recognized preprocessor directive, with its payload already
@@ -183,6 +221,8 @@ fn apply_directive(
     symbols: &mut HashSet<String>,
     stack: &mut Vec<Frame>,
     currently_active: bool,
+    line_number: usize,
+    diagnostics: &mut Vec<Diagnostic>,
 ) {
     match directive {
         Directive::Define(name) => {
@@ -206,6 +246,9 @@ fn apply_directive(
                 branch_active: holds,
                 matched: holds,
                 parent_active: currently_active,
+                opener_line: line_number,
+                opener: "#if",
+                saw_else: false,
             });
         }
         Directive::Ifdef(name) => {
@@ -214,6 +257,9 @@ fn apply_directive(
                 branch_active: holds,
                 matched: holds,
                 parent_active: currently_active,
+                opener_line: line_number,
+                opener: "#ifdef",
+                saw_else: false,
             });
         }
         Directive::Ifndef(name) => {
@@ -222,27 +268,62 @@ fn apply_directive(
                 branch_active: holds,
                 matched: holds,
                 parent_active: currently_active,
+                opener_line: line_number,
+                opener: "#ifndef",
+                saw_else: false,
             });
         }
         Directive::Elif(cond) => {
             if let Some(frame) = stack.last_mut() {
-                if frame.matched {
+                if frame.saw_else {
+                    frame.branch_active = false;
+                    diagnostics.push(preprocessor_diagnostic(format!(
+                        "line {line_number}: #elif cannot appear after #else"
+                    )));
+                } else if frame.matched {
                     frame.branch_active = false;
                 } else {
                     let holds = condition_holds(&cond, symbols);
                     frame.branch_active = holds;
                     frame.matched = holds;
                 }
+            } else {
+                diagnostics.push(preprocessor_diagnostic(format!(
+                    "line {line_number}: unmatched #elif"
+                )));
             }
         }
         Directive::Else => {
             if let Some(frame) = stack.last_mut() {
-                frame.branch_active = !frame.matched;
-                frame.matched = true;
+                if frame.saw_else {
+                    frame.branch_active = false;
+                    diagnostics.push(preprocessor_diagnostic(format!(
+                        "line {line_number}: duplicate #else"
+                    )));
+                } else {
+                    frame.branch_active = !frame.matched;
+                    frame.matched = true;
+                    frame.saw_else = true;
+                }
+            } else {
+                diagnostics.push(preprocessor_diagnostic(format!(
+                    "line {line_number}: unmatched #else"
+                )));
             }
         }
         Directive::Endif => {
-            stack.pop();
+            if stack.pop().is_none() {
+                diagnostics.push(preprocessor_diagnostic(format!(
+                    "line {line_number}: unmatched #endif"
+                )));
+            }
         }
+    }
+}
+
+fn preprocessor_diagnostic(detail: String) -> Diagnostic {
+    Diagnostic {
+        section: "Preprocessor".to_string(),
+        detail,
     }
 }

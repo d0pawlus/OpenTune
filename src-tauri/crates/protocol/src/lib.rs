@@ -100,6 +100,10 @@ pub enum ProtocolError {
     /// this does not change the M1-frozen shape's observable contract.
     #[error("malformed command template: {0}")]
     MalformedTemplate(String),
+    /// A page operation cannot be represented by the MS/TS wire format
+    /// (for example, a page id above 255 or a byte count above `u16::MAX`).
+    #[error("invalid protocol request: {0}")]
+    InvalidRequest(String),
 }
 
 /// Result alias for protocol operations.

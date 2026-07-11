@@ -9,7 +9,7 @@
 use crate::constants_parser::parse_constants;
 use crate::gauges_parser::parse_gauges;
 use crate::output_channels_parser::parse_output_channels;
-use crate::preprocessor::preprocess;
+use crate::preprocessor::preprocess_with_diagnostics;
 use crate::ui_parser::parse_ui;
 use crate::ve_analyze_parser::parse_ve_analyze;
 use crate::{
@@ -108,12 +108,14 @@ impl Definition {
 /// this function only captures expressions as raw strings.
 pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     let active_symbols = HashSet::new();
-    let preprocessed = preprocess(ini_text, &active_symbols);
+    let preprocessed = preprocess_with_diagnostics(ini_text, &active_symbols);
+    let preprocessor_diagnostics = preprocessed.diagnostics;
+    let preprocessed = preprocessed.text;
 
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
     let ui = parse_ui(&preprocessed, &parsed.constants, &parsed.pc_variables);
-    let output_channels = parse_output_channels(&preprocessed);
+    let output_channels = parse_output_channels(&preprocessed, comms.och_block_size)?;
     let gauges = parse_gauges(&preprocessed, &output_channels.channels);
     let ve_analyze = parse_ve_analyze(&preprocessed);
 
@@ -129,7 +131,8 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         ..comms
     };
 
-    let mut diagnostics = parsed.diagnostics;
+    let mut diagnostics = preprocessor_diagnostics;
+    diagnostics.extend(parsed.diagnostics);
     diagnostics.extend(ui.diagnostics);
     diagnostics.extend(output_channels.diagnostics);
     diagnostics.extend(gauges.diagnostics);

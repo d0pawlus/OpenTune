@@ -17,6 +17,7 @@ use crate::connection::Session;
 use crate::dto::FieldDiffDto;
 use crate::events::TuneDirtyEvent;
 use crate::session::{dirty_event, fmt_model_err, page_deltas, write_deltas, NO_TUNE};
+use opentune_model::{MergePick, Value};
 
 const NO_SNAPSHOT: &str = "no snapshot to diff against — call snapshot_tune first";
 
@@ -52,6 +53,16 @@ impl Session {
     /// this call are already committed (tune == ECU for them) and are left
     /// as-is; the failing pick and any remaining ones are not applied.
     pub fn merge_tune(&mut self, picks: &[String]) -> Result<TuneDirtyEvent, String> {
+        let picks: Vec<_> = picks.iter().cloned().map(MergePick::All).collect();
+        self.merge_picks(&picks)
+    }
+
+    /// Merge complete fields or selected array cells from the snapshot.
+    ///
+    /// Each pick is independently validated and committed to the wire before
+    /// the in-memory tune changes. A cell pick becomes one array `Tune::set`,
+    /// so one UI gesture remains one undo step and one contiguous wire delta.
+    pub fn merge_picks(&mut self, picks: &[MergePick]) -> Result<TuneDirtyEvent, String> {
         let Session {
             conn,
             def,
@@ -62,8 +73,34 @@ impl Session {
         let tune = tune.as_mut().ok_or_else(|| NO_TUNE.to_string())?;
         let snapshot = snapshot.as_ref().ok_or_else(|| NO_SNAPSHOT.to_string())?;
 
-        for name in picks {
-            let Ok(value) = snapshot.get(name) else {
+        for pick in picks {
+            let name = pick.name();
+            let value = match pick {
+                MergePick::All(_) => snapshot.get(name),
+                MergePick::Cells { indices, .. } => {
+                    let (Ok(Value::Array(mut current)), Ok(Value::Array(incoming))) =
+                        (tune.get(name), snapshot.get(name))
+                    else {
+                        continue;
+                    };
+                    let mut changed = false;
+                    for &index in indices {
+                        let (Some(dst), Some(&src)) = (current.get_mut(index), incoming.get(index))
+                        else {
+                            continue;
+                        };
+                        if *dst != src {
+                            *dst = src;
+                            changed = true;
+                        }
+                    }
+                    if !changed {
+                        continue;
+                    }
+                    Ok(Value::Array(current))
+                }
+            };
+            let Ok(value) = value else {
                 continue; // unresolvable on the snapshot -- nothing to merge
             };
             let mut probe = tune.clone();
@@ -148,11 +185,14 @@ mod tests {
             "other side is the snapshot baseline"
         );
 
-        // Merge the pick back to the snapshot's (pre-edit) value.
+        // Merge the pick back to the snapshot's (pre-edit) value. That value
+        // equals the flash baseline (0,0) here — nothing was burned — so the
+        // merge returns the page to baseline and the tune reads clean. Dirty
+        // is byte-equality against flash, not a sticky edit flag.
         let ev = s
             .merge_tune(&["reqFuel".to_string()])
             .expect("merge reqFuel");
-        assert!(ev.dirty);
+        assert!(!ev.dirty);
         assert_eq!(
             &ecu_page(&s, 1)[0..2],
             &[0, 0],

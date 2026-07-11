@@ -92,8 +92,13 @@ export function GaugeCanvas({
     if (!ctx) return;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
+    const backingWidth = Math.round(width * dpr);
+    const backingHeight = Math.round(height * dpr);
+    // Assigning either backing dimension clears the canvas, even when the
+    // assigned value is unchanged. Preserve the current frame when this
+    // effect is running only because the theme changed.
+    if (canvas.width !== backingWidth) canvas.width = backingWidth;
+    if (canvas.height !== backingHeight) canvas.height = backingHeight;
     // Re-resolved every time this effect (re-)runs, including on a `theme`
     // prop change — never captured once and reused across theme switches.
     const resolvedTheme = resolveTheme(canvas);
@@ -112,7 +117,9 @@ export function GaugeCanvas({
       }
       frame = requestAnimationFrame(paint);
     };
-    frame = requestAnimationFrame(paint);
+    // Paint in the effect itself. In particular, a theme switch must not
+    // clear the old frame and then leave the canvas blank until the next rAF.
+    paint();
     return () => cancelAnimationFrame(frame);
     // `theme` itself is never read here — it exists purely to invalidate the
     // effect (and reset `painted`/`resolvedTheme`) on a theme switch; the

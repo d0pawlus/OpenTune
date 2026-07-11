@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { commands } from "../../ipc/bindings";
 import type { DefinitionDto, GaugeDto } from "../../ipc/bindings";
 import { isLinkAlive, useConnectionStore } from "../../stores/connection";
@@ -80,24 +80,36 @@ function DashboardPanel({
   definition: DefinitionDto;
 }) {
   const [slots, setSlots] = useState<SlotLayout[]>([]);
+  const [loadedDefinition, setLoadedDefinition] =
+    useState<DefinitionDto | null>(null);
   const [live, setLive] = useState(false);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [realtimePending, setRealtimePending] = useState(false);
+  const [savePending, setSavePending] = useState(false);
+  const realtimePendingRef = useRef(false);
+  const savePendingRef = useRef(false);
+  const layoutLoading = loadedDefinition !== definition;
 
   // Load the persisted layout on connect; fall back to the INI [FrontPage].
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await commands.loadLayout();
+      let next = defaultSlots(definition.frontpage);
+      try {
+        const res = await commands.loadLayout();
+        const names = definition.gauges.map((g) => g.name);
+        const saved =
+          res.status === "ok" && res.data !== null
+            ? parseLayout(res.data, names)
+            : null;
+        if (saved && saved.length > 0) next = saved;
+      } catch {
+        // An invocation failure is equivalent to no usable persisted layout.
+      }
       if (cancelled) return;
-      const names = definition.gauges.map((g) => g.name);
-      const saved =
-        res.status === "ok" && res.data !== null
-          ? parseLayout(res.data, names)
-          : null;
-      setSlots(
-        saved && saved.length > 0 ? saved : defaultSlots(definition.frontpage),
-      );
+      setSlots(next);
+      setLoadedDefinition(definition);
     })();
     return () => {
       cancelled = true;
@@ -109,49 +121,78 @@ function DashboardPanel({
   useEffect(() => () => useRealtimeStore.getState().clear(), []);
 
   const toggleLive = async () => {
+    if (realtimePendingRef.current) return;
+    realtimePendingRef.current = true;
+    setRealtimePending(true);
     setError(null);
-    const res = live
-      ? await commands.stopRealtime()
-      : await commands.startRealtime();
-    if (res.status === "error") {
-      setError(res.error);
-      return;
+    try {
+      const res = live
+        ? await commands.stopRealtime()
+        : await commands.startRealtime();
+      if (res.status === "error") {
+        setError(res.error);
+        return;
+      }
+      setLive(!live);
+    } finally {
+      realtimePendingRef.current = false;
+      setRealtimePending(false);
     }
-    setLive(!live);
   };
 
   const persistLayout = async () => {
+    if (layoutLoading || savePendingRef.current) return;
+    savePendingRef.current = true;
+    setSavePending(true);
     setError(null);
-    const res = await commands.saveLayout(serializeLayout(slots));
-    if (res.status === "error") {
-      setError(res.error);
-      return;
+    try {
+      const res = await commands.saveLayout(serializeLayout(slots));
+      if (res.status === "error") {
+        setError(res.error);
+        return;
+      }
+      setEditing(false);
+    } finally {
+      savePendingRef.current = false;
+      setSavePending(false);
     }
-    setEditing(false);
   };
 
   const gaugesByName = new Map(definition.gauges.map((g) => [g.name, g]));
   const { indicators } = definition.frontpage;
 
   return (
-    <section className="dashboard" aria-label={t("dashboard.title", locale)}>
+    <section
+      className="dashboard"
+      aria-label={t("dashboard.title", locale)}
+      aria-busy={layoutLoading}
+    >
       <header className="dashboard-header">
         <h2>{t("dashboard.title", locale)}</h2>
         <div className="dashboard-actions">
-          <button type="button" onClick={toggleLive} aria-pressed={live}>
+          <button
+            type="button"
+            onClick={toggleLive}
+            aria-pressed={live}
+            disabled={realtimePending}
+          >
             {live
               ? t("dashboard.stopLive", locale)
               : t("dashboard.startLive", locale)}
           </button>
           {editing ? (
-            <button type="button" onClick={persistLayout}>
+            <button
+              type="button"
+              onClick={persistLayout}
+              disabled={layoutLoading || savePending}
+            >
               {t("dashboard.saveLayout", locale)}
             </button>
           ) : (
             <button
               type="button"
               onClick={() => setEditing(true)}
-              disabled={slots.length === 0}
+              disabled={layoutLoading || slots.length === 0}
             >
               {t("dashboard.editLayout", locale)}
             </button>
@@ -161,9 +202,9 @@ function DashboardPanel({
 
       {error && <p className="dashboard-error">{error}</p>}
 
-      {slots.length === 0 ? (
+      {!layoutLoading && slots.length === 0 ? (
         <p className="dashboard-empty">{t("dashboard.noGauges", locale)}</p>
-      ) : (
+      ) : !layoutLoading ? (
         <div className="dashboard-grid">
           {slots.map((slot, i) => {
             const gauge = gaugesByName.get(slot.gauge);
@@ -201,7 +242,7 @@ function DashboardPanel({
             );
           })}
         </div>
-      )}
+      ) : null}
 
       {indicators.length > 0 && (
         <div className="dashboard-indicators">

@@ -100,3 +100,52 @@ Kryterium: ścieżka optymalna, nieblokująca przyszłego rozwoju.
   (per-page listy `pageReadCommand` itd.) — M1 `parse_comms` czyta tylko
   `[MegaTune]`/`[TunerStudio]`; pełna ingestia realnego pliku wymaga
   rozszerzenia parsera comms (razem z aliasowaniem tabel powyżej).
+
+## Remediacja z review M2/M3 (2026-07-11)
+
+Poprawki z przeglądu M2/M3 dotykające kodu M2 (gałąź `review/m2-m3`).
+
+- **Dirty = różnica bajtów względem bazy flash (zmiana zachowania).**
+  `Tune` śledził dirty jako „strony dotknięte od ostatniego burna" (lepka
+  flaga), przez co `load → edit → undo` zostawiał stronę na stałe brudną,
+  mimo że bajty wróciły do wartości wczytanej. Zamiast tego trzymamy
+  `baseline: Vec<Vec<u8>>` (kopia bajtów flash, ustawiana przy `load_page`
+  i `mark_burned`), a `is_dirty`/`dirty_pages` **wyprowadzamy** przez
+  porównanie bajtów — nie da się rozjechać ze stanem. Skutek uboczny:
+  burn pomija stronę zedytowaną-i-cofniętą (bardziej poprawne). Bezpieczne,
+  bo `is_dirty == false` przy RAM≠flash nie może wystąpić: baza jest
+  ustawiana wyłącznie przy odczycie (założenie RAM==flash) i burnie
+  (RAM→flash) — te same założenia co dotąd. Test regresji:
+  `undo_back_to_loaded_baseline_clears_dirty` (tune_state.rs); odwrócono
+  jawnie lepki `undo_and_redo_reach_the_wire` (session.rs). **Sufit
+  (ponytail):** `load_page` resetuje bazę tylko dlatego, że wołany jest
+  wyłącznie z pełnego odczytu świeżego `Tune`; częściowy refresh RAM
+  wymagałby jawnego `is_baseline: bool`.
+- **Merge komórkowy (`MergePick`).** Diff/merge dostał wybór per-komórka:
+  `MergePick::{All, Cells}` + `merge_picks` w modelu; IPC `MergePickDto`
+  (`{type:"all"|"cells"}`); `mergeTune(picks)` w owner-tasku woła
+  `Session::merge_picks`. Zachowany kontrakt M2: **każdy pick to osobny
+  commit na drut** (merge może przerwać się w połowie po zapisaniu
+  wcześniejszych picków) — nie batch'ujemy delt wielostronicowych.
+- **Utwardzenie parserów (nieblokujące, ale realne paniki) — utrzymane po
+  mergu na main:** pozycyjne `enable`/`visible` w parserze dialogów (3. token
+  = enable, 4. = visible wg gramatyki TunerStudio); operator potęgowania i
+  unarny `+` w parserze wyrażeń; walidacja offset+width kanałów wyjściowych
+  względem `ochBlockSize`; lepsze diagnostyki preprocesora; `protocol/pages.rs`
+  — kontrolowane błędy zamiast obcinania konwersji rozmiar/id-strony.
+- **Utwardzenie `[Constants]` (offset/size/strona) — ZASTĄPIONE przez M4
+  przy mergu na main.** Oryginalna remediacja odrzucała twardo niezadeklarowane
+  strony i przepełnienia arytmetyki offsetów, oraz mapowała puste pola liczbowe
+  na wartości domyślne. M4 rozwiązuje ten sam problem paniki **łagodnym**
+  parserem: przepełnienie offset/shape → `OffsetCheck::Overflow` (diagnostyka +
+  pominięcie stałej), nie twardy błąd — zgodnie z filozofią ingestii realnego
+  speeduino.ini. Przyjęto wersję M4; strict-reject i jego testy usunięte
+  (patrz nota reconcile w `crates/ini/tests/constants.rs`). Follow-up, jeśli
+  kiedyś potrzebna twarda walidacja: niezadeklarowana strona, zły `pageSize`,
+  puste pole liczbowe (`Number::Expr("")` — rzadki edge-case, nie utrata
+  danych).
+- **Odzysk po panice/reconnekcie w owner-tasku.** Panika w operacji sesji
+  czyści sesję, rozbraja realtime i emituje `Disconnected` (koniec fałszywego
+  „Connected"); po reconnekcie z rebootem snapshot jest czyszczony przed
+  ponownym odczytem tune, a nieudany re-read zachowuje link, ale unieważnia
+  tune+snapshot.

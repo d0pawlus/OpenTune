@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { buildMergePayload, TuneDiff } from "./TuneDiff";
 import * as ipc from "../../ipc/bindings";
@@ -20,26 +20,43 @@ const reqFuelDiff: FieldDiffDto = {
   cells: [],
 };
 
+const mapDiff: FieldDiffDto = {
+  name: "veTable",
+  a: { Array: [10, 20, 30] },
+  b: { Array: [11, 22, 30] },
+  cells: [
+    { index: 0, a: 10, b: 11 },
+    { index: 1, a: 20, b: 22 },
+  ],
+};
+
 describe("buildMergePayload", () => {
-  it("returns the names whose selection is true", () => {
+  it("returns complete fields and selected cell indices", () => {
     expect(
-      buildMergePayload({ reqFuel: true, clt: false, injLayout: true }),
-    ).toEqual(["reqFuel", "injLayout"]);
+      buildMergePayload({
+        reqFuel: { all: true, cells: {} },
+        veTable: { all: false, cells: { 0: true, 1: false, 3: true } },
+      }),
+    ).toEqual([
+      { type: "all", name: "reqFuel" },
+      { type: "cells", name: "veTable", indices: [0, 3] },
+    ]);
   });
 
   it("returns an empty array when nothing is picked", () => {
-    expect(buildMergePayload({ reqFuel: false })).toEqual([]);
+    expect(buildMergePayload({ reqFuel: { all: false, cells: {} } })).toEqual(
+      [],
+    );
     expect(buildMergePayload({})).toEqual([]);
-  });
-
-  it("ignores keys explicitly set to false after being toggled off", () => {
-    // Simulates a checkbox toggled on then off again — the key stays in the
-    // record (component state never deletes it) but must not be picked.
-    expect(buildMergePayload({ reqFuel: false, clt: true })).toEqual(["clt"]);
   });
 });
 
 describe("TuneDiff", () => {
+  // Command mocks are module-level fns; clear call counts between tests so
+  // per-test assertions like `diffTune toHaveBeenCalledTimes(2)` don't see
+  // calls accumulated by earlier tests.
+  beforeEach(() => vi.clearAllMocks());
+
   it("renders the snapshot action and prompts for a baseline before any diff exists", () => {
     render(<TuneDiff locale="en" />);
     expect(screen.getByText("Snapshot baseline")).toBeTruthy();
@@ -81,11 +98,73 @@ describe("TuneDiff", () => {
     fireEvent.click(screen.getByLabelText("reqFuel"));
     fireEvent.click(screen.getByText("Merge selected"));
 
-    await waitFor(() => expect(mergeTune).toHaveBeenCalledWith(["reqFuel"]));
+    await waitFor(() =>
+      expect(mergeTune).toHaveBeenCalledWith([
+        { type: "all", name: "reqFuel" },
+      ]),
+    );
     // merge re-compares; diffTune was called for the initial compare and
     // again after the merge. The component awaits mergeTune before invoking
     // compare(), so the second diffTune call lands strictly after the wait
     // above resolved — assert it with its own waitFor.
     await waitFor(() => expect(diffTune).toHaveBeenCalledTimes(2));
+  });
+
+  it("renders and merges individual changed table cells", async () => {
+    vi.mocked(ipc.commands.snapshotTune).mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
+    vi.mocked(ipc.commands.diffTune).mockResolvedValue({
+      status: "ok",
+      data: [mapDiff],
+    });
+    vi.mocked(ipc.commands.mergeTune).mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
+
+    render(<TuneDiff locale="en" />);
+    fireEvent.click(screen.getByText("Snapshot baseline"));
+    await waitFor(() =>
+      expect(screen.getByLabelText("veTable[1]")).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByLabelText("veTable[1]"));
+    fireEvent.click(screen.getByText("Merge selected"));
+    await waitFor(() =>
+      expect(ipc.commands.mergeTune).toHaveBeenCalledWith([
+        { type: "cells", name: "veTable", indices: [1] },
+      ]),
+    );
+  });
+
+  it("preserves a partial merge error while refreshing state and diff", async () => {
+    const afterMerge = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(ipc.commands.snapshotTune).mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
+    vi.mocked(ipc.commands.diffTune).mockResolvedValue({
+      status: "ok",
+      data: [reqFuelDiff],
+    });
+    vi.mocked(ipc.commands.mergeTune).mockResolvedValue({
+      status: "error",
+      error: "write failed after an earlier pick",
+    });
+
+    render(<TuneDiff locale="en" onAfterMerge={afterMerge} />);
+    fireEvent.click(screen.getByText("Snapshot baseline"));
+    await waitFor(() => expect(screen.getByLabelText("reqFuel")).toBeTruthy());
+    fireEvent.click(screen.getByLabelText("reqFuel"));
+    fireEvent.click(screen.getByText("Merge selected"));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("write failed after an earlier pick"),
+      ).toBeTruthy(),
+    );
+    expect(afterMerge).toHaveBeenCalledTimes(1);
+    expect(ipc.commands.diffTune).toHaveBeenCalledTimes(2);
   });
 });

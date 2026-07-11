@@ -39,7 +39,7 @@ function ScalarField({ constant, value, disabled, onChange }: FieldProps) {
     setDraft(null); // hand display back to the backend value
     if (draft === canonical) return; // unchanged — no write
     const next = Number(draft);
-    if (draft.trim() === "" || Number.isNaN(next)) {
+    if (draft.trim() === "" || !Number.isFinite(next)) {
       return; // invalid draft: revert, never write
     }
     onChange({ Scalar: next } as Value);

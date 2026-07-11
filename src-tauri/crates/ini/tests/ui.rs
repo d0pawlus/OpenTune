@@ -91,19 +91,19 @@ fn parses_ui() {
     assert_eq!(injector_layout.visible, None);
     assert_eq!(injector_layout.enable, None);
 
-    // `field = "Label", constName, { cond }` — the required raw visible-
-    // condition assertion. Stored as a raw string, NOT evaluated.
+    // `field = "Label", constName, { cond }` — the third position is the
+    // enable condition. Stored as a raw string, NOT evaluated.
     let pairing = &dialog.fields[1];
     assert_eq!(
         pairing.kind,
         FieldKind::Constant("inj4CylPairing".to_string())
     );
-    assert_eq!(pairing.visible.as_deref(), Some("injLayout != 0"));
-    assert_eq!(pairing.enable, None);
+    assert_eq!(pairing.visible, None);
+    assert_eq!(pairing.enable.as_deref(), Some("injLayout != 0"));
 
     // `field = "Label", constName, {}, { cond }` — the 4-arg placeholder
-    // form. Tolerated: still produces a Constant field with the trailing
-    // brace as `visible`; the empty `{}` placeholder is dropped.
+    // form. The empty enable placeholder is preserved positionally and the
+    // fourth token becomes `visible`.
     let aux = &dialog.fields[2];
     assert_eq!(aux.kind, FieldKind::Constant("inj4CylPairing".to_string()));
     assert_eq!(
@@ -112,11 +112,12 @@ fn parses_ui() {
     );
 
     // `slider = "Label", constName, horizontal, { cond }` — references a
-    // bound constant like a plain `field`; degrades faithfully to
-    // `FieldKind::Constant` (the layout hint `horizontal` is dropped).
+    // bound constant like a plain `field`; its condition follows the
+    // orientation token and is therefore `enable`.
     let slider = &dialog.fields[3];
     assert_eq!(slider.kind, FieldKind::Constant("FILTER_FLEX".to_string()));
-    assert_eq!(slider.visible.as_deref(), Some("injLayout != 0"));
+    assert_eq!(slider.visible, None);
+    assert_eq!(slider.enable.as_deref(), Some("injLayout != 0"));
 
     // `commandButton` triggers an ECU command — not representable by any
     // frozen `FieldKind` — so it must NOT appear as a field...
@@ -276,6 +277,63 @@ page = 1
             .any(|d| d.section == "UserDefined" && d.detail.contains("frobnicator")),
         "expected a Diagnostic naming the unknown dialog keyword `frobnicator`, got: {:?}",
         def.diagnostics
+    );
+}
+
+#[test]
+fn field_enable_and_visible_conditions_are_positioned_not_guessed() {
+    let ini = format!(
+        "{}\n\
+[UserDefined]\n\
+dialog = condition_positions, \"Conditions\"\n\
+field = \"Enable only\", injLayout, {{ injLayout != 0 }}\n\
+field = \"Visible only\", injLayout, {{}}, {{ nCylinders == 4 }}\n\
+field = \"Both\", injLayout, {{ injLayout != 0 }}, {{ nCylinders == 4 }}\n\
+displayOnlyField = \"Display\", injLayout, {{ enabledDisplay }}, {{ visibleDisplay }}\n\
+slider = \"Slider\", injLayout, horizontal, {{ enabledSlider }}, {{ visibleSlider }}\n",
+        fixture()
+    );
+    let def = parse_definition(&ini).expect("condition-position fixture should parse");
+    let dialog = def
+        .dialogs
+        .iter()
+        .find(|dialog| dialog.name == "condition_positions")
+        .expect("condition-position dialog");
+
+    assert_eq!(
+        (
+            dialog.fields[0].enable.as_deref(),
+            dialog.fields[0].visible.as_deref()
+        ),
+        (Some("injLayout != 0"), None)
+    );
+    assert_eq!(
+        (
+            dialog.fields[1].enable.as_deref(),
+            dialog.fields[1].visible.as_deref()
+        ),
+        (None, Some("nCylinders == 4"))
+    );
+    assert_eq!(
+        (
+            dialog.fields[2].enable.as_deref(),
+            dialog.fields[2].visible.as_deref()
+        ),
+        (Some("injLayout != 0"), Some("nCylinders == 4"))
+    );
+    assert_eq!(
+        (
+            dialog.fields[3].enable.as_deref(),
+            dialog.fields[3].visible.as_deref()
+        ),
+        (Some("enabledDisplay"), Some("visibleDisplay"))
+    );
+    assert_eq!(
+        (
+            dialog.fields[4].enable.as_deref(),
+            dialog.fields[4].visible.as_deref()
+        ),
+        (Some("enabledSlider"), Some("visibleSlider"))
     );
 }
 

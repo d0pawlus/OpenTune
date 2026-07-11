@@ -176,3 +176,28 @@ gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w
   bajt statusu zdejmowany bez sprawdzenia wartości (wzorzec w całym crate);
   `constants_fields.rs` 504 linie / `pages.rs` równe 400 linii (dzielić przy
   następnym dodatku, nie przycinać doków).
+
+## Remediacja z review M2/M3 (2026-07-11)
+
+Poprawki z przeglądu M2/M3 dotykające kodu M3 (gałąź `review/m2-m3`).
+Warstwa M2 (dirty/flash, merge komórkowy, utwardzenie INI, odzysk owner-taska)
+opisana w `m2-decisions.md`.
+
+- **Zakresy zegarów rozwiązywane w backendzie, bez mylącego 0–100.** Zegary
+  o granicach wyrażeniowych (`Number::Expr`) waliły w twardy fallback 0–100 na
+  froncie. Nowa komenda `resolveGaugeBounds` → `Session::resolve_gauge_bounds`
+  używa `Tune::resolve_number` (ten sam ewaluator co reszta), zwraca `None` dla
+  nieobsługiwanej/nieznanej granicy niezależnie na pole (fail-open per-pole).
+  Front (`useResolvedGauge`, Round/Bar/Digital) renderuje geometrię zależną od
+  zakresu neutralnie, gdy zakres nieznany — zamiast wymyślać skalę 0–100.
+  `TunePanel` woła `resolveGaugeBounds` przy każdym refreshu i cache'uje w
+  store; ramki realtime nadal omijają React.
+- **Błąd częściowego merge'a nie jest kasowany przez auto-rediff.** `TuneDiff`
+  po merge'u woła `onAfterMerge` i re-diff z zachowaniem błędu (`loadDiff` nie
+  czyści błędu na re-diffie), więc komunikat o przerwaniu w połowie zapisu
+  przeżywa odświeżenie tabeli. Izolacja mocków w teście
+  (`beforeEach(vi.clearAllMocks)`) — bez tego liczniki wywołań `diffTune`
+  kumulowały się między testami.
+- **Dashboard: strażniki async + stany ładowania.** `Dashboard` dostał
+  `realtimePending`/`savePending` (brak podwójnych startów), stan ładowania
+  layoutu i obsługę błędów; `GaugeCanvas` drobne utwardzenie rysowania.

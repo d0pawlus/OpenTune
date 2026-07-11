@@ -124,6 +124,27 @@ fn undo_after_burn_re_marks_dirty() {
 }
 
 #[test]
+fn undo_back_to_loaded_baseline_clears_dirty() {
+    // The reported bug: load -> edit -> undo left the page stuck dirty
+    // because dirty was tracked by "touched", not derived from the flash
+    // baseline. Undoing back to the loaded value must read clean.
+    let mut t = tune(Endianness::Little, vec![u08("c", 0)]);
+    load1(&mut t, &[10]); // baseline = 10
+    t.set("c", Value::Scalar(20.0)).unwrap();
+    assert!(t.is_dirty());
+    t.undo(); // back to 10 == baseline
+    assert!(
+        !t.is_dirty(),
+        "undo back to the loaded value must read clean"
+    );
+    assert!(t.dirty_pages().is_empty());
+    // Redo re-applies the edit and re-dirties the page.
+    t.redo();
+    assert!(t.is_dirty());
+    assert_eq!(t.dirty_pages(), vec![1]);
+}
+
+#[test]
 fn load_page_clears_undo_history() {
     let mut t = tune(Endianness::Little, vec![u08("c", 0)]);
     t.set("c", Value::Scalar(20.0)).unwrap();

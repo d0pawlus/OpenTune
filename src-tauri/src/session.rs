@@ -26,7 +26,7 @@ use opentune_realtime::{RealtimeError, RealtimeFrame, RealtimePoller};
 use opentune_transport::Transport;
 
 use crate::connection::{ActiveConnection, Session};
-use crate::dto::DefinitionDto;
+use crate::dto::{DefinitionDto, ResolvedGaugeBoundsDto};
 use crate::events::TuneDirtyEvent;
 
 pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
@@ -86,6 +86,34 @@ impl Session {
             .collect())
     }
 
+    /// Resolve tune-dependent gauge bounds in the backend expression engine.
+    ///
+    /// Bounds fail open independently. The frontend receives `None` for an
+    /// unsupported/unknown expression and renders range-dependent geometry
+    /// neutrally instead of inventing a misleading 0..100 scale.
+    pub fn resolve_gauge_bounds(&self) -> Result<Vec<ResolvedGaugeBoundsDto>, String> {
+        let tune = self.tune.as_ref().ok_or_else(|| NO_TUNE.to_string())?;
+        let resolve = |owner: &str, number: &opentune_ini::Number| {
+            tune.resolve_number(owner, number)
+                .ok()
+                .filter(|value| value.is_finite())
+        };
+        Ok(self
+            .def
+            .gauges
+            .iter()
+            .map(|gauge| ResolvedGaugeBoundsDto {
+                name: gauge.name.clone(),
+                low: resolve(&gauge.name, &gauge.low),
+                high: resolve(&gauge.name, &gauge.high),
+                lo_danger: resolve(&gauge.name, &gauge.lo_danger),
+                lo_warn: resolve(&gauge.name, &gauge.lo_warn),
+                hi_warn: resolve(&gauge.name, &gauge.hi_warn),
+                hi_danger: resolve(&gauge.name, &gauge.hi_danger),
+            })
+            .collect())
+    }
+
     /// Probe the manager-owned live protocol while realtime polling is idle.
     /// A failure is a concrete link-loss signal for the owner.
     pub(crate) fn check_link(&mut self) -> Result<(), String> {
@@ -102,31 +130,19 @@ impl Session {
     }
 
     /// One realtime poll tick (M3 Task 6.5): read the full och block through
-    /// the connection, hand it to the coalescing `poller`
-    /// ([`RealtimePoller::poll_once`] decodes + gates emission to ≤30 Hz),
-    /// and keep the reconnect manager's `secl` baseline in sync.
+    /// the connection and decode it, returning the frame plus the UI
+    /// coalescing decision (`true` = emit; the owner gates emission to ≤30 Hz)
+    /// for owner-side consumers.
     ///
-    /// The baseline feed is the Task 6 blocker-c fix: `secl` is byte 0 of
-    /// the och block by MS/TS convention, and the firmware zeroes it on the
-    /// first och request (and wraps it at 255) — without feeding every
-    /// successfully polled value into
-    /// [`ConnectionManager::note_secl`](opentune_protocol::reconnect::ConnectionManager::note_secl),
-    /// a later glitch reconnect compares against a stale baseline, falsely
-    /// detects a reboot, and the owner's reboot path re-reads the tune,
-    /// silently discarding unburned edits.
-    pub(crate) fn poll_frame(
-        &mut self,
-        poller: &mut RealtimePoller,
-    ) -> Result<Option<RealtimeFrame>, PollFrameError> {
-        Ok(match self.poll_frame_full(poller)? {
-            Some((frame, emit)) => emit.then_some(frame),
-            None => None,
-        })
-    }
-
-    /// Acquire the complete decoded frame for owner-side consumers and return
-    /// the UI coalescing decision separately.
-    pub fn poll_frame_full(
+    /// Keeps the reconnect manager's `secl` baseline in sync (Task 6 blocker-c
+    /// fix): `secl` is byte 0 of the och block by MS/TS convention, and the
+    /// firmware zeroes it on the first och request (wrapping at 255). Feeding
+    /// every successfully polled value into
+    /// [`ConnectionManager::note_secl`](opentune_protocol::reconnect::ConnectionManager::note_secl)
+    /// stops a later glitch reconnect from comparing against a stale baseline,
+    /// falsely detecting a reboot, and re-reading the tune — which would
+    /// silently discard unburned edits.
+    pub(crate) fn poll_frame_full(
         &mut self,
         poller: &mut RealtimePoller,
     ) -> Result<Option<(RealtimeFrame, bool)>, PollFrameError> {
@@ -164,12 +180,10 @@ impl Session {
             }
         }
 
-        result
-            .map(Some)
-            .map_err(|e| match e {
-                RealtimeError::Poll(detail) => PollFrameError::Link(detail),
-                RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
-            })
+        result.map(Some).map_err(|e| match e {
+            RealtimeError::Poll(detail) => PollFrameError::Link(detail),
+            RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
+        })
     }
 
     /// Set a constant, writing the changed bytes live to the ECU. Validated on
@@ -191,8 +205,10 @@ impl Session {
             write_deltas(conn, &def.comms, &deltas)?;
         }
 
-        // Commit to the model now that the ECU has the bytes.
-        tune.set(name, value).map_err(fmt_model_err)?;
+        // Commit the already-validated probe verbatim. Re-running `set`
+        // after the wire write would create a theoretical divergence window
+        // if a future state-dependent validator produced a different result.
+        *tune = probe;
         Ok(dirty_event(tune))
     }
 
@@ -641,11 +657,13 @@ page = 1
 
         let ev = s.undo().expect("undo");
         assert_eq!(&ecu_page(&s, 1)[0..2], &[0, 0], "undo must reach the wire");
-        // The model tracks touched-since-burn (sticky), not byte-equality, so
-        // the page stays dirty after an undo — the badge clears only on burn.
-        assert!(ev.dirty);
+        // Dirty is byte-equality against the flash baseline, not a sticky
+        // touched-since-burn flag: undoing back to the loaded value returns
+        // the page to baseline, so the tune reads clean again.
+        assert!(!ev.dirty);
 
         let ev = s.redo().expect("redo");
+        // Redo re-applies the edit, moving the page off baseline once more.
         assert!(ev.dirty);
         assert_eq!(
             &ecu_page(&s, 1)[0..2],

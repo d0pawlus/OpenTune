@@ -20,7 +20,7 @@
 //! Unknown entry kinds degrade gracefully (`Diagnostic` + continue) per this
 //! project's contract, rather than hyper-tuner's `.tryParse` throw.
 
-use opentune_ini::{parse_definition, OutputChannelDef, ScalarType};
+use opentune_ini::{parse_definition, IniError, OutputChannelDef, ScalarType};
 
 fn fixture() -> &'static str {
     include_str!("fixtures/speeduino-output-channels.ini")
@@ -197,4 +197,27 @@ fn computed_channel_bare_expression_with_no_units_field() {
         }
         other => panic!("expected Computed, got {other:?}"),
     }
+}
+
+#[test]
+fn output_channel_must_fit_declared_och_block_size() {
+    let ini = format!("{}\ntooWide = scalar, U32, 14, \"x\", 1, 0\n", fixture());
+    let err = parse_definition(&ini).expect_err("14 + four-byte width exceeds block size 16");
+    assert!(matches!(
+        err,
+        IniError::InvalidValue { ref key, ref detail }
+            if key == "tooWide" && detail.contains("ochBlockSize 16")
+    ));
+}
+
+#[test]
+fn output_channel_offset_plus_width_is_checked_even_without_block_size() {
+    let ini = fixture().replace("ochBlockSize     =  16", "")
+        + &format!("\noverflow = scalar, U16, {}, \"x\", 1, 0\n", usize::MAX);
+    let err = parse_definition(&ini).expect_err("offset + width must not wrap");
+    assert!(matches!(
+        err,
+        IniError::InvalidValue { ref key, ref detail }
+            if key == "overflow" && detail.contains("overflows")
+    ));
 }

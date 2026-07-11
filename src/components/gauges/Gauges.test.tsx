@@ -252,9 +252,27 @@ describe("GaugeCanvas theme reactivity", () => {
     await waitFor(() => {
       expect(assignedValues(fake.fn, "fillStyle")).toContain("default-muted");
     });
+    const canvas = screen.getByRole("img", {
+      name: "Running",
+    }) as HTMLCanvasElement;
+    let backingDimensionAssignments = 0;
+    for (const property of ["width", "height"] as const) {
+      const value = canvas[property];
+      Object.defineProperty(canvas, property, {
+        configurable: true,
+        get: () => value,
+        set: () => {
+          backingDimensionAssignments += 1;
+        },
+      });
+    }
 
     fireEvent.click(screen.getByRole("button", { name: "toggle theme" }));
 
+    // The theme effect paints immediately and does not clear the backing
+    // bitmap by assigning its already-correct dimensions.
+    expect(assignedValues(fake.fn, "fillStyle")).toContain("hc-muted");
+    expect(backingDimensionAssignments).toBe(0);
     await waitFor(() => {
       expect(assignedValues(fake.fn, "fillStyle")).toContain("hc-muted");
     });

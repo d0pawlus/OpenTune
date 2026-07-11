@@ -90,10 +90,10 @@ fn parse_panel_line(value: &str, dialogs: &mut [DialogDef], diagnostics: &mut Ve
 }
 
 /// `field = "Label"` (label-only, no bound value) or `field = "Label",
-/// name[, {}][, {cond}]`. Tolerates the 3- and 4-arg placeholder forms:
-/// whichever trailing token is a non-empty brace expression is the
-/// `visible` condition (the empty `{}` placeholder is ignored). A label
-/// with no `name` token is a static [`FieldKind::Label`]; a completely
+/// name[, {enable}][, {visible}]`. Conditions are positional per the
+/// TunerStudio grammar: the third token enables/disables the field and the
+/// fourth shows/hides it. Empty `{}` tokens preserve those positions. A
+/// label with no `name` token is a static [`FieldKind::Label`]; a completely
 /// empty label is a [`FieldKind::Gap`].
 fn parse_field_line(value: &str, dialogs: &mut [DialogDef], diagnostics: &mut Vec<Diagnostic>) {
     let Some(dialog) = dialogs.last_mut() else {
@@ -109,10 +109,7 @@ fn parse_field_line(value: &str, dialogs: &mut [DialogDef], diagnostics: &mut Ve
     };
     let label = unquote(label_tok);
 
-    // The visible condition is the LAST token if it's a non-empty brace
-    // expression (matches hyper-tuner: it takes the final condition slot
-    // regardless of how many placeholder braces precede it).
-    let visible = tokens.last().and_then(|t| brace_expr(t));
+    let (enable, visible) = positioned_conditions(&tokens, 2);
 
     // The constant name is the second token, but only if it isn't itself a
     // brace expression (i.e. `field = "Label", {cond}` with no name).
@@ -127,13 +124,15 @@ fn parse_field_line(value: &str, dialogs: &mut [DialogDef], diagnostics: &mut Ve
     dialog.fields.push(DialogField {
         kind,
         visible,
-        enable: None,
+        enable,
     });
 }
 
 /// `slider`/`displayOnlyField = "Label", name, ...` — both reference a bound
 /// constant and degrade faithfully to [`FieldKind::Constant`] per the
-/// controller-resolution mapping. Any trailing brace token is `visible`.
+/// controller-resolution mapping. `displayOnlyField` uses the same positional
+/// `{enable}, {visible}` tail as `field`; `slider` has an optional orientation
+/// token before that tail.
 fn parse_constant_backed_field(
     value: &str,
     dialogs: &mut [DialogDef],
@@ -155,12 +154,29 @@ fn parse_constant_backed_field(
         });
         return;
     };
-    let visible = tokens.iter().skip(2).find_map(|t| brace_expr(t));
+    let condition_start =
+        if keyword == "slider" && tokens.get(2).is_some_and(|token| !is_brace_token(token)) {
+            3
+        } else {
+            2
+        };
+    let (enable, visible) = positioned_conditions(&tokens, condition_start);
     dialog.fields.push(DialogField {
         kind: FieldKind::Constant(name_tok.clone()),
         visible,
-        enable: None,
+        enable,
     });
+}
+
+fn positioned_conditions(
+    tokens: &[String],
+    enable_index: usize,
+) -> (Option<String>, Option<String>) {
+    let enable = tokens.get(enable_index).and_then(|token| brace_expr(token));
+    let visible = tokens
+        .get(enable_index + 1)
+        .and_then(|token| brace_expr(token));
+    (enable, visible)
 }
 
 /// `commandButton`/`settingSelector` have no faithful frozen `FieldKind` —

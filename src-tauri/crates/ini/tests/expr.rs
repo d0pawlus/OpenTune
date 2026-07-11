@@ -94,6 +94,20 @@ fn unary_minus_combines_with_subtraction() {
 }
 
 #[test]
+fn unary_plus_preserves_literals_and_nested_values() {
+    assert_eq!(eval("+5", &no_vars).unwrap(), 5.0);
+    assert_eq!(eval("2 * +(1 + 2)", &no_vars).unwrap(), 6.0);
+    assert_eq!(eval("2 + +3", &no_vars).unwrap(), 5.0);
+}
+
+#[test]
+fn exponent_notation_is_accepted() {
+    assert_eq!(eval("1e3", &no_vars).unwrap(), 1_000.0);
+    assert_eq!(eval("2.5E-2", &no_vars).unwrap(), 0.025);
+    assert_eq!(eval(".5e+2", &no_vars).unwrap(), 50.0);
+}
+
+#[test]
 fn nested_parens_evaluate_correctly() {
     assert_eq!(eval("((1 + 2) * (3 + 4))", &no_vars).unwrap(), 21.0);
 }

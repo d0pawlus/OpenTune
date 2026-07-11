@@ -75,7 +75,7 @@ pub(super) fn reconnect_session(
             (states, manager.last_reconnect_caused_reidentify())
         }
     };
-    finish_reconnect(session, states, rebooted, emit)
+    finish_reconnect(session, states, rebooted, false, emit)
 }
 
 /// Blocking simulator demo body: keep the link down through the first attempt,
@@ -91,6 +91,7 @@ pub(super) fn reconnect_session(
 pub(super) fn link_drop(
     mut session: Session,
     emit: &Emitter,
+    fail_tune_reread: bool,
 ) -> (Option<Session>, Result<(), String>) {
     let Some(ActiveConnection::Sim { manager, simulator }) = &mut session.conn else {
         return (Some(session), Err(SIM_ONLY.to_owned()));
@@ -104,13 +105,14 @@ pub(super) fn link_drop(
         }
     });
     let rebooted = manager.last_reconnect_caused_reidentify();
-    finish_reconnect(session, states, rebooted, emit)
+    finish_reconnect(session, states, rebooted, fail_tune_reread, emit)
 }
 
 fn finish_reconnect(
     mut session: Session,
     states: Vec<ConnectionState>,
     rebooted: bool,
+    fail_tune_reread: bool,
     emit: &Emitter,
 ) -> (Option<Session>, Result<(), String>) {
     let result = match states.last() {
@@ -124,10 +126,25 @@ fn finish_reconnect(
         emit(OwnerEvent::Connection(ConnectionStateEvent::from(s)));
     }
 
+    if result.is_ok() && rebooted {
+        // A snapshot belongs to the ECU state that existed before the reboot
+        // and can never remain a valid merge baseline afterward — clear it
+        // even when the tune re-read below succeeds.
+        session.snapshot = None;
+    }
     if result.is_ok() && rebooted && session.tune.is_some() {
-        match session.load_tune() {
+        let reread = if fail_tune_reread {
+            Err("forced tune re-read failure".to_owned())
+        } else {
+            session.load_tune()
+        };
+        match reread {
             Ok(ev) => emit(OwnerEvent::TuneDirty(ev)),
             Err(e) => {
+                // Keep the successfully reconnected transport, but never
+                // expose the pre-reboot tune or snapshot as current.
+                session.tune = None;
+                session.snapshot = None;
                 return (
                     Some(session),
                     Err(format!("tune re-read after ECU reboot failed: {e}")),

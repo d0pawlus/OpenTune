@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { create } from "zustand";
 import { commands } from "../ipc/bindings";
-import type { DefinitionDto, TuneDirtyEvent, Value } from "../ipc/bindings";
+import type {
+  DefinitionDto,
+  ResolvedGaugeBoundsDto,
+  TuneDirtyEvent,
+  Value,
+} from "../ipc/bindings";
 import type { CellEdit } from "../components/table-editor/tableOps";
 
 interface TuneStore {
@@ -16,6 +21,8 @@ interface TuneStore {
   offline: boolean;
   /** Current physical values keyed by constant name. */
   values: Record<string, Value>;
+  /** Tune-resolved gauge bounds keyed by gauge name. */
+  gaugeBounds: Record<string, ResolvedGaugeBoundsDto>;
   /**
    * Whether RAM diverges from flash ("modified, not burned"). The backend is
    * the single source of truth — this only ever changes via {@link applyDirty}
@@ -36,6 +43,7 @@ interface TuneStore {
   /** Loads a definition from a file-backed offline open/new; sets `offline`. */
   setOfflineDefinition: (definition: DefinitionDto) => void;
   setValues: (values: Record<string, Value>) => void;
+  setGaugeBounds: (bounds: ResolvedGaugeBoundsDto[]) => void;
   /** Selects a dialog, clearing any active table/curve (single content pane). */
   setActiveDialog: (activeDialog: string | null) => void;
   /** Selects a table, clearing any active dialog/curve (single content pane). */
@@ -73,6 +81,7 @@ const INITIAL: Pick<
   | "definition"
   | "offline"
   | "values"
+  | "gaugeBounds"
   | "dirty"
   | "dirtyPages"
   | "activeDialog"
@@ -82,6 +91,7 @@ const INITIAL: Pick<
   definition: null,
   offline: false,
   values: {},
+  gaugeBounds: {},
   dirty: false,
   dirtyPages: [],
   activeDialog: null,
@@ -95,6 +105,12 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
   setDefinition: (definition) => set({ definition, offline: false }),
   setOfflineDefinition: (definition) => set({ definition, offline: true }),
   setValues: (values) => set({ values }),
+  setGaugeBounds: (bounds) =>
+    set({
+      gaugeBounds: Object.fromEntries(
+        bounds.map((bound) => [bound.name, bound]),
+      ),
+    }),
   setActiveDialog: (activeDialog) =>
     set({ activeDialog, activeTable: null, activeCurve: null }),
   setActiveTable: (activeTable) =>

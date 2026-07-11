@@ -48,7 +48,11 @@ export function parseLayout(
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-  const slots = (parsed as { slots?: unknown }).slots;
+  const { version, slots } = parsed as {
+    version?: unknown;
+    slots?: unknown;
+  };
+  if (version !== LAYOUT_VERSION) return null;
   if (!Array.isArray(slots)) return null;
 
   const valid = new Set(validGaugeNames);

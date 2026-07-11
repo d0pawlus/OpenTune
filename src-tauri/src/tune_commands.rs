@@ -12,7 +12,7 @@
 use opentune_model::Value;
 use tauri::State;
 
-use crate::dto::{CellEditDto, DefinitionDto, FieldDiffDto};
+use crate::dto::{CellEditDto, DefinitionDto, FieldDiffDto, MergePickDto, ResolvedGaugeBoundsDto};
 use crate::owner::{request, Command, OwnerHandle};
 
 /// Return the parsed firmware definition (menus, dialogs, constants, …) for
@@ -41,6 +41,15 @@ pub async fn get_values(
     owner: State<'_, OwnerHandle>,
 ) -> Result<Vec<Value>, String> {
     request(&owner, |reply| Command::GetValues { names, reply }).await
+}
+
+/// Resolve all gauge bounds against the currently loaded tune.
+#[tauri::command]
+#[specta::specta]
+pub async fn resolve_gauge_bounds(
+    owner: State<'_, OwnerHandle>,
+) -> Result<Vec<ResolvedGaugeBoundsDto>, String> {
+    request(&owner, |reply| Command::ResolveGaugeBounds { reply }).await
 }
 
 /// Set a constant and write the changed bytes live to the ECU. The owner
@@ -131,7 +140,10 @@ pub async fn diff_tune(owner: State<'_, OwnerHandle>) -> Result<Vec<FieldDiffDto
 /// earlier picks already committed (M2 behavior, preserved).
 #[tauri::command]
 #[specta::specta]
-pub async fn merge_tune(picks: Vec<String>, owner: State<'_, OwnerHandle>) -> Result<(), String> {
+pub async fn merge_tune(
+    picks: Vec<MergePickDto>,
+    owner: State<'_, OwnerHandle>,
+) -> Result<(), String> {
     request(&owner, |reply| Command::MergeTune { picks, reply })
         .await
         .map(|_| ())

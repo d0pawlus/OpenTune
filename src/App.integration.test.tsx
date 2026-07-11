@@ -17,6 +17,7 @@ vi.mock("./ipc/bindings", () => ({
     getDefinition: vi.fn(),
     loadTune: vi.fn(),
     getValues: vi.fn(),
+    resolveGaugeBounds: vi.fn(),
     evalConditions: vi.fn(),
     // Dashboard layout + realtime controls.
     loadLayout: vi.fn(),
@@ -125,6 +126,10 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
       data: null,
     });
     vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [],
+    });
+    vi.mocked(ipc.commands.resolveGaugeBounds).mockResolvedValue({
       status: "ok",
       data: [],
     });

@@ -148,12 +148,19 @@ impl<T: Transport> MsProtocol<T> {
     ///   `serialPayload[0] = SERIAL_RC_OK` is always set before the data, so
     ///   the leading byte is stripped here.
     pub(crate) fn do_read_page(&mut self, page: PageDef) -> Result<Vec<u8>> {
+        validate_page_number(page.number)?;
+        let count = u16::try_from(page.size).map_err(|_| {
+            ProtocolError::InvalidRequest(format!(
+                "page {} size {} exceeds the 16-bit wire length limit",
+                page.number, page.size
+            ))
+        })?;
         let template = self.comms.page_read_command.clone();
         let envelope = self.comms.envelope;
         let params = TemplateParams {
             page: page.number,
             offset: 0,
-            count: page.size as u16,
+            count,
             value: &[],
             can_id: 0,
         };
@@ -202,11 +209,24 @@ impl<T: Transport> MsProtocol<T> {
     /// **not** a page-select — current Speeduino has no stateful page
     /// select).
     pub(crate) fn do_write(&mut self, page: u16, offset: u16, bytes: &[u8]) -> Result<()> {
+        validate_page_number(page)?;
+        let count = u16::try_from(bytes.len()).map_err(|_| {
+            ProtocolError::InvalidRequest(format!(
+                "write length {} exceeds the 16-bit wire length limit",
+                bytes.len()
+            ))
+        })?;
+        let end = u32::from(offset) + u32::from(count);
+        if end > u32::from(u16::MAX) + 1 {
+            return Err(ProtocolError::InvalidRequest(format!(
+                "write offset {offset} + length {count} exceeds the 16-bit address space"
+            )));
+        }
         let template = self.comms.page_value_write.clone();
         let params = TemplateParams {
             page,
             offset,
-            count: bytes.len() as u16,
+            count,
             value: bytes,
             can_id: 0,
         };
@@ -226,6 +246,7 @@ impl<T: Transport> MsProtocol<T> {
     /// is applied here (the brief ties `interWriteDelay`/`pageActivationDelay`
     /// to writes only).
     pub(crate) fn do_burn(&mut self, page: u16) -> Result<()> {
+        validate_page_number(page)?;
         let template = self.comms.burn_command.clone();
         let params = TemplateParams {
             page,
@@ -279,6 +300,15 @@ impl<T: Transport> MsProtocol<T> {
         };
         Ok(data)
     }
+}
+
+fn validate_page_number(page: u16) -> Result<()> {
+    if page > u16::from(u8::MAX) {
+        return Err(ProtocolError::InvalidRequest(format!(
+            "page {page} exceeds the one-byte firmware page-id limit"
+        )));
+    }
+    Ok(())
 }
 
 /// Sleep for `ms` milliseconds, skipping the syscall entirely when `ms == 0`

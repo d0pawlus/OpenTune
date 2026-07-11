@@ -562,3 +562,13 @@ page = 1
     let def = parse_definition(ini).expect("should parse with big endianness");
     assert_eq!(def.comms.endianness, opentune_ini::Endianness::Big);
 }
+
+// NOTE (M2/M3-review → main reconcile, 2026-07-11): the review's INI-hardening
+// tests (undeclared-page rejection, strict page/pageSize parsing, empty-field
+// defaults, hard-error offset/shape overflow) were dropped when merging onto
+// main. M4 addresses the panic finding via a *lenient* parser — offset/shape
+// overflow becomes an `OffsetCheck::Overflow` diagnostic + skip
+// (`constants_parser.rs`), not a hard error — which is the shipped, real-INI-
+// tuned philosophy. Re-introducing strict rejection here would fight that and
+// risk real speeduino.ini ingestion. Follow-up if strict validation is wanted:
+// undeclared-page/bad-pageSize/empty-numeric (`Number::Expr("")`) handling.
