@@ -1481,14 +1481,17 @@ fix-wave-report.md`.
     - `src/i18n/en.ts` + `pl.ts` — usunięty martwy klucz `table.scale` (bez
       użyć w kodzie poza samymi plikami i18n).
 
-**Świadomie POZA zakresem tej fali** (brief tego nie obejmował, nie
-improwizowano): `parser.rs:36` — surowy (nie-preprocessowany) `parse_comms`
-wybiera martwą gałąź `#if` dla `blockingFactor` na prawdziwym pliku (121 vs
-251) — produkcyjny `connect` i tak zawsze idzie przez preprocessowaną ścieżkę
-(`load_definition_from_*`), więc luka dotyczy tylko `parse_comms`/
-`load_comms_from_path` jako publicznego API. Ledger-wording item (Task 9
-CARRY vs. shipped AFR-target seam) — DOWNGRADED, zastrzeżone dla kontrolera,
-pominięte tutaj.
+**Poza zakresem fali, domknięte OSOBNO przez kontrolera** (brief fali tego
+nie obejmował, wykonawca fali słusznie nie improwizował): `parser.rs:36` —
+surowy (nie-preprocessowany) `parse_comms` wybierał martwą gałąź `#if` dla
+`blockingFactor` na prawdziwym pliku (121 vs 251). Naprawione w `81718ad`:
+`parse_comms` preprocesuje wejście wewnętrznie tym samym pustym zbiorem
+symboli co `parse_definition` (idempotentne na już-preprocessowanym tekście),
+więc oba publiczne punkty wejścia czytają te same żywe gałęzie; przypięte
+testem `raw_real_ini_resolves_scattered_keys_from_live_if_branches` (251 na
+surowym realnym pliku). Ledger-wording item (Task 9 CARRY vs. shipped
+AFR-target seam) — DOWNGRADED, skorygowane przez kontrolera bezpośrednio
+w ledgerze (`.superpowers/sdd/progress.md`).
 
 **Bramy po poprawkach (zmierzone, nie z pamięci):** `cargo test --workspace`
 → 442 zdanych, 0 failed. `cargo clippy --workspace -- -D warnings` (i z
