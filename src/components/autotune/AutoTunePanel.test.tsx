@@ -205,6 +205,55 @@ describe("AutoTunePanel", () => {
     );
   });
 
+  it("clearing the confidence-threshold input keeps the previous threshold (never silently 0)", async () => {
+    // M4 final-review fix wave item 5 (same class as TableEditor's scale
+    // factor): `Number("")` is 0, not NaN — a cleared threshold must not
+    // silently become 0 (which would let every cell, however unreliable,
+    // through Apply). Proven behaviorally: Apply must still exclude the
+    // 0.2-confidence cell after the field is cleared.
+    render(<TableEditor locale="en" />);
+    await screen.findByRole("grid");
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await waitFor(() => expect(screen.getAllByRole("grid")).toHaveLength(2));
+
+    const thresholdInput = screen.getByLabelText(
+      "Min confidence",
+    ) as HTMLInputElement;
+    expect(thresholdInput.value).toBe("0.5");
+
+    fireEvent.change(thresholdInput, { target: { value: "" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply proposed" }));
+
+    await waitFor(() =>
+      expect(ipc.commands.setCells).toHaveBeenCalledWith("veTable", [
+        { index: 0, value: 55 },
+      ]),
+    );
+  });
+
+  it("Apply surfaces a setCells rejection via the error line (no unhandled rejection)", async () => {
+    // M4 final-review fix wave item 9: apply() used to fire-and-forget
+    // `setCells` (`void ...`), so a backend rejection became an unhandled
+    // promise rejection with no visible error — the grid's optimistic
+    // proposals would silently roll back with zero explanation.
+    render(<TableEditor locale="en" />);
+    await screen.findByRole("grid");
+
+    fireEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    await waitFor(() => expect(screen.getAllByRole("grid")).toHaveLength(2));
+
+    vi.mocked(ipc.commands.setCells).mockResolvedValue({
+      status: "error",
+      error: "out of range",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Apply proposed" }));
+
+    await waitFor(() => expect(screen.getByText("out of range")).toBeTruthy());
+  });
+
   it("capture Start/Stop call their commands and render sample_count", async () => {
     render(<TableEditor locale="en" />);
     await screen.findByRole("grid");

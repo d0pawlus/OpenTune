@@ -106,7 +106,17 @@ export function AutoTunePanel({
     }
   };
 
-  const apply = () => {
+  // An empty/unparseable threshold must keep the previous value, never
+  // silently become 0 (which would let every cell, however unreliable,
+  // pass Apply) — M4 final-review fix wave item 5, same class as
+  // TableEditor's scale factor.
+  const onThresholdChange = (raw: string) => {
+    const trimmed = raw.trim();
+    const parsed = trimmed === "" ? NaN : Number(trimmed);
+    if (Number.isFinite(parsed)) setThreshold(parsed);
+  };
+
+  const apply = async () => {
     if (!report) return;
     const edits = report.cells.flatMap((c, i) => {
       const proposed = num(c.proposed);
@@ -116,7 +126,12 @@ export function AutoTunePanel({
         : [];
     });
     if (edits.length === 0) return;
-    void useTuneStore.getState().setCells(zName, edits);
+    setError(null);
+    try {
+      await useTuneStore.getState().setCells(zName, edits);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
 
   const cellTitle = (i: number): string | undefined => {
@@ -195,10 +210,10 @@ export function AutoTunePanel({
                 max={1}
                 step={0.05}
                 value={threshold}
-                onChange={(e) => setThreshold(Number(e.target.value))}
+                onChange={(e) => onThresholdChange(e.target.value)}
               />
             </label>
-            <button type="button" onClick={apply}>
+            <button type="button" onClick={() => void apply()}>
               {t("autotune.apply", locale)}
             </button>
           </div>
