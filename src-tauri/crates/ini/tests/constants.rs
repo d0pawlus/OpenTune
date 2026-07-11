@@ -454,6 +454,84 @@ page = 1
 }
 
 #[test]
+fn scalar_offset_overflow_degrades_to_diagnostic_not_panic() {
+    // M4 final-review fix wave item 1: `def.offset + size` used unchecked
+    // `usize` arithmetic. This offset is `usize::MAX` (the exact adversarial
+    // line from the finding) — `offset + size` overflows. Must degrade to a
+    // Diagnostic + skip, never panic (debug) or silently wrap (release).
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 128
+
+page = 1
+a = scalar, U08, 18446744073709551615, \"u\", 1, 0, 0, 255, 0
+";
+    let def =
+        parse_definition(ini).expect("an overflowing offset must degrade, never panic/hard-error");
+    assert!(
+        def.constant("a").is_none(),
+        "the overflowing constant must be skipped, not stored"
+    );
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "Constants" && d.detail.contains('a')),
+        "expected a diagnostic naming `a`; got {:?}",
+        def.diagnostics
+    );
+}
+
+#[test]
+fn array_shape_overflow_degrades_to_diagnostic_not_panic() {
+    // Same item, the `constant_byte_size` half: `scalar_width * rows * cols`
+    // overflows for this adversarial shape (the exact line from the finding).
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 128
+
+page = 1
+a = array, U32, 0, [4294967295x4294967295], \"u\", 1, 0, 0, 255, 0
+";
+    let def = parse_definition(ini)
+        .expect("an overflowing array shape must degrade, never panic/hard-error");
+    assert!(
+        def.constant("a").is_none(),
+        "the overflowing constant must be skipped, not stored"
+    );
+    assert!(
+        def.diagnostics
+            .iter()
+            .any(|d| d.section == "Constants" && d.detail.contains('a')),
+        "expected a diagnostic naming `a`; got {:?}",
+        def.diagnostics
+    );
+}
+
+#[test]
 fn endianness_big_in_constants_section_overrides_comms_default() {
     // [MegaTune] omits `endianness` entirely (so `parse_comms` falls back to
     // its own default, `Little`); only [Constants] declares `big`. This
