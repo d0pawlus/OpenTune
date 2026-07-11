@@ -28,6 +28,11 @@ use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use ops::{build_session, link_drop};
 
 const NOT_CONNECTED: &str = "not connected";
+/// M4 final-review fix wave item 4: `StartCapture` rejects with this exact
+/// message when realtime polling isn't running — the capture ring is only
+/// ever fed from `poll_tick`, which only fires while `polling` is true (see
+/// `wants_poll`), so arming a capture without it would silently never fill.
+const POLLING_NOT_RUNNING: &str = "realtime polling is not running";
 
 /// A oneshot reply channel carrying an operation's result back to the
 /// awaiting IPC command.
@@ -358,7 +363,7 @@ impl Owner {
             // output channels in declaration order (Task 8).
             Command::StartCapture { reply } => {
                 let r = match &self.session {
-                    Some(s) => {
+                    Some(s) if self.polling => {
                         let columns: Vec<String> = s
                             .def
                             .output_channels
@@ -369,6 +374,7 @@ impl Owner {
                         self.capturing = true;
                         Ok(())
                     }
+                    Some(_) => Err(POLLING_NOT_RUNNING.to_owned()),
                     None => Err(NOT_CONNECTED.to_owned()),
                 };
                 let _ = reply.send(r);

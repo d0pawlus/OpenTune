@@ -301,6 +301,35 @@ async fn commands_error_when_not_connected() {
     assert!(err.contains("not connected"), "got: {err}");
 }
 
+// M4 final-review fix wave item 4: StartCapture with realtime polling
+// stopped used to succeed and silently arm a capture ring that `poll_tick`
+// never feeds (nothing sets `capturing` false or errors — the ring just
+// never fills). Reject instead, with a clear error.
+#[tokio::test]
+async fn start_capture_requires_realtime_polling() {
+    let (tx, _events) = test_owner();
+    connect_and_load(&tx).await;
+
+    let err = send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect_err("polling was never started");
+    assert!(err.contains("polling"), "got: {err}");
+
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
+    send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect("start capture once polling is running");
+
+    send(&tx, |reply| Command::StopCapture { reply })
+        .await
+        .expect("stop capture");
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop realtime");
+}
+
 // ── Task 4 regression: a FAILED attach must NOT destroy the offline tune ─────
 //
 // `Owner::connect`'s ATTACH branch takes the session out to move it onto the

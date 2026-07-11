@@ -81,7 +81,12 @@ async fn run_ve_analyze_errs_without_connection() {
 async fn run_ve_analyze_errs_without_a_tune_loaded() {
     let tx = test_owner();
     connect(&tx, false).await;
-    // Capture doesn't require a loaded tune — only a session.
+    // Capture doesn't require a loaded tune — only a session with polling
+    // running (M4 final-review fix wave item 4: StartCapture now requires
+    // StartRealtime first).
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
     send(&tx, |reply| Command::StartCapture { reply })
         .await
         .expect("start capture without a loaded tune");
@@ -113,6 +118,10 @@ async fn run_ve_analyze_errs_without_a_capture() {
 async fn run_ve_analyze_errs_on_an_unknown_table_id() {
     let tx = test_owner();
     connect(&tx, true).await;
+    // M4 final-review fix wave item 4: StartCapture now requires polling.
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
     send(&tx, |reply| Command::StartCapture { reply })
         .await
         .expect("start capture");
