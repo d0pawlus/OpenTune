@@ -8,14 +8,18 @@ import { t, type Locale } from "../../i18n";
 import "./offline.css";
 
 async function pickFile(name: string, ext: string): Promise<string | null> {
-  const picked = await open({ multiple: false, filters: [{ name, extensions: [ext] }] });
+  const picked = await open({
+    multiple: false,
+    filters: [{ name, extensions: [ext] }],
+  });
   return typeof picked === "string" ? picked : null;
 }
 
 function loadDefinition(def: DefinitionDto): void {
   const store = useTuneStore.getState();
   store.setOfflineDefinition(def);
-  const firstDialog = def.menus[0]?.items[0]?.dialog ?? def.dialogs[0]?.name ?? null;
+  const firstDialog =
+    def.menus[0]?.items[0]?.dialog ?? def.dialogs[0]?.name ?? null;
   store.setActiveDialog(firstDialog);
 }
 
@@ -52,7 +56,9 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
 
   const saveTune = async () => {
     setError(null);
-    const path = await save({ filters: [{ name: "Tune", extensions: ["msq"] }] });
+    const path = await save({
+      filters: [{ name: "Tune", extensions: ["msq"] }],
+    });
     if (typeof path !== "string") return;
     const res = await commands.saveTune(path);
     if (res.status === "error") setError(res.error);

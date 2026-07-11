@@ -1337,3 +1337,167 @@ Zakres sankcjonowany przez kontrolera wykraczający poza dosłowny brief
   `docs/notes/m4-decisions.md`); dirty `package.json`'s `allowScripts`
   (poza zakresem, przedwcześnie odziedziczony z wcześniejszej sesji) nadal
   niestage'owany.
+
+## Weryfikacja po scaleniu M4 — stan testów i bram (2026-07-11)
+
+Pełny przebieg bram na `m4-table-editors` @ `aab60f7` (po scaleniu PR #8).
+Zmierzone, nie z pamięci.
+
+- **Testy — zielone.** `cargo test --workspace` → **438 zdanych, 0 failed**,
+  exit 0 (9 crate'ów + app). `npm test` (vitest) → **208 zdanych / 26 plików**.
+  `npm run lint` (eslint `--max-warnings 0`) — czysto. `npm run rust:clippy`
+  (`-D warnings`) — czysto, exit 0. `npm run build` (tsc + vite) — ✓.
+- **Prettier — DWA śledzone pliki nie przechodzą `format:check` (blokuje CI).**
+  `src/App.integration.test.tsx` i `src/components/offline/OfflinePanel.tsx`
+  (drugi to kod produkcyjny). Fix: `npm run format`. Trywialne, ale realne —
+  `format:check` jest bramą, a te pliki są w gałęzi.
+- **rustfmt — psuje się WYŁĄCZNIE na `crates/ini/tests/zz_overflow_probe.rs`**
+  (linie 22, 34 — długie `format!` stringi). Plik jest **untracked**, więc
+  bramy nie łamie *dopóki* nie zostanie zacommitowany; śledzone pliki Rust są
+  czyste.
+- **Parser INI panikuje na złośliwym wejściu — realny, otwarty bug (znane
+  „Important" z review M4, wciąż aktualne).** Probe `zz_overflow_probe.rs`
+  potwierdza empirycznie:
+  - `constants_parser.rs:229` — `attempt to add with overflow` przy skalarze z
+    offsetem `U08 = 18446744073709551615` (`offset + width`).
+  - `constants_parser.rs:245` — `attempt to multiply with overflow` przy
+    kształcie tablicy `[4294967295x4294967295]` (`rows * cols`).
+  - **W debug panikuje; w release (bez `overflow-checks`) zawinie się po cichu**
+    i policzy błędny rozmiar strony/liczbę stron — czyli release jest *gorszy*
+    niż crash. `parse_definition` czyta plik z zewnątrz (.ini od użytkownika/ECU)
+    → to trust boundary, walidacja jest obowiązkowa.
+  - **Probe niczego nie ASERTUJE** — łapie panic przez `std::panic::catch_unwind`
+    i tylko `println!`-uje `PROBE_*_PANICKED`, więc zawsze kończy się „ok". To
+    dokumentacja buga, nie strażnik przed regresją. Docelowo: naprawić arytmetykę
+    (`checked_add`/`checked_mul` → błąd parsowania zamiast overflow) i przekuć
+    probe w prawdziwą asercję (`assert!(result.is_ok())`), albo świadomie usunąć
+    plik z komentarzem o znanym suficie.
+- **Luki w pokryciu (do sprawdzenia ręcznego, nie w CI):**
+  - **Brak browser-E2E (Playwright).** Jedyny E2E to `src-tauri/tests/tune_demo.rs`
+    — poziom Rust, na symulatorze, nie klikanie po natywnym oknie Tauri (patrz
+    też „12.3 manualny smoke `tauri dev` — NIE wykonany" wyżej). Krytyczny flow
+    do przeklikania ręcznie: connect → capture → VE analyze → apply → save .msq.
+  - **Wszystko na symulatorze.** Zero pokrycia realnego ECU / realnego portu
+    szeregowego / realnego pliku `.msq`. Round-trip offline (load → edit → save →
+    diff) na prawdziwym `.msq` nietestowany (por. follow-up „surface .msq load
+    failures before real-ECU push").
+
+## Finalna recenzja — fala poprawek
+
+Naprawiono WSZYSTKIE potwierdzone defekty z pięciowymiarowego przeglądu całej
+gałęzi (adversarial-verified), po jednym RED teście na każdą poprawkę
+behawioralną (TDD). Poniżej — co, gdzie, i dlaczego; pełny raport z RED-em i
+wynikiem testu na każdą pozycję: `.superpowers/sdd/final-review/
+fix-wave-report.md`.
+
+1. **INI: przepełnienie arytmetyki w walidacji offsetu strony**
+   (`constants_parser.rs:229/245`) — `def.offset + size` i
+   `scalar_width * rows * cols` liczone gołym `usize` panikowały na
+   `usize::MAX`-owym offsecie i na kształcie tablicy `[4294967295x4294967295]`
+   (dokładnie te dwie linie z findingu). Naprawa: `checked_add`/`checked_mul`;
+   przy przepełnieniu — `Diagnostic` + pominięcie TEJ stałej (fail-open, jak
+   każda inna zniekształcona linia), NIE cały-plik error. Rozróżnione od
+   istniejącego "offset beyond page size" (bez przepełnienia) — ten nadal
+   twardym błędem, niezmieniony. Probe `zz_overflow_probe.rs` (do niczego nie
+   asertujący, tylko `catch_unwind` + `println!`) zastąpiony prawdziwymi
+   asercjami w `tests/constants.rs` i usunięty.
+2. **Analysis: `finalize` panikuje na NaN/±inf; `min_weight<=0` daje NaN z
+   0/0** (`ve_analyze.rs:359/379`) — jedna rodzina guardów:
+   `!current.is_finite() || current == 0.0 || sum_w <= 0.0 || sum_w <
+   params.min_weight`. Nie-skończona komórka jest pomijana (bez propozycji
+   korekty, fail-open); `sum_w <= 0.0` wyklucza dzielenie 0/0 niezależnie od
+   `min_weight`. Determinizm bit-w-bit zachowany (`same_input_is_bitwise_
+   identical` nadal zielony).
+3. **Model: `set_cells` re-waliduje CAŁĄ tablicę, więc jedna nietknięta
+   komórka spoza zakresu blokuje każdy gest** (`tune.rs:176/197`, zgłoszone
+   dwukrotnie — traktowane jako JEDNA poprawka) — `set_cells` teraz
+   waliduje/koduje TYLKO dotknięte pary (index, value) przez
+   `codec::encode_scalar`, po czym nadpisuje wyłącznie ich bajty w kopii
+   nietkniętego regionu (jeden `commit_bytes` — wspólny z `set`, jeden undo
+   `Edit` na gest). Nietknięta komórka poza zakresem: bajty bez zmian,
+   nie blokuje gestu; dotknięta komórka poza zakresem: nadal `OutOfRange`.
+4. **Owner: `StartCapture` przy zatrzymanym pollingu cicho uzbraja pusty
+   capture** (`owner.rs:324`) — teraz odrzucane z jawnym błędem
+   (`POLLING_NOT_RUNNING = "realtime polling is not running"`, stała jak
+   `NOT_CONNECTED`) zamiast cicho zbierać zero próbek. `AutoTunePanel` już
+   przekazuje surowy string błędu do swojej linii błędu — bez nowego klucza
+   i18n. Re-entrancy „StopRealtime zostawia `capturing=true`" (druga
+   dziura z findingu) świadomie POZA zakresem tej poprawki — brief pokrywał
+   wyłącznie StartCapture-bez-pollingu.
+5. **Frontend: pusty/niepoprawny współczynnik skalowania aplikuje 0**
+   (`TableEditor.tsx:326`) — `Number("")` to `0`, nie `NaN`, więc stary
+   `Number.isNaN` guard przepuszczał wyczyszczone pole. Poprawka: pusty tekst
+   jawnie parsuje się do `NaN` PRZED `Number.isFinite`; przycisk Apply
+   (`TableToolbar`) disabled gdy nieskończone. Ta sama klasa poprawki na
+   progu pewności AutoTune (`AutoTunePanel.tsx:198`) — puste/niepoprawne
+   wejście zachowuje POPRZEDNI próg zamiast cicho zerować (co przepuściłoby
+   Apply na każdej, nawet najsłabszej, komórce).
+6. **Frontend: commit/cancel draftu gubi fokus klawiatury**
+   (`TableGrid.tsx:133`, dzielone przez `TableEditor` i `CurveEditor`) —
+   draft `<input autoFocus>` kradnie fokus z powierzchni `tabIndex=0`; po
+   unmouncie nic go nie oddawało (fokus lądował na `document.body`, martwa
+   klawiatura). Naprawa scentralizowana w `closeDraft()` (nowy `surfaceRef`
+   + `.focus()`), wołanym z KAŻDEJ ścieżki zamknięcia draftu (Enter-commit,
+   Esc-cancel, arrow/Tab/mouse-commit — wszystkie przechodzą przez
+   `commitDraft`/`closeDraft`), w obu edytorach.
+7. **Frontend: schowek TSV odwrócony pionowo względem wyświetlania**
+   (`TableEditor.tsx:194`) — siatka renderuje się display-reversed (góra =
+   najwyższe obciążenie), ale copy/paste serializowały/kotwiczyły w surowym
+   porządku danych (rosnąco) — schowek był lustrzanym odbiciem tego, co
+   widać na ekranie. Naprawa WYŁĄCZNIE w handlerach `TableEditor` (`tsv.ts`
+   pozostaje display-agnostyczny, zgodnie z briefem): `copySelection` odwraca
+   kolejność linii `toTsv`, `pasteClipboard` odwraca sparsowane wiersze przed
+   `pasteEdits`. Round-trip kopiuj→wklej w to samo miejsce = identity;
+   pierwsza linia serializowanego TSV = wizualnie GÓRNY wiersz.
+8. **Frontend: `parseTsv` mapuje pustą komórkę na 0, nadpisując skończone
+   komórki** (`tsv.ts:36`) — **ZMIANA KONTRAKTU sankcjonowana przez
+   kontrolera**: pusta/białoznakowa komórka parsuje się teraz do `NaN`, nie
+   `0` (i nie odrzuca całego wklejenia); `pasteEdits` pomija nie-skończone
+   wartości ŹRÓDŁOWE (obok istniejącego filtra na komórce DOCELOWEJ w
+   edytorze). Przywraca wierność round-tripu: `—` → `""` → pominięte, nigdy
+   ciche `0`. Testy Taska 5 dokumentujące STARY kontrakt zaktualizowane z
+   komentarzem o zmianie; `parseTsv` nadal zwraca `null` tylko dla
+   prawdziwie nie-liczbowego śmiecia.
+9. **AutoTune: `apply()` połyka odrzucenie `setCells`** (`AutoTunePanel.tsx:
+   119`, zgłoszone przez dwa wymiary review, w tym docs-triage MUST-FIX) —
+   `apply` jest teraz `async` z `try/catch → setError`, lustrzanie do
+   `analyze`/`startCapture`/`stopCapture`. Bez tego: odrzucenie backendu
+   (np. `OutOfRange` na jednej proponowanej wartości) cicho cofało siatkę
+   optymistyczną, bez żadnego komunikatu, plus realny unhandled promise
+   rejection w konsoli/WKWebView.
+10. **Golden gate zbyt luźny mimo deterministycznego parsu** (`real_ini.rs:
+    75/137`) — `blocking_factor` przypięty dokładnie na `251` (usunięta
+    tolerancja `[121, 251]` z ery M3, która już nie dotyczy tej
+    preprocessowanej ścieżki); `filters.len()` przypięty dokładnie na `10`
+    (usunięte `>= 9`). Obie asercje puszczałyby dokładnie tę regresję, którą
+    miały łapać.
+11. **Tanie porządki (jeden commit / dołączone gdzie dotknięte):**
+    - `real_ini.rs:32` — `commandButton`/`settingSelector` teraz w
+      backtickach, zgodnie z konwencją reszty allowlisty (dopasowanie
+      zweryfikowane — diagnostyka i tak zawiera nazwę w backtickach, więc
+      bramka nadal zielona).
+    - `crates/analysis/Cargo.toml` — dodane `publish = false` (Task 0
+      ticket; był jedynym crate'em w workspace bez tego pola).
+    - `src/i18n/en.ts` + `pl.ts` — usunięty martwy klucz `table.scale` (bez
+      użyć w kodzie poza samymi plikami i18n).
+
+**Świadomie POZA zakresem tej fali** (brief tego nie obejmował, nie
+improwizowano): `parser.rs:36` — surowy (nie-preprocessowany) `parse_comms`
+wybiera martwą gałąź `#if` dla `blockingFactor` na prawdziwym pliku (121 vs
+251) — produkcyjny `connect` i tak zawsze idzie przez preprocessowaną ścieżkę
+(`load_definition_from_*`), więc luka dotyczy tylko `parse_comms`/
+`load_comms_from_path` jako publicznego API. Ledger-wording item (Task 9
+CARRY vs. shipped AFR-target seam) — DOWNGRADED, zastrzeżone dla kontrolera,
+pominięte tutaj.
+
+**Bramy po poprawkach (zmierzone, nie z pamięci):** `cargo test --workspace`
+→ 442 zdanych, 0 failed. `cargo clippy --workspace -- -D warnings` (i z
+`--all-targets`) — czysto. `cargo fmt --check` — czysto. `npm test` → 217
+zdanych / 26 plików (208 wyjściowych + 9 nowych RED→GREEN). `npm run build`
+— ✓. `npm run lint` — czysto. `npm run format:check` — czysto (przy okazji
+naprawione dwa ZASTANE, niezwiązane z tą falą, sformatowania:
+`App.integration.test.tsx` i `OfflinePanel.tsx` — dokładnie te dwa pliki,
+które poprzedni wpis w tym dokumencie już odnotował jako łamiące bramkę;
+czysto kosmetyczne, zweryfikowane diffem przed zastosowaniem). Probe
+`zz_overflow_probe.rs` (wcześniej jedyny winowajca `rustfmt`) usunięty —
+zastąpiony prawdziwymi asercjami w punkcie 1 powyżej.

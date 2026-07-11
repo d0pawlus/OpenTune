@@ -29,8 +29,8 @@ const REAL_INI: &str = include_str!("fixtures/speeduino-real-0832dc1d.ini");
 /// See `docs/notes/m4-decisions.md` for the one-line justification behind
 /// every entry below.
 const ALLOWED_DIAGNOSTICS: &[&str] = &[
-    "commandButton",
-    "settingSelector",
+    "`commandButton`",
+    "`settingSelector`",
     // Dialog widgets with no frozen `FieldKind` representation (M2's
     // `ui.rs` shape is frozen; a future task's scope to extend it).
     "`settingOption`", // named preset consumed by settingSelector, not itself bindable
@@ -57,8 +57,7 @@ const ALLOWED_DIAGNOSTICS: &[&str] = &[
     // missing the commas between `systemTemp`, `"System Temp"`, and `"F"`
     // — an upstream INI typo, not a parser gap, and out of M4 Task 2's
     // [TableEditor]/[CurveEditor]/[VeAnalyze] grammar scope
-    // (`gauges_parser.rs` untouched). Same tolerance spirit as the
-    // `blockingFactor` `[121, 251]` assertion above.
+    // (`gauges_parser.rs` untouched).
     "`systemTempGauge`",
 ];
 
@@ -72,7 +71,11 @@ fn real_speeduino_ini_parses_diagnostic_clean() {
     assert_eq!(def.comms.page_read_command, "p%2i%2o%2c");
     assert_eq!(def.comms.page_value_write, "M%2i%2o%2c%v");
     assert_eq!(def.comms.och_block_size, 139);
-    assert!([121, 251].contains(&def.comms.blocking_factor));
+    // M4 final-review fix wave item 10: the parse is deterministic (empty
+    // active-symbol set keeps only the `#else` branch's 251) — pin the exact
+    // value, drop the `[121, 251]` tolerance inherited from an M3-era
+    // context that no longer applies to this preprocessed path.
+    assert_eq!(def.comms.blocking_factor, 251);
     assert_eq!(def.pages.len(), 15);
     assert_eq!(def.pages[4].size, 288); // page 5
 
@@ -134,7 +137,10 @@ fn real_speeduino_ini_parses_diagnostic_clean() {
     let va = def.ve_analyze.as_ref().expect("[VeAnalyze]");
     assert_eq!(va.maps[0].table, "veTable1Tbl");
     assert_eq!(va.maps[0].lambda_channel, "afr");
-    assert!(va.filters.len() >= 9, "got {}", va.filters.len());
+    // M4 final-review fix wave item 10: same determinism as blocking_factor
+    // above — pin the exact real-file count (was `>= 9`, tolerating a
+    // regression that drops one filter).
+    assert_eq!(va.filters.len(), 10, "got {}", va.filters.len());
 
     // Diagnostic-clean modulo the recorded allowlist.
     let unexpected: Vec<_> = def

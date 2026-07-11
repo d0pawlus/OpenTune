@@ -37,7 +37,6 @@ export const en = {
   "curve.navLabel": "Curves",
   "table.interpolate": "Interpolate",
   "table.smooth": "Smooth",
-  "table.scale": "Scale",
   "table.scaleFactor": "Scale factor",
   "table.apply": "Apply",
   "table.setEqual": "Set equal",

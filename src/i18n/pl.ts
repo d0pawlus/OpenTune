@@ -38,7 +38,6 @@ export const pl: Record<keyof typeof en, string> = {
   "curve.navLabel": "Krzywe",
   "table.interpolate": "Interpoluj",
   "table.smooth": "Wygładź",
-  "table.scale": "Skaluj",
   "table.scaleFactor": "Współczynnik skali",
   "table.apply": "Zastosuj",
   "table.setEqual": "Wyrównaj",
