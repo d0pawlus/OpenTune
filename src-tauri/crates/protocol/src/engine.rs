@@ -276,20 +276,10 @@ impl<T: Transport> Protocol for MsProtocol<T> {
             }
             EnvelopeFormat::MsEnvelope10 => {
                 self.envelope_write(&[cmd])?;
-                let mut len_buf = [0u8; 2];
-                self.transport.read_exact(&mut len_buf)?;
-                let payload_len = u16::from_be_bytes(len_buf) as usize;
-                if payload_len == 0 {
-                    return Err(ProtocolError::MalformedResponse(
-                        "empty realtime payload".to_string(),
-                    ));
-                }
-                let mut payload = vec![0u8; payload_len];
-                self.transport.read_exact(&mut payload)?;
-                // CRC bytes — read and discard for M1.
-                let mut _crc = [0u8; 4];
-                self.transport.read_exact(&mut _crc)?;
-                Ok(payload[0])
+                let payload = self.envelope_read_bytes(MAX_PLAIN_RESPONSE)?;
+                payload.first().copied().ok_or_else(|| {
+                    ProtocolError::MalformedResponse("empty realtime payload".to_string())
+                })
             }
         }
     }
