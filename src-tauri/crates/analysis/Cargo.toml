@@ -1,0 +1,9 @@
+[package]
+name = "opentune-analysis"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+# Deliberately empty: the deterministic core is pure (design doc §3.1).

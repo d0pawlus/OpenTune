@@ -4,3 +4,13 @@ version = "0.0.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
+
+[dependencies]
+opentune-ini = { path = "../ini" }
+opentune-model = { path = "../model" }
+quick-xml = "0.36"
+thiserror = "2"
+
+[dev-dependencies]
+opentune-ini = { path = "../ini" }
+opentune-model = { path = "../model" }

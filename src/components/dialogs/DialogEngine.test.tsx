@@ -63,8 +63,10 @@ function definition(): DefinitionDto {
     ],
     constants: [reqFuel, injLayout, crankRPM],
     tables: [],
+    curves: [],
     gauges: [],
     frontpage: { gauge_slots: [], indicators: [] },
+    analyze_tables: [],
   };
 }
 

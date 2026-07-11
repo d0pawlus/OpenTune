@@ -38,13 +38,14 @@ Goal: a buildable, runnable, empty-but-real Tauri app and the dev infrastructure
   (Routing deferred — one screen; added when a second screen exists.)
 - ✅ Typed IPC plumbing (`app_info` command + `Heartbeat` event) with TS types
   **generated** from Rust via `tauri-specta` (the no-hand-duplication guardrail).
-- 🟦 CI: build + test + lint/format (clippy, rustfmt, eslint, prettier) on
-  **macOS + Linux**. `windows-latest` deferred (CI-only CRLF/Prettier line-ending
-  issue, not an app problem; re-enable with `.gitattributes eol=lf`).
+- ✅ CI: build + test + lint/format (Cargo tests, clippy, rustfmt, Vitest,
+  eslint, prettier) on **macOS + Linux + Windows**. Repository text files are
+  normalized to LF through `.gitattributes` so Prettier is deterministic on
+  every runner.
 - ✅ `CONTRIBUTING.md` dev setup verified end-to-end.
 
 **Demo:** the app builds to an empty shell; the full lint/test/build gate suite is
-green locally and in CI (macOS + Linux). Implemented via the
+green locally and runs in CI on macOS, Linux, and Windows. Implemented via the
 [M0 plan](superpowers/plans/2026-06-21-m0-foundations.md).
 
 ## M1 — Connect & identify ✅
@@ -111,53 +112,75 @@ Goal: live gauges — the other half of day-to-day tuning.
 simulated link drop (owner-level E2E; real-ECU serial polling deferred to the
 M3-serial follow-up — see `docs/notes/m3-decisions.md`).
 
-## M4 — Table editors & auto-tune ⬜
+## M4 — Table editors & auto-tune ✅
 
 Goal: edit VE/ignition/AFR tables and improve them from data.
 
-- ⬜ 2D heatmap table editor (interpolate, smooth, scale, copy/paste, keyboard).
-- ⬜ 3D surface view (three.js) with live operating-point overlay.
-- ⬜ Curve editors (1D).
-- ⬜ First auto-tune (VE analyze) as the **first consumer of the deterministic
+- ✅ 2D heatmap table editor: DOM grid, full pinned keymap, TSV clipboard
+  round-trip, interpolate/smooth/scale/set-equal ops, cell writes via
+  `set_cells` (one gesture = one undo step).
+- ✅ 3D surface view (three.js) with a live operating-point overlay — lazy
+  `React.lazy` chunk so three.js never lands in the eager bundle
+  (WKWebView-hardened: capped pixel ratio, context-loss recovery), the dot
+  driven by the M3 realtime store off a zero-per-frame-allocation rAF loop.
+- ✅ Curve editors (1D) — reuse the table editor's grid/selection/ops/TSV
+  machinery (a curve is a `Grid` with `rows: 1`) + an SVG polyline preview
+  with a live cursor.
+- ✅ First auto-tune (VE analyze) as the **first consumer of the deterministic
   `analysis::ve_analyze`** (the `analysis` crate lands in M5; AutoTune introduces
-  its first capability here). **Deterministic and auditable** (same log → same
-  result; visible data filtering and per-cell confidence) — directly addressing the
-  #1 complaint about TunerStudio's VE Analyze (non-deterministic, can tune the wrong
-  way). No AI involved. See the
+  its first capability here as `opentune-analysis`, seeded with `ve_analyze`
+  only). **Deterministic and auditable** (same log → same result; visible
+  data filtering and per-cell confidence) — directly addressing the #1
+  complaint about TunerStudio's VE Analyze (non-deterministic, can tune the
+  wrong way). Fed by the owner-side realtime capture ring; the AutoTune UI
+  renders the delta/confidence heatmap and filtered-sample counts and applies
+  corrections back through `set_cells`. No AI involved. See the
   [AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
 
-**Demo:** tune a VE table in 2D/3D and apply a data-driven correction, with a clear
-view of which logged data drove each cell.
+**Demo:** an owner-level E2E (`ve_analyze_flattens_the_sim_ve_error`) connects to
+the simulator, seeds a deliberately-wrong flat VE table against the sim's hidden
+true-VE surface, captures a live session, analyzes, applies the confident
+corrections, re-measures under the same operating conditions, and proves the
+seeded error more than halves — "tune a VE table in 2D/3D and apply a
+data-driven correction, with a clear view of which logged data drove each
+cell." Interactive `tauri dev` GUI walkthrough not exercised this pass (no
+native-app driver available) — see `docs/notes/m4-decisions.md`.
 
-## M5 — Datalogging & analysis ⬜
+## M5 — Datalogging & analysis ✅
 
 Goal: record, replay, and analyze.
 
-- ⬜ **`analysis` crate (deterministic core):** pure, side-effect-free,
+- ✅ **`analysis` crate (deterministic core):** pure, side-effect-free,
   deterministic, auditable capabilities — `ve_analyze`, `virtual_dyno`,
   `log_stats`, `detect_anomaly`. One engine consumed by AutoTune, the UI, and
   (later) the AI layer. See the
   [design doc](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
-- ⬜ **Virtual dyno:** `analysis::virtual_dyno` estimates WHP/torque curves from a
+- ✅ **Virtual dyno:** `analysis::virtual_dyno` estimates WHP/torque curves from a
   log + vehicle parameters; deterministic and auditable (shows conditions and
   assumptions). UI dyno view consumes it.
-- ⬜ `datalog`: CSV writer first, then MLG read/write (port from an open reference;
+- ✅ `datalog`: CSV writer first, then MLG read/write (port from an open reference;
   note only MLG v1 has a published byte-level spec — see
   [ADR-0006](adr/0006-reuse-existing-parsers.md) and the research doc).
-- ⬜ Frontend datalog viewer (uPlot time-series + scatter), playback synced to
+- ✅ Frontend datalog viewer (uPlot time-series + scatter), playback synced to
   the dashboard.
-- ⬜ **Two-log scatter compare (missing in MegaLogViewer):** overlay/compare two
+- ✅ **Two-log scatter compare (missing in MegaLogViewer):** overlay/compare two
   logs in scatter and time-series views with shared, user-controllable axes — the
   thing users currently export to Excel for.
-- ⬜ **GUI math-channel library (vs TS raw string expressions):** common derived
+- ✅ **GUI math-channel library (vs TS raw string expressions):** common derived
   channels (derivatives, smoothing/filters, data-gating) from a UI, not just a
   free-text expression box.
-- ⬜ Analysis tooling (markers, export).
-- ⬜ **Performance target:** smooth zoom/pan on 100k+ record logs (TS/MLV's known
+- ✅ Analysis tooling (markers, export).
+- ✅ **Performance target:** smooth zoom/pan on 100k+ record logs (TS/MLV's known
   weak spot) — validate against large fixtures.
 
 **Demo:** record a session, replay it, compare two logs, and build a derived
 channel — all without leaving the app or touching Excel.
+
+Implemented with the deterministic analysis core, CSV/MLG v1 round-trips,
+columnar paged IPC, lazy-loaded uPlot charts, A/B overlays, dashboard-synchronised
+playback, GUI-derived channels, markers/export, log statistics, anomaly detection,
+and an auditable virtual dyno. The 100k-record path is test-pinned; see
+[`docs/notes/m5-decisions.md`](notes/m5-decisions.md).
 
 ## M6 — Interop, polish & first release ⬜
 

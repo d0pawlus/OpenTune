@@ -16,9 +16,7 @@
 //! unknown constructs and to hard-fail only on the specific overflow case
 //! (see `IniError`/`Diagnostic` conventions in `parser.rs`).
 
-use crate::constants_fields::{
-    array_byte_size, parse_constant_line, ConstantLineResult, OffsetCounter,
-};
+use crate::constants_fields::{parse_constant_line, ConstantLineResult, OffsetCounter};
 use crate::{ConstantDef, ConstantKind, Diagnostic, Endianness, IniError, PageDef};
 use std::collections::HashMap;
 
@@ -84,14 +82,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
 
         match key {
             "page" => {
-                current_page =
-                    value
-                        .trim()
-                        .parse::<u16>()
-                        .map_err(|error| IniError::InvalidValue {
-                            key: "page".to_string(),
-                            detail: format!("expected an unsigned 16-bit page number: {error}"),
-                        })?;
+                current_page = value.trim().parse::<u16>().unwrap_or(current_page + 1);
                 continue;
             }
             "nPages" => continue, // informational; pages come from pageSize
@@ -99,35 +90,38 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
                 pages = value
                     .split(',')
                     .enumerate()
-                    .map(|(i, tok)| {
-                        let number = u16::try_from(i + 1).map_err(|_| IniError::InvalidValue {
-                            key: "pageSize".to_string(),
-                            detail: "declares more than 65535 pages".to_string(),
-                        })?;
-                        let size = tok.trim().parse::<usize>().map_err(|error| {
-                            IniError::InvalidValue {
-                                key: "pageSize".to_string(),
-                                detail: format!(
-                                    "page {number} has invalid byte size `{}`: {error}",
-                                    tok.trim()
-                                ),
-                            }
-                        })?;
-                        if size == 0 {
-                            return Err(IniError::InvalidValue {
-                                key: "pageSize".to_string(),
-                                detail: format!("page {number} must have a non-zero byte size"),
-                            });
-                        }
-                        Ok(PageDef { number, size })
+                    .map(|(i, tok)| PageDef {
+                        number: (i + 1) as u16,
+                        size: tok.trim().parse::<usize>().unwrap_or(0),
                     })
-                    .collect::<crate::Result<Vec<_>>>()?;
+                    .collect();
                 continue;
             }
             "endianness" => {
                 endianness = parse_endianness(value);
                 continue;
             }
+            // TunerStudio metadata / comms keys living in [Constants] (real
+            // speeduino.ini l.240-274). Comms keys are consumed by
+            // `parse_comms`' scattered scan; the rest are recorded-deferred
+            // (m4-decisions) — neither is an unknown *constant*, so no
+            // diagnostic and no page-counter poison.
+            "pageIdentifier"
+            | "pageReadCommand"
+            | "pageValueWrite"
+            | "burnCommand"
+            | "blockingFactor"
+            | "blockReadTimeout"
+            | "interWriteDelay"
+            | "pageActivationDelay"
+            | "messageEnvelopeFormat"
+            | "crc32CheckCommand"
+            | "tableCrcCommand"
+            | "pageChunkWrite"
+            | "tsWriteBlocks"
+            | "delayAfterPortOpen"
+            | "readSdCompressed"
+            | "restrictSquirtRelationship" => continue,
             _ => {}
         }
 
@@ -154,9 +148,12 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
             .or_insert_with(OffsetCounter::zero);
         let result = parse_constant_line(key, value, Some(current_page), running);
         match result {
-            Ok(ConstantLineResult::Def(def)) => {
-                constants.push(def);
-            }
+            Ok(ConstantLineResult::Def(def)) => match validate_offset_within_page(&def, &pages)? {
+                OffsetCheck::WithinPage => constants.push(def),
+                OffsetCheck::Overflow => {
+                    diagnostics.push(overflow_diagnostic("Constants", &def.name));
+                }
+            },
             Ok(ConstantLineResult::UnknownClass) => {
                 diagnostics.push(unrecognised("Constants", key));
                 // The unknown constant's size is unknowable, so the running
@@ -170,10 +167,6 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
             }
             Err(e) => return Err(e),
         }
-    }
-
-    for def in &constants {
-        validate_offset_within_page(def, &pages)?;
     }
 
     Ok(ParsedConstants {
@@ -229,40 +222,65 @@ fn parse_endianness(value: &str) -> Option<Endianness> {
     }
 }
 
+/// The outcome of [`validate_offset_within_page`].
+enum OffsetCheck {
+    /// `offset + size` fits within the declared page (or the page number is
+    /// unknown, in which case there is nothing to validate against).
+    WithinPage,
+    /// `offset + size` (or the size computation itself) overflowed `usize`
+    /// arithmetic. `offset`/shape `rows`/`cols` are unbounded `usize`
+    /// literals straight from untrusted INI text (see `resolve_offset`/
+    /// `parse_shape` in `constants_fields.rs`) — fail OPEN, same spirit as
+    /// every other malformed constant line: a `Diagnostic` and skip, never a
+    /// panic (debug `overflow-checks`) or a silent wrap (release) that could
+    /// let a bogus offset slip past the very check meant to catch it.
+    Overflow,
+}
+
 /// A constant's `offset + size` must not exceed its page's declared size.
-fn validate_offset_within_page(def: &ConstantDef, pages: &[PageDef]) -> crate::Result<()> {
+fn validate_offset_within_page(def: &ConstantDef, pages: &[PageDef]) -> crate::Result<OffsetCheck> {
     let Some(page) = pages.iter().find(|p| p.number == def.page) else {
-        return Err(IniError::InvalidValue {
-            key: def.name.clone(),
-            detail: format!("references undeclared page {}", def.page),
-        });
+        return Ok(OffsetCheck::WithinPage); // Unknown page number — nothing to validate against.
     };
-    let size = constant_byte_size(def)?;
-    let end = def
-        .offset
-        .checked_add(size)
-        .ok_or_else(|| IniError::InvalidValue {
-            key: def.name.clone(),
-            detail: "offset + byte size overflows platform limits".to_string(),
-        })?;
-    if end > page.size {
-        return Err(IniError::InvalidValue {
+    let Some(size) = constant_byte_size(def) else {
+        return Ok(OffsetCheck::Overflow);
+    };
+    match def.offset.checked_add(size) {
+        Some(end) if end <= page.size => Ok(OffsetCheck::WithinPage),
+        Some(_) => Err(IniError::InvalidValue {
             key: def.name.clone(),
             detail: format!(
                 "offset {} + size {} exceeds page {} size {}",
                 def.offset, size, page.number, page.size
             ),
-        });
+        }),
+        None => Ok(OffsetCheck::Overflow),
     }
-    Ok(())
 }
 
-fn constant_byte_size(def: &ConstantDef) -> crate::Result<usize> {
+/// The constant's total byte footprint, or `None` if computing it overflows
+/// `usize` (an array whose attacker-controlled `rows * cols` doesn't fit).
+fn constant_byte_size(def: &ConstantDef) -> Option<usize> {
     use crate::constants_fields::scalar_width;
-    Ok(match &def.kind {
-        ConstantKind::Scalar(t) => scalar_width(*t),
-        ConstantKind::Array { elem, shape } => array_byte_size(&def.name, *elem, *shape)?,
-        ConstantKind::Bits { storage, .. } => scalar_width(*storage),
-        ConstantKind::Text { len } => *len,
-    })
+    match &def.kind {
+        ConstantKind::Scalar(t) => Some(scalar_width(*t)),
+        ConstantKind::Array { elem, shape } => scalar_width(*elem)
+            .checked_mul(shape.rows)
+            .and_then(|rows_size| rows_size.checked_mul(shape.cols)),
+        ConstantKind::Bits { storage, .. } => Some(scalar_width(*storage)),
+        ConstantKind::Text { len } => Some(*len),
+    }
+}
+
+/// A constant's declared offset/size overflowed the page-bounds check itself
+/// — the size is unknowable, so (unlike a plain `UnknownClass`) there is no
+/// well-formed `ConstantDef` to store; skip it with a diagnostic.
+fn overflow_diagnostic(section: &str, name: &str) -> Diagnostic {
+    Diagnostic {
+        section: section.to_string(),
+        detail: format!(
+            "`{name}`'s declared offset/size overflows the page-bounds check \
+             (offset or array shape too large); skipped"
+        ),
+    }
 }

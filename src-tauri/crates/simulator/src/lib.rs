@@ -8,6 +8,7 @@ pub mod ecu;
 pub mod engine;
 pub mod memory;
 mod och_codec;
+mod ve_model;
 pub use ecu::{EcuClientTransport, EcuSimulator};
 pub use engine::{EngineMode, SimEngine};
 pub use memory::MemoryImage;

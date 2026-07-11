@@ -70,9 +70,15 @@ See [`docs/protocol.md`](docs/protocol.md) and
 
 ## Project status
 
-🚧 **Pre-alpha — architecture & design phase.** There is no application code yet.
-This repository currently contains the architecture and design documentation that
-will guide implementation.
+🚧 **Pre-alpha — active implementation.** Milestones M0–M4 are implemented:
+the Tauri application can parse firmware INIs and identify the simulator or a
+serial ECU. The hardware-free simulator supports the current end-to-end
+read/edit/burn, realtime dashboard, table/curve editor, and deterministic VE
+analysis flows. M5 datalogging and analysis is next.
+
+The project is not ready for production tuning yet. Real-hardware coverage,
+packaging/signing, and broader firmware compatibility remain pre-1.0 work; see
+the roadmap for the current status.
 
 Start here:
 

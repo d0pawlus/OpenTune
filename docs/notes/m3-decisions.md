@@ -103,6 +103,26 @@ gdzie plan zostawiał wybór lub rzeczywistość go korygowała. Kryterium jak w
   kolory w JS — dublowałoby paletę oklch i łamało tokens.css jako jedyne
   źródło prawdy o kolorze. Asymetria jest nośna i skomentowana w App.tsx.
 
+- **Auto-tick silnika symulatora (po-mergowy bug z click-through użytkownika,
+  34097f3):** zegary zamarzały po pierwszej ramce — `engine.tick()` istniał
+  wyłącznie w testowej komendzie `tick_engine`, produkcyjna ścieżka 'r'
+  okienkowała zamrożony snapshot. Testy E2E konstrukcyjnie nie mogły tego
+  złapać (tickowały jawnie); wykrył to dopiero ręczny click-through — krok
+  celowo zarezerwowany dla człowieka. Naprawa: auto-tick zegarem ściennym
+  w warstwie ECU (silnik pozostaje deterministyczny — czas dostaje z
+  zewnątrz); pierwsze jawne `tick_engine` wyłącza auto-tick na stałe, więc
+  testy deterministyczne pozostały bajt-w-bajt nietknięte; `reboot()`
+  zeruje zegar bez ponownego włączania.
+- **Klasa flake'ów CI: płytkie asercje czasowe (4bce9b9):** asercja
+  pojedynczego dopasowania zaraz po `waitFor(...toHaveBeenCalled...)`,
+  gdy komponent po wywołaniu mocka wykonuje jeszcze `await` + aktualizację
+  stanu — na obciążonym runnerze asercja wyprzedza flush Reacta (query*
+  też rzuca przy wielu dopasowaniach). Przeczesanie znalazło 3 instancje
+  (Dashboard, Connect, TuneDiff); reguła: po waitFor-na-wywołanie każda
+  asercja DOM-u zależna od dalszej pracy komponentu też idzie w `waitFor`.
+  Reprodukcja wzorca: mock z opóźnioną promisą (setTimeout 20 ms) → RED
+  lokalnie.
+
 ## Uwagi do dyskusji (nieblokujące)
 
 - **Bundlowany `speeduino.sample.ini` nie ma `[OutputChannels]` /

@@ -297,6 +297,116 @@ fn auto_tick_advances_engine_between_requests() {
     );
 }
 
+// ── M4 Task 9: measured AFR reflects a deliberate VE-table error ───────────
+//
+// The bundled sample INI (Task 9) binds a `veTable`/`afrTable` pair under
+// `[VeAnalyze]`. The engine's hidden true-VE surface (`ve_model::true_ve`,
+// duplicated here rather than reached into as a private crate internal —
+// this test is a black-box proof against the documented formula) grows
+// with load and rpm; a flat-50 veTable therefore reads too-low VE at any
+// real running load, which the M4 locked decision says must show up as a
+// lean "measured" afr above afrTarget. Correcting every cell to the true
+// surface must converge afr back toward afrTarget.
+
+fn sample_definition() -> Definition {
+    parse_definition(include_str!("../../../resources/speeduino.sample.ini"))
+        .expect("bundled sample INI must parse")
+}
+
+/// `rpmBins` raw bytes (scale ×100 → physical 500..=8000 rpm), per the brief.
+const RPM_BIN_RAW: [u8; 16] = [
+    5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80,
+];
+/// `fuelLoadBins` raw bytes (scale ×1 → physical 20..=95 kPa), per the brief.
+const LOAD_BIN_RAW: [u8; 16] = [
+    20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95,
+];
+
+/// The engine's hidden true-VE surface (pinned formula, task-9 brief) —
+/// duplicated from `ve_model::true_ve` since that's a private crate
+/// internal and this test only asserts against the documented contract.
+fn true_ve(rpm: f64, load_kpa: f64) -> f64 {
+    (40.0 + 25.0 * (load_kpa / 100.0) + 15.0 * (rpm / 6_000.0)).clamp(20.0, 110.0)
+}
+
+/// A `veTable` filled with `true_ve` at every (rpm_bin, load_bin) cell,
+/// row-major with row = load index, col = rpm index (the same convention
+/// `ve_model`'s decode uses) — writing this must bring the loop's afr back
+/// to (within quantization of) afrTarget.
+fn true_ve_table_bytes() -> Vec<u8> {
+    let mut bytes = vec![0u8; 256];
+    for (load_idx, &load_raw) in LOAD_BIN_RAW.iter().enumerate() {
+        let load = f64::from(load_raw); // fuelLoadBins scale is 1.0
+        for (rpm_idx, &rpm_raw) in RPM_BIN_RAW.iter().enumerate() {
+            let rpm = f64::from(rpm_raw) * 100.0; // rpmBins scale is 100.0
+            bytes[load_idx * 16 + rpm_idx] = true_ve(rpm, load).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    bytes
+}
+
+#[test]
+fn sim_measured_afr_reflects_ve_error() {
+    let def = sample_definition();
+    let sim = EcuSimulator::from_definition(&def);
+
+    // Write a flat-50 veTable + real bins + flat-14.7 afrTable (pages 2/3),
+    // through the real M2 write path (mirrors tests/memory.rs).
+    let mut writer = MsProtocol::new(def.comms.clone(), sim.client_transport());
+    writer.write(2, 0, &[50u8; 256]).expect("veTable write");
+    writer.write(2, 256, &RPM_BIN_RAW).expect("rpmBins write");
+    writer
+        .write(2, 272, &LOAD_BIN_RAW)
+        .expect("fuelLoadBins write");
+    writer.write(3, 0, &[147u8; 256]).expect("afrTable write"); // 14.7 AFR ×10
+
+    // Tick well past STARTUP/WARMUP_IDLE into a real running-load operating
+    // point (deterministic for this fixed-seed engine — one observed run:
+    // rpm=1073, map=52 kPa; both comfortably inside the bin range, so
+    // current_ve never clamps to a bin edge, and true_ve(1073, 52) ≈ 55.7
+    // clears the flat-50 table with margin — not necessarily strict Idle,
+    // just "a real running load", per the brief's own framing).
+    sim.tick_engine(Duration::from_millis(8_000));
+
+    let mut och = MsProtocol::new(def.comms.clone(), sim.client_transport());
+    let block = och.read_output_channels(0, 16).expect("och read");
+    let rpm = u16::from_le_bytes([block[4], block[5]]);
+    let map_kpa = block[8];
+    assert!(
+        (500..8_000).contains(&rpm),
+        "operating rpm {rpm} must stay inside the veTable's bin range"
+    );
+    assert!(
+        (20..95).contains(&map_kpa),
+        "operating map {map_kpa} kPa must stay inside the veTable's bin range"
+    );
+
+    let afr = f64::from(block[9]) * 0.1;
+    let afr_target = f64::from(block[11]) * 0.1;
+    assert!(
+        afr > afr_target,
+        "true VE above the flat-50 table at a real running load must read \
+         lean: afr={afr} target={afr_target}"
+    );
+
+    // Correct every cell to the true-VE surface, re-tick, re-read: the loop
+    // must converge to (within U08 quantization of) afrTarget.
+    writer
+        .write(2, 0, &true_ve_table_bytes())
+        .expect("veTable correction write");
+    sim.tick_engine(Duration::from_millis(50)); // one more step to pick up the write
+    let block2 = och
+        .read_output_channels(0, 16)
+        .expect("och read after correction");
+    let afr2 = f64::from(block2[9]) * 0.1;
+    let afr_target2 = f64::from(block2[11]) * 0.1;
+    assert!(
+        (afr2 - afr_target2).abs() < 0.3,
+        "a veTable corrected to the true-VE surface must converge afr toward \
+         target: afr={afr2} target={afr_target2}"
+    );
+}
+
 #[test]
 fn tick_engine_disables_auto_tick() {
     let def = fixture_definition();

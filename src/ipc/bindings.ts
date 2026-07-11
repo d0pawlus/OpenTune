@@ -42,6 +42,8 @@ export const commands = {
 	 *  emits the new dirty state on success.
 	 */
 	setValue: (name: string, value: Value) => typedError<null, string>(__TAURI_INVOKE("set_value", { name, value })),
+	/**  Write individual cells of an array constant (a table-editor gesture). */
+	setCells: (name: string, cells: CellEditDto[]) => typedError<null, string>(__TAURI_INVOKE("set_cells", { name, cells })),
 	/**  Burn every dirty page to flash. The owner emits the cleared dirty state. */
 	burnTune: () => typedError<null, string>(__TAURI_INVOKE("burn_tune")),
 	/**  Undo the most recent edit, writing the reverted bytes to the ECU. */
@@ -70,12 +72,63 @@ export const commands = {
 	 */
 	mergeTune: (picks: MergePickDto[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 	/**
+	 *  Start a fresh offline session with a blank tune built from the INI at
+	 *  `ini_path` (no ECU link). Returns the parsed definition for the frontend
+	 *  to render against. Replaces any current session only if the INI parses.
+	 */
+	newTune: (iniPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("new_tune", { iniPath })),
+	/**
+	 *  Open a `.msq` tune file offline: build a session from `ini_path`, then
+	 *  load `msq_path` into it (signature-checked). Returns the parsed
+	 *  definition. Replaces any current session only if the INI and `.msq` load.
+	 */
+	openTune: (iniPath: string, msqPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("open_tune", { iniPath, msqPath })),
+	/**
+	 *  Save the current tune to `path` as a `.msq` file. Errors if no tune is
+	 *  loaded or the file cannot be written.
+	 */
+	saveTune: (path: string) => typedError<null, string>(__TAURI_INVOKE("save_tune", { path })),
+	/**
+	 *  Push the entire tune to the ECU: write every page's bytes, then burn.
+	 *  Used by the offline "Write to ECU" action, which has no read baseline to
+	 *  diff against. Requires a live connection (attach or connect first).
+	 */
+	writeTuneToEcu: () => typedError<null, string>(__TAURI_INVOKE("write_tune_to_ecu")),
+	/**
 	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
 	 *  ≤30 Hz as `RealtimeFrameEvent`s).
 	 */
 	startRealtime: () => typedError<null, string>(__TAURI_INVOKE("start_realtime")),
 	/**  Stop the realtime poll loop. */
 	stopRealtime: () => typedError<null, string>(__TAURI_INVOKE("stop_realtime")),
+	/**
+	 *  Start (or restart) the realtime capture ring for the current session.
+	 *  Requires an active session — the ring's pinned columns come from the
+	 *  session's declared output channels.
+	 */
+	startCapture: () => typedError<null, string>(__TAURI_INVOKE("start_capture")),
+	/**
+	 *  Stop capturing (rows are retained for `run_ve_analyze`) and return the
+	 *  final status.
+	 */
+	stopCapture: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("stop_capture")),
+	/**  Report the capture ring's current status. */
+	captureStatus: () => typedError<CaptureStatusDto, string>(__TAURI_INVOKE("capture_status")),
+	/**
+	 *  Run the deterministic VE-analysis engine against the current capture for
+	 *  a named `[TableEditor]`/`[VeAnalyze]` table (M4 Task 11).
+	 */
+	runVeAnalyze: (table: string) => typedError<VeAnalysisReportDto, string>(__TAURI_INVOKE("run_ve_analyze", { table })),
+	startLog: (path: string, format: LogFormatDto) => typedError<LogStatusDto, string>(__TAURI_INVOKE("start_log", { path, format })),
+	stopLog: () => typedError<LogSummaryDto, string>(__TAURI_INVOKE("stop_log")),
+	addLogMarker: (text: string) => typedError<null, string>(__TAURI_INVOKE("add_log_marker", { text })),
+	logStatus: () => typedError<LogStatusDto, string>(__TAURI_INVOKE("log_status")),
+	openLog: (path: string, format: LogFormatDto) => typedError<LogSummaryDto, string>(__TAURI_INVOKE("open_log", { path, format })),
+	getLogData: (offset: number, limit: number) => typedError<LogDataDto, string>(__TAURI_INVOKE("get_log_data", { offset, limit })),
+	saveLog: (path: string, format: LogFormatDto) => typedError<null, string>(__TAURI_INVOKE("save_log", { path, format })),
+	logStats: (params: LogStatsParamsDto) => typedError<LogStatsReportDto, string>(__TAURI_INVOKE("log_stats", { params })),
+	detectAnomaly: (thresholds: AnomalyThresholdsDto) => typedError<AnomalyReportDto, string>(__TAURI_INVOKE("detect_anomaly", { thresholds })),
+	virtualDyno: (params: VirtualDynoParamsDto) => typedError<VirtualDynoReportDto, string>(__TAURI_INVOKE("virtual_dyno", { params })),
 	/**  Persist the dashboard layout JSON to the app config dir. */
 	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
 	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
@@ -91,9 +144,56 @@ export const events = {
 };
 
 /* Types */
+export type AnomalyDto = {
+	row: number,
+	t_ms: number | null,
+	kind: AnomalyKindDto,
+	channel: string,
+	value: number | null,
+	threshold: string,
+};
+
+export type AnomalyKindDto = "SensorDropout" | "LeanSpike" | "Knock";
+
+export type AnomalyReportDto = {
+	inspected_rows: number,
+	anomalies: AnomalyDto[],
+};
+
+export type AnomalyThresholdsDto = {
+	sensors: SensorThresholdDto[],
+	afr_channel: string,
+	lean_afr: number | null,
+	lean_min_rpm: number | null,
+	rpm_channel: string,
+	load_channel: string,
+	lean_min_load: number | null,
+	knock_channel: string,
+	knock_threshold: number | null,
+	knock_min_rpm: number | null,
+};
+
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**
+ *  Curve axis bounds when literal (an `{expr}` bound resolves to `None` —
+ *  the frontend falls back to data extents).
+ */
+export type AxisDto = {
+	min: number | null,
+	max: number | null,
+	divisions: number,
+};
+
+/**  The realtime-capture ring buffer's status (Task 8). */
+export type CaptureStatusDto = {
+	capturing: boolean,
+	sample_count: number,
+	duration_ms: number | null,
+	dropped: number,
 };
 
 /**  IPC projection of [`opentune_model::CellDiff`]. */
@@ -102,6 +202,27 @@ export type CellDiffDto = {
 	a: number | null,
 	b: number | null,
 };
+
+/**
+ *  One flat cell edit for [`crate::owner::Command::SetCells`] — command
+ *  *input*, hence `Deserialize` in addition to the usual `Serialize`.
+ */
+export type CellEditDto = {
+	index: number,
+	value: number | null,
+};
+
+/**  IPC projection of `opentune_analysis::CellResult`. */
+export type CellResultDto = {
+	current: number | null,
+	proposed: number | null,
+	delta_pct: number | null,
+	hit_weight: number | null,
+	sample_count: number,
+	confidence: number | null,
+};
+
+export type ComparisonDto = "LessThan" | "LessOrEqual" | "GreaterThan" | "GreaterOrEqual" | "Equal" | "NotEqual";
 
 /**  Which ECU to connect to; deserialized from the frontend command payload. */
 export type ConnectSource = 
@@ -171,6 +292,19 @@ export type ConstantKindDto =
 /**  A fixed-length text field. */
 "Text";
 
+/**  A curve editor definition (M4). */
+export type CurveDto = {
+	name: string,
+	title: string,
+	column_labels: string[],
+	x_axis: AxisDto | null,
+	y_axis: AxisDto | null,
+	x_bins: string,
+	x_channel: string,
+	y_bins: string,
+	gauge: string,
+};
+
 /**  The UI-facing projection of a [`Definition`]. */
 export type DefinitionDto = {
 	/**  The firmware signature, for display. */
@@ -183,10 +317,17 @@ export type DefinitionDto = {
 	constants: ConstantDto[],
 	/**  Table editors (rendered as a minimal grid in M2; full editor is M4). */
 	tables: TableDto[],
+	/**  Curve (2-D) editors (M4). */
+	curves: CurveDto[],
 	/**  `[GaugeConfigurations]` entries backing the dashboard (M3). */
 	gauges: GaugeDto[],
 	/**  `[FrontPage]` — the default dashboard layout (M3). */
 	frontpage: FrontPageDto,
+	/**
+	 *  `[TableEditor]` ids that carry a `[VeAnalyze]` map — the frontend's
+	 *  "show AutoTune here" signal (M4 Task 11).
+	 */
+	analyze_tables: string[],
 };
 
 /**  A dialog and its fields. */
@@ -194,6 +335,28 @@ export type DialogDto = {
 	name: string,
 	title: string,
 	fields: FieldDto[],
+};
+
+export type DynoConditionDto = {
+	row: number,
+	accepted: boolean,
+	reason: string,
+};
+
+export type DynoPointDto = {
+	row: number,
+	t_ms: number | null,
+	speed_m_s: number | null,
+	rpm: number | null,
+	acceleration_m_s2: number | null,
+	inertial_force_n: number | null,
+	aero_force_n: number | null,
+	rolling_force_n: number | null,
+	wheel_power_w: number | null,
+	wheel_hp: number | null,
+	estimated_engine_power_w: number | null,
+	estimated_engine_hp: number | null,
+	estimated_engine_torque_nm: number | null,
 };
 
 /**
@@ -228,6 +391,18 @@ export type FieldKindDto =
 ({ Label: string }) & { Constant?: never; Panel?: never } | 
 /**  A layout spacer. */
 "Gap";
+
+/**  IPC projection of `opentune_analysis::FilterCount`. */
+export type FilterCountDto = {
+	id: string,
+	label: string,
+	count: number,
+};
+
+export type FilterDecisionDto = {
+	row: number,
+	reason: string,
+};
 
 /**  `[FrontPage]` — the default dashboard layout. */
 export type FrontPageDto = {
@@ -281,6 +456,56 @@ export type IndicatorDto = {
 	on_fg: string,
 };
 
+/**  Bounded columnar transfer: no object allocation per data point. */
+export type LogDataDto = {
+	offset: number,
+	total_records: number,
+	t_ms: (number | null)[],
+	/**  Field-major columns; non-finite/missing values become `null`. */
+	columns: ((number | null)[])[],
+	markers: MarkerDto[],
+};
+
+export type LogFieldDto = {
+	name: string,
+	units: string,
+};
+
+export type LogFormatDto = "Csv" | "MlgV1";
+
+export type LogStatsParamsDto = {
+	channels: string[],
+	reject_when: SampleFilterDto[],
+};
+
+export type LogStatsReportDto = {
+	total_rows: number,
+	accepted_rows: number,
+	stats: SummaryStatDto[],
+	filtered: ReasonCountDto[],
+	decisions: FilterDecisionDto[],
+};
+
+export type LogStatusDto = {
+	active: boolean,
+	path: string | null,
+	format: LogFormatDto | null,
+	record_count: number,
+};
+
+export type LogSummaryDto = {
+	fields: LogFieldDto[],
+	record_count: number,
+	marker_count: number,
+	duration_ms: number | null,
+};
+
+export type MarkerDto = {
+	record_index: number,
+	t_ms: number | null,
+	text: string,
+};
+
 /**  A top-level menu. */
 export type MenuDto = {
 	label: string,
@@ -317,6 +542,11 @@ export type RealtimeFrameEvent = {
 	channels: ([string, number | null])[],
 };
 
+export type ReasonCountDto = {
+	reason: string,
+	count: number,
+};
+
 /**
  *  Gauge bounds resolved against the currently loaded tune.
  * 
@@ -333,12 +563,43 @@ export type ResolvedGaugeBoundsDto = {
 	hi_danger: number | null,
 };
 
+export type SampleFilterDto = {
+	channel: string,
+	comparison: ComparisonDto,
+	value: number | null,
+	reason: string,
+};
+
+export type SensorThresholdDto = {
+	channel: string,
+	min: number | null,
+	max: number | null,
+};
+
+export type SummaryStatDto = {
+	channel: string,
+	finite_count: number,
+	missing_count: number,
+	min: number | null,
+	max: number | null,
+	mean: number | null,
+	std_dev: number | null,
+};
+
 /**  A table editor definition (bin/cell constant references). */
 export type TableDto = {
 	name: string,
+	title: string,
+	page: number,
 	x_bins: string,
+	/**  Output channel driving the live X cursor ("" when the INI names none). */
+	x_channel: string,
 	y_bins: string,
+	y_channel: string,
 	z: string,
+	xy_labels: string[],
+	up_down_label: string[],
+	help: string,
 };
 
 /**
@@ -374,6 +635,39 @@ export type Value =
 ({ Enum: number }) & { Array?: never; Scalar?: never; Text?: never } | 
 /**  A fixed-length text value. */
 ({ Text: string }) & { Array?: never; Enum?: never; Scalar?: never };
+
+/**
+ *  IPC projection of `opentune_analysis::VeAnalysisReport` (the `table` field
+ *  is the bridge's own addition — the report itself doesn't name the table
+ *  it corrects, since the engine is table-agnostic).
+ */
+export type VeAnalysisReportDto = {
+	table: string,
+	x_len: number,
+	y_len: number,
+	cells: CellResultDto[],
+	filtered: FilterCountDto[],
+	total_samples: number,
+	used_samples: number,
+};
+
+export type VirtualDynoParamsDto = {
+	speed_channel: string,
+	rpm_channel: string,
+	mass_kg: number | null,
+	drag_coefficient: number | null,
+	frontal_area_m2: number | null,
+	rolling_resistance: number | null,
+	drivetrain_loss: number | null,
+	smoothing_window: number,
+	air_density_kg_m3: number | null,
+};
+
+export type VirtualDynoReportDto = {
+	points: DynoPointDto[],
+	conditions: DynoConditionDto[],
+	assumptions: string[],
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

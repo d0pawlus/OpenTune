@@ -60,6 +60,17 @@ async fn req_fuel(tx: &OwnerHandle) -> Value {
     values.into_iter().next().expect("one value")
 }
 
+/// True when a `ConnectionStateEvent::Disconnected` was emitted in
+/// `events[since..]` — the oracle for the FIX 2a/2b corrective emits.
+fn emitted_disconnected_since(events: &Collected, since: usize) -> bool {
+    events.lock().unwrap()[since..].iter().any(|ev| {
+        matches!(
+            ev,
+            OwnerEvent::Connection(ConnectionStateEvent::Disconnected)
+        )
+    })
+}
+
 /// The dirty flags of every `TuneDirty` event in `events[since..]`.
 fn dirty_events_since(events: &Collected, since: usize) -> Vec<bool> {
     events.lock().unwrap()[since..]
@@ -302,6 +313,259 @@ async fn commands_error_when_not_connected() {
         .await
         .expect_err("no session yet");
     assert!(err.contains("not connected"), "got: {err}");
+}
+
+// M4 final-review fix wave item 4: StartCapture with realtime polling
+// stopped used to succeed and silently arm a capture ring that `poll_tick`
+// never feeds (nothing sets `capturing` false or errors — the ring just
+// never fills). Reject instead, with a clear error.
+#[tokio::test]
+async fn start_capture_requires_realtime_polling() {
+    let (tx, _events) = test_owner();
+    connect_and_load(&tx).await;
+
+    let err = send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect_err("polling was never started");
+    assert!(err.contains("polling"), "got: {err}");
+
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
+    send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect("start capture once polling is running");
+
+    send(&tx, |reply| Command::StopCapture { reply })
+        .await
+        .expect("stop capture");
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop realtime");
+}
+
+// ── Task 4 regression: a FAILED attach must NOT destroy the offline tune ─────
+//
+// `Owner::connect`'s ATTACH branch takes the session out to move it onto the
+// blocking pool. If `attach_connection` errors — the signature guard rejecting
+// a mismatched ECU, or `connect_serial` failing on a bad port — the session
+// must be handed back intact, never dropped. The earlier `?`-in-closure form
+// dropped the owned `session` local on the error path, so `self.session`
+// stayed `None`: the user's unsaved offline tune was destroyed exactly when
+// the guard rejected a bad ECU. This drives the real command path (NOT
+// `attach_connection` directly, which the owner_ops tests do and thus bypass
+// this bug): NewTune builds the offline session, Connect with a Serial source
+// pointing at a nonexistent port makes `connect_serial` error, and the tune
+// must survive.
+
+#[tokio::test]
+async fn failed_attach_preserves_the_offline_tune() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, events) = test_owner();
+
+    // Build the offline session (conn: None, tune: Some) via the real command.
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+
+    // Attach to a bogus serial port: `connect_serial` opens the port on a
+    // single attempt and errors immediately (ENOENT, no retry/hang), so the
+    // ATTACH branch's `attach_connection` returns Err.
+    let mark = events.lock().unwrap().len();
+    let err = send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Serial {
+            port_name: "/dev/opentune-nonexistent-bogus-port".to_owned(),
+            ini_path: INI.to_owned(),
+        },
+        reply,
+    })
+    .await
+    .expect_err("attach to a nonexistent serial port must fail");
+    assert!(!err.is_empty(), "the failed attach reports an error");
+
+    // FIX 2b: the refused attach must emit a corrective `Disconnected`
+    // (`connect`'s `if r.is_err()` path) so the UI does not stay stuck on the
+    // `Connected`/`Connecting` the attach already emitted. Removing that emit
+    // makes this assertion fail.
+    assert!(
+        emitted_disconnected_since(&events, mark),
+        "a refused attach must emit ConnectionStateEvent::Disconnected"
+    );
+
+    // The offline session SURVIVED: `GetDefinition` still succeeds, proving
+    // `self.session` is still `Some`. Against the buggy code this returned
+    // "not connected" because the failed attach dropped the session.
+    let dto = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect("the offline tune must survive a failed attach");
+    assert!(
+        !dto.gauges.is_empty(),
+        "the surviving session still exposes the loaded definition"
+    );
+}
+
+// ── Task 4 (final review): Disconnect must NOT destroy an offline tune ───────
+//
+// Design spec §"Disconnect while editing": an offline-origin tune (created
+// blank or opened from a `.msq`, then ATTACHed to a live link) must survive a
+// disconnect — the link drops but the tune stays editable and saveable in
+// offline mode. The old `Command::Disconnect` set `self.session = None`
+// unconditionally, so an offline tune with unsaved edits was destroyed and
+// every later edit/save failed "not connected". This drives the real command
+// path: NewTune → Connect(ATTACH) → Disconnect → SetValue/SaveTune must still
+// succeed → a later Connect re-ATTACHes with the edit intact.
+
+#[tokio::test]
+async fn disconnect_preserves_an_offline_origin_tune() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, _events) = test_owner();
+
+    // Offline session, then ATTACH to the simulator (conn added, tune kept).
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("attach to the simulator");
+
+    // Disconnect: the offline-origin tune must SURVIVE (link dropped, kept).
+    send(&tx, |reply| Command::Disconnect { reply })
+        .await
+        .expect("disconnect");
+
+    // Still editable offline — against the buggy code the session was gone and
+    // this failed "not connected".
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("set_value must still succeed after disconnect (session survived)");
+
+    // Still saveable. Best-effort cleanup runs before the assert so a failing
+    // save never leaks the scratch file.
+    let msq_path = std::env::temp_dir().join(format!(
+        "opentune-disconnect-survive-{}-{:?}.msq",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_file(&msq_path);
+    let save = send(&tx, |reply| Command::SaveTune {
+        path: msq_path.to_string_lossy().into_owned(),
+        reply,
+    })
+    .await;
+    let _ = std::fs::remove_file(&msq_path);
+    save.expect("save_tune must still succeed after disconnect (session survived)");
+
+    // A later Connect re-ATTACHes (offline session still present → ATTACH
+    // branch), and the offline edit is intact across the whole cycle.
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("re-attach to the simulator");
+    assert_eq!(
+        req_fuel(&tx).await,
+        Value::Scalar(12.5),
+        "the offline edit survives disconnect + re-attach"
+    );
+}
+
+// The twin invariant that `offline_origin` exists to protect: an *online*
+// (FRESH-read) tune must STILL be destroyed on disconnect, so a later connect
+// FRESH-reads the ECU rather than ATTACHing a stale online tune. Without this
+// test, weakening the Disconnect guard to `s.tune.is_some()` would leave every
+// other test green while reintroducing a stale-ATTACH data-loss bug.
+
+#[tokio::test]
+async fn disconnect_destroys_an_online_tune() {
+    let (tx, _events) = test_owner();
+    // Online session, tune FRESH-read from the simulator (offline_origin=false).
+    connect_and_load(&tx).await;
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("edit the online tune");
+
+    // Disconnect must DESTROY an online session.
+    send(&tx, |reply| Command::Disconnect { reply })
+        .await
+        .expect("disconnect");
+    let err = send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(13.0),
+        reply,
+    })
+    .await
+    .expect_err("an online tune must NOT survive disconnect");
+    assert!(err.contains("not connected"), "got: {err}");
+
+    // A later connect takes the FRESH branch (session was destroyed, so it is
+    // not the ATTACH case): the new session reads the tune straight from the
+    // ECU rather than re-using a stale one.
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("fresh reconnect");
+    send(&tx, |reply| Command::LoadTune { reply })
+        .await
+        .expect("FRESH re-read after reconnect");
+}
+
+// FIX 2a: replacing a *connected* session with a new offline tune
+// (`new_tune`/`open_tune` → `reset_session`) must emit a corrective
+// `Disconnected` so the UI does not keep showing a false "Connected" after the
+// live link is torn down. Removing that emit makes this assertion fail.
+
+#[tokio::test]
+async fn new_tune_while_connected_emits_disconnected() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, events) = test_owner();
+
+    // Establish a live link first: `self.session` now has `conn: Some`.
+    connect_and_load(&tx).await;
+
+    // Create a fresh offline tune while connected — `reset_session` tears down
+    // the live session (`had_link == true`) and must emit `Disconnected`.
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune replaces the connected session with an offline one");
+
+    assert!(
+        emitted_disconnected_since(&events, mark),
+        "creating an offline tune while connected must emit \
+         ConnectionStateEvent::Disconnected"
+    );
 }
 
 #[tokio::test]
@@ -800,6 +1064,82 @@ async fn m3_demo_bundled_ini_live_gauges_animate_and_stop() {
     assert_eq!(frames_after, 0, "no frames after stop_realtime");
 }
 
+// ── M1 acceptance: a real poll failure enters reconnect automatically ──────
+
+#[tokio::test]
+async fn realtime_transport_failure_automatically_reconnects_and_resumes() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let first_mark = events.lock().unwrap().len();
+    let _ = await_frame_since(&events, first_mark).await;
+
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+    let restore = Arc::clone(&sim);
+    std::thread::spawn(move || {
+        // Keep the link down long enough for normal polling and at least one
+        // reconnect attempt to observe the failure.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        restore.set_link_dropped(false);
+    });
+
+    for _ in 0..500 {
+        let recovered = {
+            let events = events.lock().unwrap();
+            let slice = &events[before_drop..];
+            slice.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+                )
+            }) && slice.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+                )
+            })
+        };
+        if recovered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    {
+        let events = events.lock().unwrap();
+        let slice = &events[before_drop..];
+        let reconnecting = slice
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+                )
+            })
+            .expect("poll failure must emit Reconnecting");
+        let connected = slice
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+                )
+            })
+            .expect("restored link must emit Connected");
+        assert!(reconnecting < connected);
+    }
+
+    let after_reconnect = events.lock().unwrap().len();
+    let _ = await_frame_since(&events, after_reconnect).await;
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
+}
+
 // ── 8.2 M3 demo: link-drop recovery — reconnect, reboot re-read, frames resume
 //
 // THE M3 demo: while realtime runs, the ECU reboots and the link drops. The
@@ -903,4 +1243,98 @@ async fn m3_demo_link_drop_recovery_rereads_tune_and_resumes_frames() {
     send(&tx, |reply| Command::StopRealtime { reply })
         .await
         .expect("stop");
+}
+
+// ── Task 8: the capture ring pins the poll-tick tap invariant ──────────────
+//
+// `capture.rs`'s doc comment records the rate invariant: the ring taps
+// poll_tick's EMITTED frames, and at the owner's 25 Hz cadence (40 ms) —
+// slower than the realtime poller's ~30 Hz (33 ms) coalescing gate — every
+// acquired frame is emitted, so the capture sees (near) the full poll rate.
+// This test verifies the observable behavior that invariant depends on:
+// frames flow into the ring while capturing (waited out with a generous cap,
+// not a fixed window, to stay CI-safe), and rows freeze — not decay — once
+// `StopCapture` clears the flag.
+
+/// Poll `CaptureStatus` (deterministic wait, ~2 s cap) until `sample_count`
+/// reaches `min`.
+async fn wait_for_sample_count(tx: &OwnerHandle, min: u32) -> CaptureStatusDto {
+    for _ in 0..200 {
+        let status = send(tx, |reply| Command::CaptureStatus { reply })
+            .await
+            .expect("capture_status");
+        if status.sample_count >= min {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("sample_count never reached {min} within 2 s");
+}
+
+/// The structural half of the tap-rate invariant (review I-1): the capture
+/// tap sits on poll_tick's EMITTED frames, above the realtime coalescing
+/// gate. That sees the full poll rate only while the owner polls no faster
+/// than the gate emits. The behavioral test below can't catch a rate change
+/// (frames still flow either way) — this assertion breaks loudly instead.
+#[test]
+fn poll_interval_never_outpaces_the_coalesce_gate() {
+    assert!(
+        POLL_INTERVAL >= opentune_realtime::DEFAULT_EMIT_INTERVAL,
+        "capture taps emitted frames; if the owner ever polls faster than the \
+         coalescing gate, frames get discarded before the tap and capture sees \
+         less than full rate — move the tap below the gate (realtime poll.rs)"
+    );
+}
+
+#[tokio::test]
+async fn capture_rate_pins_the_tap_invariant() {
+    let (tx, _events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start realtime");
+    send(&tx, |reply| Command::StartCapture { reply })
+        .await
+        .expect("start capture");
+
+    // ~10 poll ticks (400 ms) elapse; every acquired frame must be captured
+    // (25 Hz < 30 Hz gate ⇒ no coalescing) — expect at least 8 rows.
+    let status = wait_for_sample_count(&tx, 8).await;
+    assert!(
+        status.capturing,
+        "capture_status must report capturing while the flag is set"
+    );
+    assert!(
+        status.sample_count >= 8,
+        "expected >= 8 captured rows after ~10 poll ticks, got {}",
+        status.sample_count
+    );
+
+    let stopped = send(&tx, |reply| Command::StopCapture { reply })
+        .await
+        .expect("stop_capture");
+    assert!(!stopped.capturing, "stop_capture clears the flag");
+    let frozen_count = stopped.sample_count;
+    let frozen_duration = stopped.duration_ms;
+
+    // A further tick window must not grow the ring: the flag is off, rows
+    // are retained (not cleared) for a later `run_ve_analyze`.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let after = send(&tx, |reply| Command::CaptureStatus { reply })
+        .await
+        .expect("capture_status");
+    assert_eq!(
+        after.sample_count, frozen_count,
+        "sample_count must not grow after stop_capture"
+    );
+    assert_eq!(
+        after.duration_ms, frozen_duration,
+        "duration_ms must freeze too — no new rows means no later t_ms"
+    );
+    assert!(!after.capturing, "capturing stays false after stop_capture");
+
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop realtime");
 }

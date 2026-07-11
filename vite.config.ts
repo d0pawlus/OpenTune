@@ -31,5 +31,15 @@ export default defineConfig(async () => ({
     },
   },
 
-  test: { environment: "jsdom", globals: true },
+  // `.worktrees/**` holds sibling git worktrees for parallel task branches
+  // (e.g. `offline-tune`) — each has its own `node_modules`/React copy, and
+  // vitest's default exclude list (`node_modules`, `.git`) doesn't cover it,
+  // so an unscoped `vitest run` collects and runs their tests too, crashing
+  // on duplicate React instances. Pre-existing gap, unrelated to any one
+  // task; excluded here so `npm test` reflects only this checkout.
+  test: {
+    environment: "jsdom",
+    globals: true,
+    exclude: ["**/node_modules/**", "**/.git/**", "**/.worktrees/**"],
+  },
 }));

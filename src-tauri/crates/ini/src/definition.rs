@@ -11,9 +11,10 @@ use crate::gauges_parser::parse_gauges;
 use crate::output_channels_parser::parse_output_channels;
 use crate::preprocessor::preprocess_with_diagnostics;
 use crate::ui_parser::parse_ui;
+use crate::ve_analyze_parser::parse_ve_analyze;
 use crate::{
     CommsSettings, ConstantDef, CurveDef, Diagnostic, DialogDef, FrontPageDef, GaugeDef, IniError,
-    MenuDef, OutputChannelDef, TableDef,
+    MenuDef, OutputChannelDef, TableDef, VeAnalyzeDef,
 };
 use std::collections::HashSet;
 
@@ -62,6 +63,8 @@ pub struct Definition {
     /// `[FrontPage]` — the default dashboard layout. Empty `Vec`s when the INI
     /// declares no `[FrontPage]`.
     pub frontpage: FrontPageDef,
+    /// `[VeAnalyze]` binding; `None` when the INI declares none.
+    pub ve_analyze: Option<VeAnalyzeDef>,
 }
 
 impl Definition {
@@ -76,6 +79,16 @@ impl Definition {
     /// Look up an output channel by name (mirrors [`Definition::constant`]).
     pub fn output_channel(&self, name: &str) -> Option<&OutputChannelDef> {
         self.output_channels.iter().find(|c| c.name() == name)
+    }
+
+    /// Look up a table editor by name (mirrors [`Definition::constant`]).
+    pub fn table(&self, name: &str) -> Option<&TableDef> {
+        self.tables.iter().find(|t| t.name == name)
+    }
+
+    /// Look up a curve editor by name (mirrors [`Definition::constant`]).
+    pub fn curve(&self, name: &str) -> Option<&CurveDef> {
+        self.curves.iter().find(|c| c.name == name)
     }
 }
 
@@ -101,9 +114,10 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
 
     let comms = crate::parse_comms(&preprocessed)?;
     let parsed = parse_constants(&preprocessed)?;
-    let ui = parse_ui(&preprocessed, &parsed.constants);
+    let ui = parse_ui(&preprocessed, &parsed.constants, &parsed.pc_variables);
     let output_channels = parse_output_channels(&preprocessed, comms.och_block_size)?;
     let gauges = parse_gauges(&preprocessed, &output_channels.channels);
+    let ve_analyze = parse_ve_analyze(&preprocessed);
 
     let endianness = parsed.endianness.unwrap_or(comms.endianness);
     // `[OutputChannels]` may declare its own `ochGetCommand` (the windowed
@@ -122,6 +136,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
     diagnostics.extend(ui.diagnostics);
     diagnostics.extend(output_channels.diagnostics);
     diagnostics.extend(gauges.diagnostics);
+    diagnostics.extend(ve_analyze.diagnostics);
 
     Ok(Definition {
         comms,
@@ -136,5 +151,6 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         output_channels: output_channels.channels,
         gauges: gauges.gauges,
         frontpage: gauges.frontpage,
+        ve_analyze: ve_analyze.def,
     })
 }

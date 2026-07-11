@@ -30,6 +30,37 @@ impl SerialTransport {
             inner: None,
         }
     }
+
+    fn clear_if_disconnected<T>(&mut self, result: &Result<T>) {
+        if matches!(result, Err(TransportError::Disconnected)) {
+            self.inner = None;
+        }
+    }
+}
+
+fn map_io_error(error: std::io::Error, timeout: std::time::Duration) -> TransportError {
+    match error.kind() {
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+            TransportError::Timeout(timeout)
+        }
+        std::io::ErrorKind::BrokenPipe
+        | std::io::ErrorKind::NotConnected
+        | std::io::ErrorKind::ConnectionReset
+        | std::io::ErrorKind::ConnectionAborted
+        | std::io::ErrorKind::UnexpectedEof => TransportError::Disconnected,
+        _ => TransportError::Io(error),
+    }
+}
+
+fn map_serial_error(error: serialport::Error) -> TransportError {
+    match error.kind() {
+        serialport::ErrorKind::NoDevice => TransportError::Disconnected,
+        serialport::ErrorKind::Io(kind) => map_io_error(
+            std::io::Error::new(kind, error.to_string()),
+            std::time::Duration::ZERO,
+        ),
+        _ => TransportError::Io(std::io::Error::other(error.to_string())),
+    }
 }
 
 impl Transport for SerialTransport {
@@ -60,27 +91,105 @@ impl Transport for SerialTransport {
     }
 
     fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        let port = self.inner.as_mut().ok_or(TransportError::Disconnected)?;
-        port.write_all(bytes).map_err(TransportError::from)
+        let result = match self.inner.as_mut() {
+            None => Err(TransportError::Disconnected),
+            Some(port) => match port
+                .set_timeout(self.config.write_timeout)
+                .map_err(map_serial_error)
+            {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    let write_result = port
+                        .write_all(bytes)
+                        .map_err(|e| map_io_error(e, self.config.write_timeout));
+                    let restore_result = port
+                        .set_timeout(self.config.read_timeout)
+                        .map_err(map_serial_error);
+                    write_result.and(restore_result)
+                }
+            },
+        };
+        self.clear_if_disconnected(&result);
+        result
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-        let port = self.inner.as_mut().ok_or(TransportError::Disconnected)?;
-        port.read_exact(buf).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::TimedOut {
-                TransportError::Timeout(self.config.read_timeout)
-            } else {
-                TransportError::Io(e)
-            }
-        })
+        let result = {
+            let port = self.inner.as_mut().ok_or(TransportError::Disconnected)?;
+            port.read_exact(buf)
+                .map_err(|e| map_io_error(e, self.config.read_timeout))
+        };
+        self.clear_if_disconnected(&result);
+        result
     }
 
     fn flush(&mut self) -> Result<()> {
-        if let Some(port) = self.inner.as_mut() {
-            port.flush().map_err(TransportError::from)?;
-            port.clear(serialport::ClearBuffer::All)
-                .map_err(|e| TransportError::Io(std::io::Error::other(e.to_string())))?;
+        let result = if let Some(port) = self.inner.as_mut() {
+            port.flush()
+                .map_err(|e| map_io_error(e, self.config.write_timeout))
+                .and_then(|_| {
+                    port.clear(serialport::ClearBuffer::All)
+                        .map_err(map_serial_error)
+                })
+        } else {
+            Ok(())
+        };
+        self.clear_if_disconnected(&result);
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_and_would_block_map_to_timeout() {
+        for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::WouldBlock] {
+            let error = map_io_error(
+                std::io::Error::new(kind, "timeout"),
+                std::time::Duration::from_millis(321),
+            );
+            assert!(matches!(
+                error,
+                TransportError::Timeout(duration)
+                    if duration == std::time::Duration::from_millis(321)
+            ));
         }
-        Ok(())
+    }
+
+    #[test]
+    fn unplug_like_io_errors_map_to_disconnected() {
+        for kind in [
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::UnexpectedEof,
+        ] {
+            let error = map_io_error(
+                std::io::Error::new(kind, "device vanished"),
+                std::time::Duration::from_secs(1),
+            );
+            assert!(matches!(error, TransportError::Disconnected));
+        }
+    }
+
+    #[test]
+    fn serial_no_device_maps_to_disconnected() {
+        let error = serialport::Error::new(serialport::ErrorKind::NoDevice, "gone");
+        assert!(matches!(
+            map_serial_error(error),
+            TransportError::Disconnected
+        ));
+    }
+
+    #[test]
+    fn unrelated_io_error_is_preserved() {
+        let error = map_io_error(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(matches!(error, TransportError::Io(_)));
     }
 }

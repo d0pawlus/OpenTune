@@ -62,6 +62,7 @@ fn hand_built_definition() -> Definition {
             gauge_slots: vec![],
             indicators: vec![],
         },
+        ve_analyze: None,
     }
 }
 

@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+mod analysis_bridge;
+mod analysis_commands;
+mod capture;
 mod commands;
 pub mod connection;
 pub mod dto;
 pub mod events;
 mod layout;
+mod log_bridge;
+mod log_commands;
+mod offline_commands;
 pub mod owner;
 mod realtime_commands;
 pub mod session;
@@ -29,6 +35,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::get_values,
             tune_commands::resolve_gauge_bounds,
             tune_commands::set_value,
+            tune_commands::set_cells,
             tune_commands::burn_tune,
             tune_commands::undo_tune,
             tune_commands::redo_tune,
@@ -36,8 +43,26 @@ fn build_specta() -> Builder<tauri::Wry> {
             tune_commands::snapshot_tune,
             tune_commands::diff_tune,
             tune_commands::merge_tune,
+            offline_commands::new_tune,
+            offline_commands::open_tune,
+            offline_commands::save_tune,
+            offline_commands::write_tune_to_ecu,
             realtime_commands::start_realtime,
             realtime_commands::stop_realtime,
+            analysis_commands::start_capture,
+            analysis_commands::stop_capture,
+            analysis_commands::capture_status,
+            analysis_commands::run_ve_analyze,
+            log_commands::start_log,
+            log_commands::stop_log,
+            log_commands::add_log_marker,
+            log_commands::log_status,
+            log_commands::open_log,
+            log_commands::get_log_data,
+            log_commands::save_log,
+            log_commands::log_stats,
+            log_commands::detect_anomaly,
+            log_commands::virtual_dyno,
             layout::save_layout,
             layout::load_layout,
         ])
@@ -60,6 +85,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -173,6 +199,8 @@ mod binding_gen {
             "loadTune",
             "resolveGaugeBounds",
             "setValue",
+            "setCells",
+            "CellEditDto",
             "burnTune",
             "undoTune",
             "redoTune",
@@ -183,6 +211,9 @@ mod binding_gen {
             "MergePickDto",
             "DialogDto",
             "ConstantKindDto",
+            "CurveDto",
+            "AxisDto",
+            "x_channel",
         ] {
             assert!(
                 contents.contains(needle),
@@ -220,6 +251,39 @@ mod binding_gen {
     }
 
     #[test]
+    fn export_typescript_bindings_includes_capture_commands_and_dto() {
+        let contents = export_and_read();
+        for needle in [
+            "startCapture",
+            "stopCapture",
+            "captureStatus",
+            "CaptureStatusDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_run_ve_analyze_command_and_dtos() {
+        let contents = export_and_read();
+        for needle in [
+            "runVeAnalyze",
+            "VeAnalysisReportDto",
+            "CellResultDto",
+            "FilterCountDto",
+            "analyze_tables",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
     fn export_typescript_bindings_includes_layout_commands_and_gauge_dtos() {
         let contents = export_and_read();
         for needle in [
@@ -228,6 +292,32 @@ mod binding_gen {
             "GaugeDto",
             "FrontPageDto",
             "IndicatorDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_m5_log_and_analysis_api() {
+        let contents = export_and_read();
+        for needle in [
+            "startLog",
+            "stopLog",
+            "addLogMarker",
+            "logStatus",
+            "openLog",
+            "getLogData",
+            "saveLog",
+            "logStats",
+            "detectAnomaly",
+            "virtualDyno",
+            "LogDataDto",
+            "LogStatsReportDto",
+            "AnomalyReportDto",
+            "VirtualDynoReportDto",
         ] {
             assert!(
                 contents.contains(needle),

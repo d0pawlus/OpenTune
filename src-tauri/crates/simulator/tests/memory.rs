@@ -59,6 +59,7 @@ fn definition_with_pages(pages: Vec<PageDef>) -> Definition {
             gauge_slots: Vec::new(),
             indicators: Vec::new(),
         },
+        ve_analyze: None,
     }
 }
 

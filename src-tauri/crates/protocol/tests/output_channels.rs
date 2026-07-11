@@ -286,6 +286,34 @@ fn read_secl_keeps_single_byte_command_semantics() {
 }
 
 #[test]
+fn read_secl_single_byte_envelope_validates_crc() {
+    let comms = CommsSettings {
+        och_get_command: "A".to_string(),
+        ..envelope_comms()
+    };
+    let transport = ScriptedTransport::with_response(envelope_frame(&[9]));
+    let mut proto = MsProtocol::new(comms, transport);
+    assert_eq!(proto.read_secl().unwrap(), 9);
+    assert_eq!(proto.transport_ref().sent, envelope_frame(b"A"));
+}
+
+#[test]
+fn read_secl_single_byte_envelope_rejects_bad_crc() {
+    let comms = CommsSettings {
+        och_get_command: "A".to_string(),
+        ..envelope_comms()
+    };
+    let mut response = envelope_frame(&[9]);
+    *response.last_mut().unwrap() ^= 0xff;
+    let transport = ScriptedTransport::with_response(response);
+    let mut proto = MsProtocol::new(comms, transport);
+    assert!(matches!(
+        proto.read_secl(),
+        Err(ProtocolError::CrcMismatch { .. })
+    ));
+}
+
+#[test]
 fn reports_disconnected_when_device_vanishes_mid_read() {
     let comms = envelope_comms();
     let mut transport = ScriptedTransport::with_response(Vec::new());

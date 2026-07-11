@@ -14,6 +14,7 @@
 
 use crate::engine::SimEngine;
 use crate::memory::MemoryImage;
+use crate::ve_model::{self, VeContext};
 use opentune_ini::{Definition, PageDef};
 use opentune_transport::{Transport, TransportError};
 use std::collections::VecDeque;
@@ -43,6 +44,16 @@ struct Pipe {
     /// The animated model (M3 Task 5). `None` when built via
     /// [`EcuSimulator::new`], so the M1 handshake-only sim stays unchanged.
     engine: Option<SimEngine>,
+    /// M4 Task 9: the definition backing this sim, retained so each engine
+    /// tick can re-resolve the current `[VeAnalyze]`-bound `veTable` via
+    /// [`crate::ve_model::ve_context`] (a few small linear scans over
+    /// `tables`/`constants` — cheap enough to redo every tick rather than
+    /// caching a resolved binding). `None` only for [`EcuSimulator::new`]
+    /// (no definition at all); [`ve_context`] itself is `None` for a
+    /// `Some` definition with no `[VeAnalyze]` section.
+    ///
+    /// [`ve_context`]: crate::ve_model::ve_context
+    definition: Option<Definition>,
     /// Whether production `'r'` requests advance the engine off the wall
     /// clock (see [`Pipe::auto_tick`]). Defaults `true`; permanently
     /// disabled the moment [`EcuSimulator::tick_engine`] is called
@@ -55,7 +66,7 @@ struct Pipe {
 }
 
 impl Pipe {
-    fn new(pages: &[PageDef], engine: Option<SimEngine>) -> Self {
+    fn new(pages: &[PageDef], engine: Option<SimEngine>, definition: Option<Definition>) -> Self {
         Self {
             cmd_buf: VecDeque::new(),
             rsp_buf: VecDeque::new(),
@@ -69,9 +80,17 @@ impl Pipe {
                 .unwrap_or_default(),
             first_och_done: false,
             engine,
+            definition,
             auto_tick: true,
             last_auto_tick: None,
         }
+    }
+
+    /// Decode the currently-bound `veTable` from this pipe's memory image
+    /// (M4 Task 9), or `None` when there's no definition or the loaded INI
+    /// has no `[VeAnalyze]` binding.
+    fn ve_context(&self) -> Option<VeContext> {
+        ve_model::ve_context(self.definition.as_ref()?, &self.memory)
     }
 
     /// First-`'r'`-request bookkeeping, ported from `generateLiveValues`
@@ -108,9 +127,13 @@ impl Pipe {
         if !self.auto_tick {
             return;
         }
+        // M4 Task 9: refresh the VE context from current page memory before
+        // ticking, so this step's `afr` reflects the latest written veTable.
+        let ctx = self.ve_context();
         let Some(engine) = self.engine.as_mut() else {
             return;
         };
+        engine.set_ve_context(ctx);
         let now = std::time::Instant::now();
         let dt = now.duration_since(self.last_auto_tick.unwrap_or(now));
         engine.tick(dt);
@@ -419,7 +442,7 @@ impl EcuSimulator {
     /// Use [`Self::from_definition`] once the INI geometry is known.
     pub fn new() -> Self {
         Self {
-            pipe: Arc::new(Mutex::new(Pipe::new(&[], None))),
+            pipe: Arc::new(Mutex::new(Pipe::new(&[], None, None))),
         }
     }
 
@@ -432,11 +455,16 @@ impl EcuSimulator {
     /// writing the `[OutputChannels]` frame (M3 Task 5), both spoken to via
     /// [`opentune_protocol::MsProtocol`]. Advance the animation with
     /// [`Self::tick_engine`].
+    ///
+    /// M4 Task 9: also retains a clone of `definition` so every subsequent
+    /// tick can re-resolve its `[VeAnalyze]`-bound `veTable` (if any) — see
+    /// [`crate::ve_model::ve_context`].
     pub fn from_definition(definition: &Definition) -> Self {
         Self {
             pipe: Arc::new(Mutex::new(Pipe::new(
                 &definition.pages,
                 Some(SimEngine::new(definition)),
+                Some(definition.clone()),
             ))),
         }
     }
@@ -459,7 +487,11 @@ impl EcuSimulator {
         let mut guard = self.pipe.lock().unwrap();
         let p = &mut *guard;
         p.auto_tick = false;
+        // M4 Task 9: refresh the VE context from current page memory before
+        // ticking (same reasoning as `Pipe::auto_tick`).
+        let ctx = p.ve_context();
         if let Some(engine) = p.engine.as_mut() {
+            engine.set_ve_context(ctx);
             engine.tick(dt);
             p.och_block.clear();
             p.och_block.extend_from_slice(engine.och_block());

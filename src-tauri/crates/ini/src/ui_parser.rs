@@ -49,9 +49,15 @@ enum Section {
 /// Parse every `[Menu]`, `[UserDefined]`, `[TableEditor]`, and
 /// `[CurveEditor]` section in the (already-preprocessed) INI text.
 ///
-/// `constants` is used only for the table/curve bin cross-reference check —
-/// a missing reference degrades to a `Diagnostic`, never a hard error.
-pub fn parse_ui(ini_text: &str, constants: &[ConstantDef]) -> ParsedUi {
+/// `constants` and `pc_variables` are used only for the table/curve bin
+/// cross-reference check (a missing reference degrades to a `Diagnostic`,
+/// never a hard error) — widened to search both namespaces in M4 Task 2, see
+/// `ui_table_curve_parser`'s module doc comment.
+pub fn parse_ui(
+    ini_text: &str,
+    constants: &[ConstantDef],
+    pc_variables: &[ConstantDef],
+) -> ParsedUi {
     let mut menus: Vec<MenuDef> = Vec::new();
     let mut dialogs: Vec<DialogDef> = Vec::new();
     let mut tables: Vec<TableDef> = Vec::new();
@@ -87,12 +93,22 @@ pub fn parse_ui(ini_text: &str, constants: &[ConstantDef]) -> ParsedUi {
         match section {
             Section::Menu => parse_menu_line(key, value, &mut menus),
             Section::UserDefined => parse_dialog_line(key, value, &mut dialogs, &mut diagnostics),
-            Section::TableEditor => {
-                parse_table_line(key, value, &mut tables, constants, &mut diagnostics)
-            }
-            Section::CurveEditor => {
-                parse_curve_line(key, value, &mut curves, constants, &mut diagnostics)
-            }
+            Section::TableEditor => parse_table_line(
+                key,
+                value,
+                &mut tables,
+                constants,
+                pc_variables,
+                &mut diagnostics,
+            ),
+            Section::CurveEditor => parse_curve_line(
+                key,
+                value,
+                &mut curves,
+                constants,
+                pc_variables,
+                &mut diagnostics,
+            ),
             Section::Other => {}
         }
     }

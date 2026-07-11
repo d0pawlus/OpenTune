@@ -47,8 +47,9 @@ pub enum ActiveConnection {
 /// so a `set_value`/`burn`/`undo` never touches the wire outside the owner.
 /// `tune` is `None` until [`Session::load_tune`] reads the pages.
 pub struct Session {
-    /// The live connection — sole owner of the transport.
-    pub conn: ActiveConnection,
+    /// The live connection, if any. `None` = an offline session (a tune loaded
+    /// from a file or created blank) that has no ECU link yet.
+    pub conn: Option<ActiveConnection>,
     /// The parsed firmware definition; immutable, shared cheaply.
     pub def: Arc<Definition>,
     /// The in-memory editable tune, once loaded from the ECU.
@@ -57,6 +58,43 @@ pub struct Session {
     /// taken by `Session::snapshot_tune`. `None` until a snapshot is taken;
     /// file-based `.msq` snapshots are M6.
     pub snapshot: Option<Tune>,
+    /// `true` when this session originated offline (a tune created blank or
+    /// loaded from a `.msq`, possibly later ATTACHed to a live link);
+    /// `false` for an online session whose tune was FRESH-read from the ECU.
+    ///
+    /// The distinction drives disconnect behavior: an offline-origin tune must
+    /// **survive** a disconnect (drop the link, keep the editable/saveable
+    /// tune — design spec §"Disconnect while editing"), whereas an online tune
+    /// is destroyed so a later connect FRESH-reads rather than ATTACHing a
+    /// stale online tune.
+    pub offline_origin: bool,
+}
+
+impl ActiveConnection {
+    /// Defense-in-depth signature guard (design spec §Safety guards #2): the
+    /// connected ECU's reported signature must match `comms` (the tune's INI).
+    /// Single source of truth for both the attach-time check
+    /// (`owner_ops::verify_signature`) and the pre-write re-check
+    /// (`Session::write_all_to_ecu`).
+    ///
+    /// The simulator is built *from* the definition, so its identity is
+    /// definitionally the def's signature — that arm always matches. The real
+    /// check is the serial arm, comparing the manager's identified signature.
+    pub fn verify_signature(&self, comms: &CommsSettings) -> Result<(), String> {
+        match self {
+            ActiveConnection::Sim { .. } => Ok(()),
+            ActiveConnection::Serial { manager } => match manager.state() {
+                ConnectionState::Connected { identity } if identity.matches(comms) => Ok(()),
+                ConnectionState::Connected { identity } => Err(format!(
+                    "connected ECU signature `{}` does not match your tune's INI `{}`",
+                    identity.signature, comms.signature
+                )),
+                _ => Err(
+                    "ECU did not report a signature; cannot verify tune compatibility".to_string(),
+                ),
+            },
+        }
+    }
 }
 
 // ── Source discriminant (IPC-visible) ────────────────────────────────────────
@@ -142,13 +180,27 @@ pub fn connect_simulator(
 
     let cfg = ReconnectConfig {
         max_attempts: 10,
-        base_delay: std::time::Duration::from_millis(500),
-        max_delay: std::time::Duration::from_secs(30),
+        // The in-process simulator needs the same bounded exponential shape,
+        // but not human-scale serial delays.
+        base_delay: std::time::Duration::from_millis(10),
+        max_delay: std::time::Duration::from_millis(100),
     };
     let mut mgr = ConnectionManager::new(def.comms.clone(), cfg, factory);
 
     emit(ConnectionState::Connecting);
-    let state = mgr.connect().map_err(|e| e.to_string())?;
+    let state = match mgr.connect() {
+        Ok(state) => state,
+        Err(error) => {
+            let failed = match mgr.state() {
+                state @ ConnectionState::Failed { .. } => state.clone(),
+                _ => ConnectionState::Failed {
+                    reason: error.to_string(),
+                },
+            };
+            emit(failed);
+            return Err(error.to_string());
+        }
+    };
     emit(state);
 
     Ok(ActiveConnection::Sim {
@@ -165,7 +217,7 @@ pub fn connect_serial(
     emit: &dyn Fn(ConnectionState),
 ) -> Result<ActiveConnection, String> {
     let port = port_name.clone();
-    let serial_cfg = SerialConfig::default();
+    let serial_cfg = serial_config_from_comms(&comms);
 
     let factory: SerialFactory =
         Box::new(move || Ok(SerialTransport::new(port.clone(), serial_cfg.clone())));
@@ -178,10 +230,32 @@ pub fn connect_serial(
     let mut mgr = ConnectionManager::new(comms, cfg, factory);
 
     emit(ConnectionState::Connecting);
-    let state = mgr.connect().map_err(|e| e.to_string())?;
+    let state = match mgr.connect() {
+        Ok(state) => state,
+        Err(error) => {
+            let failed = match mgr.state() {
+                state @ ConnectionState::Failed { .. } => state.clone(),
+                _ => ConnectionState::Failed {
+                    reason: error.to_string(),
+                },
+            };
+            emit(failed);
+            return Err(error.to_string());
+        }
+    };
     emit(state);
 
     Ok(ActiveConnection::Serial { manager: mgr })
+}
+
+fn serial_config_from_comms(comms: &CommsSettings) -> SerialConfig {
+    // A zero timeout would turn every read into an immediate false drop.
+    SerialConfig {
+        read_timeout: std::time::Duration::from_millis(u64::from(
+            comms.block_read_timeout_ms.max(1),
+        )),
+        ..SerialConfig::default()
+    }
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -229,6 +303,7 @@ mod tests {
                 gauge_slots: Vec::new(),
                 indicators: Vec::new(),
             },
+            ve_analyze: None,
         }
     }
 
@@ -273,5 +348,32 @@ mod tests {
         assert_eq!(comms.signature, EcuSimulator::SIGNATURE);
         assert_eq!(comms.query_command, "Q");
         assert_eq!(comms.envelope, EnvelopeFormat::Plain);
+    }
+
+    #[test]
+    fn serial_config_uses_the_ini_block_read_timeout() {
+        let mut comms = plain_comms();
+        comms.block_read_timeout_ms = 3_750;
+        let config = serial_config_from_comms(&comms);
+        assert_eq!(config.read_timeout, std::time::Duration::from_millis(3_750));
+        assert_eq!(config.write_timeout, SerialConfig::default().write_timeout);
+    }
+
+    #[test]
+    fn simulator_signature_mismatch_emits_failed_instead_of_staying_connecting() {
+        let mut def = plain_definition();
+        def.comms.signature = "wrong firmware".to_string();
+        let emitted = std::sync::Mutex::new(Vec::new());
+        // `.err()` first: `ActiveConnection` (the Ok type) is a live-transport
+        // enum with no `Debug`, so `expect_err` (which needs `T: Debug`) won't
+        // compile — drop the Ok value before asserting on the message.
+        let error = connect_simulator(&def, &|state| emitted.lock().unwrap().push(state))
+            .err()
+            .expect("wrong INI must fail");
+        assert!(error.contains("signature mismatch"));
+        assert!(matches!(
+            emitted.into_inner().unwrap().as_slice(),
+            [ConnectionState::Connecting, ConnectionState::Failed { .. }]
+        ));
     }
 }

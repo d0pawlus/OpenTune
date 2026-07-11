@@ -102,6 +102,7 @@ pub fn tune(endianness: Endianness, constants: Vec<ConstantDef>) -> Tune {
             gauge_slots: Vec::new(),
             indicators: Vec::new(),
         },
+        ve_analyze: None,
     }))
 }
 

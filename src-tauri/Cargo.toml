@@ -24,6 +24,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta = "=2.0.0-rc.25"
@@ -34,6 +35,10 @@ opentune-simulator = { path = "crates/simulator" }
 opentune-ini = { path = "crates/ini" }
 opentune-model = { path = "crates/model" }
 opentune-realtime = { path = "crates/realtime" }
+# M4 Task 8: SampleSet is the capture ring's export shape (Task 0 seam).
+opentune-analysis = { path = "crates/analysis" }
+opentune-project = { path = "crates/project" }
+opentune-datalog = { path = "crates/datalog" }
 # §9 owner task: mpsc/oneshot channels + spawn_blocking for the blocking
 # serial transport. Already in the tree transitively via tauri.
 tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }

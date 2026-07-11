@@ -7,7 +7,7 @@ mod common;
 
 use common::{load1, scalar, tune, PAGE_SIZE};
 use opentune_ini::{ConstantKind, Endianness, Number, ScalarType, Shape};
-use opentune_model::{ModelError, Value};
+use opentune_model::{ModelError, Tune, Value};
 
 // ---------- 4.1 / 4.2 — scaled get/set roundtrip ----------
 
@@ -413,4 +413,132 @@ fn unresolvable_bound_expr_fails_set_with_unresolved_expr() {
     let mut t = tune(Endianness::Little, vec![c]);
     let r = t.set("c", Value::Scalar(1.0));
     assert!(matches!(r, Err(ModelError::UnresolvedExpr(_))));
+}
+
+// ---------- M4 Task 3 — set_cells (per-gesture cell writes) ----------
+
+/// The Task 3 fixture: a 2-D array constant plus a scalar, built the same
+/// way as the array-codec tests above (`scalar` + kind override). The
+/// shared fixture's pages are `PAGE_SIZE` (64) bytes, so `veTable` is a
+/// 4x8 U08 grid (32 cells; index 17 valid, 9999 out of bounds) rather
+/// than a full 16x16 — every `set_cells` behaviour under test
+/// (multi-cell gesture, bounds, range, one undo step) is
+/// shape-independent.
+fn test_tune() -> Tune {
+    let mut ve = scalar("veTable", ScalarType::U08, 0, 1.0, 0.0, 100.0);
+    ve.kind = ConstantKind::Array {
+        elem: ScalarType::U08,
+        shape: Shape { rows: 4, cols: 8 },
+    };
+    let req_fuel = scalar("reqFuel", ScalarType::U16, 40, 0.1, 0.0, 6553.5);
+    tune(Endianness::Little, vec![ve, req_fuel])
+}
+
+#[test]
+fn set_cells_edits_cells_and_undoes_as_one_step() {
+    let mut tune = test_tune(); // the module's existing array-constant fixture helper
+    let Value::Array(before) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    tune.set_cells("veTable", &[(0, 55.0), (17, 60.0)]).unwrap();
+    let Value::Array(after) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    assert_eq!(after[0], 55.0);
+    assert_eq!(after[17], 60.0);
+    assert_eq!(after[1], before[1], "untouched cells intact");
+    assert!(tune.is_dirty());
+    assert!(tune.undo(), "one gesture = one undo step");
+    assert_eq!(tune.get("veTable").unwrap(), Value::Array(before));
+    assert!(!tune.undo() || tune.get("veTable").unwrap() != Value::Array(vec![]));
+}
+
+#[test]
+fn set_cells_rejects_out_of_bounds_and_non_array_untouched() {
+    let mut tune = test_tune();
+    let before = tune.get("veTable").unwrap();
+    assert!(tune.set_cells("veTable", &[(9999, 1.0)]).is_err());
+    assert_eq!(
+        tune.get("veTable").unwrap(),
+        before,
+        "failed call touches nothing"
+    );
+    assert!(
+        tune.set_cells("reqFuel", &[(0, 1.0)]).is_err(),
+        "scalar is not an array"
+    );
+    assert!(
+        tune.set_cells("veTable", &[]).is_ok(),
+        "empty gesture is a no-op"
+    );
+}
+
+#[test]
+fn set_cells_untouched_out_of_range_cell_does_not_block_other_edits() {
+    // M4 final-review fix wave item 3: an UNTOUCHED stored cell outside the
+    // declared [low, high] range (stale tune vs. a newer INI's bounds is a
+    // legitimate real-world state — `load_page` never validates) must not
+    // fail a gesture that edits a DIFFERENT, in-range cell.
+    let mut tune = test_tune();
+    let mut page = vec![0u8; PAGE_SIZE];
+    page[5] = 200; // veTable[5] decodes to 200.0 — outside the [0,100] range
+    tune.load_page(1, page);
+
+    tune.set_cells("veTable", &[(0, 55.0)])
+        .expect("an untouched out-of-range cell must not block edits to other cells");
+
+    let Value::Array(after) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    assert_eq!(after[0], 55.0, "touched cell applied");
+    assert_eq!(
+        tune.page_bytes(1)[5],
+        200,
+        "untouched out-of-range cell's bytes stay byte-identical"
+    );
+    assert!(tune.undo(), "one gesture = one undo step");
+    let Value::Array(undone) = tune.get("veTable").unwrap() else {
+        panic!()
+    };
+    assert_eq!(undone[0], 0.0, "undo restores the touched cell");
+    assert_eq!(
+        tune.page_bytes(1)[5],
+        200,
+        "untouched out-of-range cell survives undo too"
+    );
+
+    // Touching the OOR cell itself with another OOR value still errors.
+    let mut tune2 = test_tune();
+    let mut page2 = vec![0u8; PAGE_SIZE];
+    page2[5] = 200;
+    tune2.load_page(1, page2);
+    assert_eq!(
+        tune2.set_cells("veTable", &[(5, 150.0)]),
+        Err(ModelError::OutOfRange {
+            name: "veTable".to_string(),
+            value: 150.0
+        }),
+        "touching the OOR cell with another OOR value still errors"
+    );
+}
+
+#[test]
+fn set_cells_value_above_high_is_out_of_range_and_touches_nothing() {
+    // Range violations surface as `ModelError::OutOfRange` from
+    // `encode_scalar` — `set_cells` shares `set`'s per-element checks.
+    let mut tune = test_tune();
+    let before = tune.get("veTable").unwrap();
+    assert_eq!(
+        tune.set_cells("veTable", &[(0, 55.0), (1, 150.0)]),
+        Err(ModelError::OutOfRange {
+            name: "veTable".to_string(),
+            value: 150.0
+        })
+    );
+    assert_eq!(
+        tune.get("veTable").unwrap(),
+        before,
+        "rejected gesture touches nothing"
+    );
+    assert!(!tune.is_dirty());
 }

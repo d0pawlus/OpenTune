@@ -48,7 +48,7 @@ listed here was confirmed to succeed before this guide was published.
 - **Linux** — install the following system packages before anything else:
   ```sh
   sudo apt-get update
-  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+  sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
   ```
 - **macOS** — Xcode Command Line Tools:
   ```sh
@@ -64,7 +64,7 @@ listed here was confirmed to succeed before this guide was published.
 ```sh
 git clone https://github.com/d0pawlus/TuningSoftware.git
 cd TuningSoftware
-npm install
+npm ci
 ```
 
 ### Run the app
@@ -78,7 +78,7 @@ This starts Vite (frontend hot-reload) and the Tauri process together.
 ### Run the test suite
 
 ```sh
-npm run test          # Vitest — 6 tests, all green
+npm run test          # Vitest frontend tests
 ```
 
 ### Lint and format
@@ -94,6 +94,7 @@ npm run format        # Prettier autofix
 ```sh
 npm run rust:clippy   # clippy -D warnings (requires cargo on PATH)
 npm run rust:fmt      # rustfmt check
+npm run rust:test     # complete Rust workspace test suite
 ```
 
 > If `cargo` is not on your PATH in a given shell, source the rustup env first:

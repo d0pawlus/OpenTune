@@ -8,6 +8,8 @@ use opentune_protocol::{
     ConnectionState, EcuIdentity,
 };
 use opentune_simulator::EcuSimulator;
+use opentune_transport::{Transport, TransportError};
+use std::collections::VecDeque;
 use std::time::Duration;
 
 fn speeduino_comms() -> CommsSettings {
@@ -309,4 +311,185 @@ fn state_is_connected_after_successful_reconnect() {
         "state() must return Connected after recovery, got: {:?}",
         mgr.state()
     );
+}
+
+#[test]
+fn initial_signature_mismatch_is_rejected() {
+    let sim = EcuSimulator::new();
+    let mut comms = speeduino_comms();
+    comms.signature = "different firmware".to_string();
+    let mut mgr = ConnectionManager::new(comms, fast_config(), move || Ok(sim.client_transport()));
+
+    let error = mgr.connect().expect_err("wrong INI must not connect");
+    assert!(matches!(
+        error,
+        opentune_protocol::ProtocolError::SignatureMismatch { .. }
+    ));
+    assert!(matches!(mgr.state(), ConnectionState::Failed { .. }));
+}
+
+#[test]
+fn health_check_detects_a_dropped_live_link() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    let sim_factory = Arc::clone(&sim);
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+
+    sim.set_link_dropped(true);
+    assert!(matches!(
+        mgr.check_link(),
+        Err(opentune_protocol::ProtocolError::Transport(
+            TransportError::Disconnected
+        ))
+    ));
+}
+
+#[test]
+fn health_check_routes_a_backwards_counter_through_reconnect() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    sim.advance_secl(50);
+    let sim_factory = Arc::clone(&sim);
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+    assert_eq!(mgr.last_secl(), 50);
+
+    sim.reset_secl();
+    let error = mgr
+        .check_link()
+        .expect_err("backwards secl must trigger owner recovery");
+    assert!(matches!(
+        error,
+        opentune_protocol::ProtocolError::MalformedResponse(_)
+    ));
+    assert_eq!(
+        mgr.last_secl(),
+        50,
+        "reconnect still needs the old baseline to detect reboot"
+    );
+}
+
+#[test]
+fn health_check_accepts_u8_counter_wrap() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    sim.advance_secl(250);
+    let sim_factory = Arc::clone(&sim);
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+
+    sim.reset_secl();
+    sim.advance_secl(1);
+    assert_eq!(mgr.check_link().unwrap(), 1);
+}
+
+/// Tiny plain-protocol transport whose identity can differ between factory
+/// calls. This pins the reconnect-only signature guard without hardware.
+struct IdentityTransport {
+    open: bool,
+    signature: String,
+    response: VecDeque<u8>,
+}
+
+impl IdentityTransport {
+    fn new(signature: &str) -> Self {
+        Self {
+            open: false,
+            signature: signature.to_string(),
+            response: VecDeque::new(),
+        }
+    }
+}
+
+impl Transport for IdentityTransport {
+    fn open(&mut self) -> opentune_transport::Result<()> {
+        self.open = true;
+        Ok(())
+    }
+
+    fn close(&mut self) -> opentune_transport::Result<()> {
+        self.open = false;
+        Ok(())
+    }
+
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> opentune_transport::Result<()> {
+        if !self.open {
+            return Err(TransportError::Disconnected);
+        }
+        let reply: Vec<u8> = match bytes {
+            b"Q" => self
+                .signature
+                .as_bytes()
+                .iter()
+                .copied()
+                .chain(std::iter::once(0))
+                .collect(),
+            b"S" => b"test-version\0".to_vec(),
+            b"A" => vec![1],
+            _ => Vec::new(),
+        };
+        self.response.extend(reply);
+        Ok(())
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> opentune_transport::Result<()> {
+        for byte in buf {
+            *byte = self.response.pop_front().ok_or_else(|| {
+                TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "scripted response exhausted",
+                ))
+            })?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> opentune_transport::Result<()> {
+        self.response.clear();
+        Ok(())
+    }
+}
+
+#[test]
+fn reconnect_signature_mismatch_fails_without_retrying() {
+    let expected = speeduino_comms().signature.clone();
+    let mut factory_calls = 0;
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        factory_calls += 1;
+        let signature = if factory_calls == 1 {
+            expected.as_str()
+        } else {
+            "different firmware"
+        };
+        Ok(IdentityTransport::new(signature))
+    });
+    mgr.connect().unwrap();
+
+    let states = mgr.reconnect_collect_states();
+    assert_eq!(states.len(), 2, "one attempt plus terminal failure");
+    assert!(matches!(
+        states.as_slice(),
+        [
+            ConnectionState::Reconnecting { attempt: 1 },
+            ConnectionState::Failed { .. }
+        ]
+    ));
+    let ConnectionState::Failed { reason } = states.last().unwrap() else {
+        unreachable!()
+    };
+    assert!(reason.contains("signature mismatch"));
 }
