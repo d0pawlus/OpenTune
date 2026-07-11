@@ -48,12 +48,15 @@ pub struct Tune {
     pub(crate) def: Arc<Definition>,
     /// One byte buffer per page, indexed in the same order as `def.pages`.
     pages: Vec<Vec<u8>>,
-    /// Pages with at least one edit since the last [`Tune::mark_burned`].
+    /// The flash baseline: the bytes last known to be in flash, one buffer
+    /// per page (same index as `pages`). Set at construction (zeroed),
+    /// refreshed by [`Tune::load_page`] (a read establishes RAM == flash) and
+    /// [`Tune::mark_burned`] (a burn commits RAM -> flash).
     ///
-    /// Tracks page numbers only; the changed byte ranges themselves are
-    /// recoverable from the `undo` stack (each [`Edit`] records its page,
-    /// offset, and byte span).
-    dirty: Vec<u16>,
+    /// A page is dirty *iff* its bytes differ from this baseline — derived,
+    /// never tracked, so it cannot go stale. This is what makes
+    /// load -> edit -> undo-back-to-loaded correctly report clean.
+    baseline: Vec<Vec<u8>>,
     /// Edits available to undo, most-recent last.
     undo: Vec<Edit>,
     /// Edits available to redo, most-recent last.
@@ -63,11 +66,11 @@ pub struct Tune {
 impl Tune {
     /// Create a new tune with all pages zeroed, sized from `def.pages`.
     pub fn new(def: Arc<Definition>) -> Self {
-        let pages = def.pages.iter().map(|p| vec![0u8; p.size]).collect();
+        let pages: Vec<Vec<u8>> = def.pages.iter().map(|p| vec![0u8; p.size]).collect();
         Self {
             def,
+            baseline: pages.clone(),
             pages,
-            dirty: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
         }
@@ -75,11 +78,19 @@ impl Tune {
 
     /// Replace a page's bytes wholesale, e.g. after a protocol read.
     ///
-    /// Loading is **not** an edit: dirty state is left untouched (re-reading
-    /// ECU RAM does not change whether that RAM differs from flash). The
-    /// undo/redo stacks **are** cleared — recorded edits reference byte
-    /// state that no longer exists, so replaying them after a reload could
-    /// silently corrupt the tune.
+    /// Loading is **not** an edit: it (re)establishes the flash baseline for
+    /// this page — a fresh read means RAM == flash, so the loaded bytes
+    /// become both the current bytes *and* the baseline, and the page reads
+    /// clean. The undo/redo stacks **are** cleared — recorded edits reference
+    /// byte state that no longer exists, so replaying them after a reload
+    /// could silently corrupt the tune.
+    ///
+    /// ponytail: baseline-reset is safe only because `load_page` is called
+    /// solely from a fresh-`Tune` full load (`Session::load_tune`) where the
+    /// RAM==flash assumption holds. If a *partial* RAM refresh ever calls
+    /// this on a tune with live edits, it would mark real divergence clean
+    /// (losing edits). Upgrade path if that need arises: take an explicit
+    /// `is_baseline: bool` and only reset the baseline on a full load.
     ///
     /// # Panics
     /// Panics if `page` is not declared in the definition or `bytes` does
@@ -91,6 +102,7 @@ impl Tune {
             self.def.pages[index].size,
             "page {page} load size mismatch"
         );
+        self.baseline[index] = bytes.clone();
         self.pages[index] = bytes;
         self.undo.clear();
         self.redo.clear();
@@ -139,9 +151,10 @@ impl Tune {
     /// error. Integer raws round half away from zero; `F32` stores
     /// unrounded.
     ///
-    /// A successful set that changes bytes records a byte-level [`Edit`],
-    /// marks the page dirty, and clears the redo stack. A set that encodes
-    /// to the page's existing bytes records nothing (no dirty, no edit).
+    /// A successful set that changes bytes records a byte-level [`Edit`] and
+    /// clears the redo stack; the page then reads dirty because its bytes
+    /// differ from the flash baseline. A set that encodes to the page's
+    /// existing bytes records nothing (no edit, and the page stays clean).
     pub fn set(&mut self, name: &str, value: Value) -> Result<(), ModelError> {
         let c = self
             .def
@@ -157,9 +170,6 @@ impl Tune {
             return Ok(());
         }
         self.pages[index][range].copy_from_slice(&after);
-        if !self.dirty.contains(&c.page) {
-            self.dirty.push(c.page);
-        }
         self.undo.push(Edit {
             page: c.page,
             offset: c.offset,
@@ -173,9 +183,9 @@ impl Tune {
     /// Undo the most recent edit. Returns `false` if there was nothing to
     /// undo.
     ///
-    /// Restores the edit's prior bytes and marks the page dirty — including
-    /// after a burn, where undoing correctly re-dirties the page (RAM
-    /// differs from flash again).
+    /// Restores the edit's prior bytes. Dirty state follows the bytes: undoing
+    /// back to the loaded/burned baseline reads clean, while undoing after a
+    /// burn moves the page off the new baseline and re-dirties it.
     pub fn undo(&mut self) -> bool {
         let Some(edit) = self.undo.pop() else {
             return false;
@@ -186,7 +196,7 @@ impl Tune {
     }
 
     /// Redo the most recently undone edit. Returns `false` if there was
-    /// nothing to redo. Marks the page dirty, like [`Tune::undo`].
+    /// nothing to redo. Dirty state follows the bytes, like [`Tune::undo`].
     pub fn redo(&mut self) -> bool {
         let Some(edit) = self.redo.pop() else {
             return false;
@@ -196,9 +206,9 @@ impl Tune {
         true
     }
 
-    /// Whether any page has unburned edits.
+    /// Whether any page's bytes differ from the flash baseline.
     pub fn is_dirty(&self) -> bool {
-        !self.dirty.is_empty()
+        self.pages != self.baseline
     }
 
     /// Evaluate a `visible`/`enable` expression against this tune's current
@@ -224,18 +234,28 @@ impl Tune {
         self.resolve(owner, number)
     }
 
-    /// The page numbers with unburned edits, sorted ascending.
+    /// The page numbers whose bytes differ from the flash baseline, sorted
+    /// ascending.
     pub fn dirty_pages(&self) -> Vec<u16> {
-        let mut pages = self.dirty.clone();
+        let mut pages: Vec<u16> = self
+            .def
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.pages[*i] != self.baseline[*i])
+            .map(|(_, p)| p.number)
+            .collect();
         pages.sort_unstable();
         pages
     }
 
-    /// Clear dirty tracking after a successful burn (RAM -> flash).
+    /// Commit the current bytes as the new flash baseline after a successful
+    /// burn (RAM -> flash), clearing dirty state.
     ///
-    /// Undo history survives a burn: undoing afterwards re-dirties the page.
+    /// Undo history survives a burn: undoing afterwards moves bytes off the
+    /// new baseline and re-dirties the page.
     pub fn mark_burned(&mut self) {
-        self.dirty.clear();
+        self.baseline = self.pages.clone();
     }
 
     /// The raw bytes of a page, keyed by page **number** (`PageDef::number`),
@@ -275,13 +295,11 @@ impl Tune {
         &page[c.offset..c.offset + len]
     }
 
-    /// Splice `bytes` into a page and mark it dirty (shared by undo/redo).
+    /// Splice `bytes` into a page (shared by undo/redo). Dirty state is
+    /// derived from the flash baseline, so there is nothing to track here.
     fn apply(&mut self, page: u16, offset: usize, bytes: &[u8]) {
         let index = self.page_index(page);
         self.pages[index][offset..offset + bytes.len()].copy_from_slice(bytes);
-        if !self.dirty.contains(&page) {
-            self.dirty.push(page);
-        }
     }
 
     /// Encode `value` into the byte image of constant `c` (the constant's

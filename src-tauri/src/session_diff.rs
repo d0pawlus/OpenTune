@@ -179,11 +179,14 @@ mod tests {
             "other side is the snapshot baseline"
         );
 
-        // Merge the pick back to the snapshot's (pre-edit) value.
+        // Merge the pick back to the snapshot's (pre-edit) value. That value
+        // equals the flash baseline (0,0) here — nothing was burned — so the
+        // merge returns the page to baseline and the tune reads clean. Dirty
+        // is byte-equality against flash, not a sticky edit flag.
         let ev = s
             .merge_tune(&["reqFuel".to_string()])
             .expect("merge reqFuel");
-        assert!(ev.dirty);
+        assert!(!ev.dirty);
         assert_eq!(
             &ecu_page(&s, 1)[0..2],
             &[0, 0],

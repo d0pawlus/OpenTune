@@ -470,11 +470,13 @@ page = 1
 
         let ev = s.undo().expect("undo");
         assert_eq!(&ecu_page(&s, 1)[0..2], &[0, 0], "undo must reach the wire");
-        // The model tracks touched-since-burn (sticky), not byte-equality, so
-        // the page stays dirty after an undo — the badge clears only on burn.
-        assert!(ev.dirty);
+        // Dirty is byte-equality against the flash baseline, not a sticky
+        // touched-since-burn flag: undoing back to the loaded value returns
+        // the page to baseline, so the tune reads clean again.
+        assert!(!ev.dirty);
 
         let ev = s.redo().expect("redo");
+        // Redo re-applies the edit, moving the page off baseline once more.
         assert!(ev.dirty);
         assert_eq!(
             &ecu_page(&s, 1)[0..2],

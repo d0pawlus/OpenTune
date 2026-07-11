@@ -89,11 +89,7 @@ export function RoundGauge({
       ctx.font = "600 13px system-ui, sans-serif";
       ctx.fillText(resolvedGauge.title, cx, 18);
       ctx.font = "700 24px ui-monospace, monospace";
-      ctx.fillText(
-        formatValue(value, resolvedGauge.value_digits),
-        cx,
-        cy + 8,
-      );
+      ctx.fillText(formatValue(value, resolvedGauge.value_digits), cx, cy + 8);
       ctx.font = "12px system-ui, sans-serif";
       ctx.globalAlpha = 0.7;
       ctx.fillText(resolvedGauge.units, cx, cy + 26);

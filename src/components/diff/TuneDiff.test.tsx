@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { buildMergePayload, TuneDiff } from "./TuneDiff";
 import * as ipc from "../../ipc/bindings";
@@ -44,14 +44,19 @@ describe("buildMergePayload", () => {
   });
 
   it("returns an empty array when nothing is picked", () => {
-    expect(
-      buildMergePayload({ reqFuel: { all: false, cells: {} } }),
-    ).toEqual([]);
+    expect(buildMergePayload({ reqFuel: { all: false, cells: {} } })).toEqual(
+      [],
+    );
     expect(buildMergePayload({})).toEqual([]);
   });
 });
 
 describe("TuneDiff", () => {
+  // Command mocks are module-level fns; clear call counts between tests so
+  // per-test assertions like `diffTune toHaveBeenCalledTimes(2)` don't see
+  // calls accumulated by earlier tests.
+  beforeEach(() => vi.clearAllMocks());
+
   it("renders the snapshot action and prompts for a baseline before any diff exists", () => {
     render(<TuneDiff locale="en" />);
     expect(screen.getByText("Snapshot baseline")).toBeTruthy();
@@ -121,7 +126,9 @@ describe("TuneDiff", () => {
 
     render(<TuneDiff locale="en" />);
     fireEvent.click(screen.getByText("Snapshot baseline"));
-    await waitFor(() => expect(screen.getByLabelText("veTable[1]")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByLabelText("veTable[1]")).toBeTruthy(),
+    );
     fireEvent.click(screen.getByLabelText("veTable[1]"));
     fireEvent.click(screen.getByText("Merge selected"));
     await waitFor(() =>
@@ -153,7 +160,9 @@ describe("TuneDiff", () => {
     fireEvent.click(screen.getByText("Merge selected"));
 
     await waitFor(() =>
-      expect(screen.getByText("write failed after an earlier pick")).toBeTruthy(),
+      expect(
+        screen.getByText("write failed after an earlier pick"),
+      ).toBeTruthy(),
     );
     expect(afterMerge).toHaveBeenCalledTimes(1);
     expect(ipc.commands.diffTune).toHaveBeenCalledTimes(2);

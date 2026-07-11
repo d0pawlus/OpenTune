@@ -35,6 +35,8 @@ export const commands = {
 	loadTune: () => typedError<null, string>(__TAURI_INVOKE("load_tune")),
 	/**  Read the current physical values of the named constants (for field render). */
 	getValues: (names: string[]) => typedError<Value[], string>(__TAURI_INVOKE("get_values", { names })),
+	/**  Resolve all gauge bounds against the currently loaded tune. */
+	resolveGaugeBounds: () => typedError<ResolvedGaugeBoundsDto[], string>(__TAURI_INVOKE("resolve_gauge_bounds")),
 	/**
 	 *  Set a constant and write the changed bytes live to the ECU. The owner
 	 *  emits the new dirty state on success.
@@ -66,7 +68,7 @@ export const commands = {
 	 *  regardless of `Ok`/`Err` — because a merge can abort mid-batch after
 	 *  earlier picks already committed (M2 behavior, preserved).
 	 */
-	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
+	mergeTune: (picks: MergePickDto[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 	/**
 	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
 	 *  ≤30 Hz as `RealtimeFrameEvent`s).
@@ -291,6 +293,9 @@ export type MenuItemDto = {
 	dialog: string,
 };
 
+/**  A field-level or cell-level selective merge request from the frontend. */
+export type MergePickDto = { type: "all"; name: string } | { type: "cells"; name: string; indices: number[] };
+
 /**  Port information for the frontend UI. */
 export type PortInfoDto = {
 	name: string,
@@ -310,6 +315,22 @@ export type PortInfoDto = {
 export type RealtimeFrameEvent = {
 	/**  (channel name, physical value) pairs — the full decoded frame, ≤30 Hz. */
 	channels: ([string, number | null])[],
+};
+
+/**
+ *  Gauge bounds resolved against the currently loaded tune.
+ * 
+ *  Each bound fails open independently: `None` means the INI expression
+ *  could not be resolved and geometry using that bound must render neutral.
+ */
+export type ResolvedGaugeBoundsDto = {
+	name: string,
+	low: number | null,
+	high: number | null,
+	lo_danger: number | null,
+	lo_warn: number | null,
+	hi_warn: number | null,
+	hi_danger: number | null,
 };
 
 /**  A table editor definition (bin/cell constant references). */

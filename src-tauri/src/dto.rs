@@ -412,9 +412,12 @@ mod tests {
         let dialog = &dto.dialogs[0];
         assert_eq!(dialog.name, "engine_dialog");
         assert_eq!(dialog.fields.len(), 3);
-        // The gated field carries its raw visibility expression.
+        // The gated field's single trailing `{ cond }` is the *enable*
+        // condition (third position); visibility is the fourth position and is
+        // absent here. Conditions are positional per the TunerStudio grammar.
         let gated = dialog.fields.last().unwrap();
-        assert_eq!(gated.visible.as_deref(), Some("injLayout != 0"));
+        assert_eq!(gated.enable.as_deref(), Some("injLayout != 0"));
+        assert_eq!(gated.visible, None);
 
         // injLayout is a Bits selector with four options.
         let inj = dto

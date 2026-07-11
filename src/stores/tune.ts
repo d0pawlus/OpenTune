@@ -69,7 +69,9 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
   setValues: (values) => set({ values }),
   setGaugeBounds: (bounds) =>
     set({
-      gaugeBounds: Object.fromEntries(bounds.map((bound) => [bound.name, bound])),
+      gaugeBounds: Object.fromEntries(
+        bounds.map((bound) => [bound.name, bound]),
+      ),
     }),
   setActiveDialog: (activeDialog) => set({ activeDialog }),
 

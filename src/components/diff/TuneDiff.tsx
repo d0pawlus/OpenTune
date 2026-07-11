@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { Fragment, useCallback, useState } from "react";
 import { commands } from "../../ipc/bindings";
-import type {
-  FieldDiffDto,
-  MergePickDto,
-  Value,
-} from "../../ipc/bindings";
+import type { FieldDiffDto, MergePickDto, Value } from "../../ipc/bindings";
 import { t, type Locale } from "../../i18n";
 import "./diff.css";
 
@@ -22,15 +18,13 @@ export interface MergeSelection {
 }
 
 export function buildMergePayload(selection: MergeSelection): MergePickDto[] {
-  return Object.entries(selection).flatMap(([name, pick]) => {
-    if (pick.all) return [{ type: "all" as const, name }];
+  return Object.entries(selection).flatMap(([name, pick]): MergePickDto[] => {
+    if (pick.all) return [{ type: "all", name }];
     const indices = Object.entries(pick.cells)
       .filter(([, selected]) => selected)
       .map(([index]) => Number(index))
       .filter(Number.isSafeInteger);
-    return indices.length > 0
-      ? [{ type: "cells" as const, name, indices }]
-      : [];
+    return indices.length > 0 ? [{ type: "cells", name, indices }] : [];
   });
 }
 
@@ -188,36 +182,39 @@ export function TuneDiff({
           <tbody>
             {diffs.map((d) => (
               <Fragment key={d.name}>
-              <tr>
-                <td>
-                  <input
-                    type="checkbox"
-                    aria-label={d.name}
-                    checked={!!selection[d.name]?.all}
-                    onChange={() => toggleAll(d.name)}
-                  />
-                </td>
-                <td className="tune-diff-name">{d.name}</td>
-                <td>{formatValue(d.a)}</td>
-                <td>{formatValue(d.b)}</td>
-              </tr>
-              {d.cells.map((cell) => (
-                <tr key={`${d.name}-${cell.index}`} className="tune-diff-cell">
+                <tr>
                   <td>
                     <input
                       type="checkbox"
-                      aria-label={`${d.name}[${cell.index}]`}
-                      checked={!!selection[d.name]?.cells[cell.index]}
-                      onChange={() => toggleCell(d.name, cell.index)}
+                      aria-label={d.name}
+                      checked={!!selection[d.name]?.all}
+                      onChange={() => toggleAll(d.name)}
                     />
                   </td>
-                  <td>
-                    {d.name}[{cell.index}]
-                  </td>
-                  <td>{String(cell.a ?? "—")}</td>
-                  <td>{String(cell.b ?? "—")}</td>
+                  <td className="tune-diff-name">{d.name}</td>
+                  <td>{formatValue(d.a)}</td>
+                  <td>{formatValue(d.b)}</td>
                 </tr>
-              ))}
+                {d.cells.map((cell) => (
+                  <tr
+                    key={`${d.name}-${cell.index}`}
+                    className="tune-diff-cell"
+                  >
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`${d.name}[${cell.index}]`}
+                        checked={!!selection[d.name]?.cells[cell.index]}
+                        onChange={() => toggleCell(d.name, cell.index)}
+                      />
+                    </td>
+                    <td>
+                      {d.name}[{cell.index}]
+                    </td>
+                    <td>{String(cell.a ?? "—")}</td>
+                    <td>{String(cell.b ?? "—")}</td>
+                  </tr>
+                ))}
               </Fragment>
             ))}
           </tbody>

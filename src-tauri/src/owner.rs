@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use opentune_model::Value;
+use opentune_model::{MergePick, Value};
 use opentune_realtime::RealtimePoller;
 use tauri_specta::Event as _;
 use tokio::sync::{mpsc, oneshot};
@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 #[cfg(test)]
 use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
-use crate::dto::{DefinitionDto, FieldDiffDto};
+use crate::dto::{DefinitionDto, FieldDiffDto, MergePickDto, ResolvedGaugeBoundsDto};
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
 use ops::{build_session, link_drop};
 
@@ -80,8 +80,11 @@ pub enum Command {
         reply: Reply<Vec<FieldDiffDto>>,
     },
     MergeTune {
-        picks: Vec<String>,
+        picks: Vec<MergePickDto>,
         reply: Reply<Option<TuneDirtyEvent>>,
+    },
+    ResolveGaugeBounds {
+        reply: Reply<Vec<ResolvedGaugeBoundsDto>>,
     },
     /// Task 6 fills the realtime handlers; for now they just flip the flag.
     StartRealtime {
@@ -297,6 +300,9 @@ impl Owner {
             }
             Command::MergeTune { picks, reply } => {
                 let _ = reply.send(self.merge_tune(picks).await);
+            }
+            Command::ResolveGaugeBounds { reply } => {
+                let _ = reply.send(self.with_session(|s| s.resolve_gauge_bounds()).await);
             }
             Command::StartRealtime { reply } => {
                 let r = if self.session.is_some() {
@@ -520,10 +526,14 @@ impl Owner {
     /// Merge picks, then emit the tune's *actual* dirty state — read after
     /// the merge attempt regardless of `Ok`/`Err`, because a merge can abort
     /// mid-batch after earlier picks already committed (M2 behavior).
-    async fn merge_tune(&mut self, picks: Vec<String>) -> Result<Option<TuneDirtyEvent>, String> {
+    async fn merge_tune(
+        &mut self,
+        picks: Vec<MergePickDto>,
+    ) -> Result<Option<TuneDirtyEvent>, String> {
+        let picks: Vec<MergePick> = picks.into_iter().map(MergePick::from).collect();
         let (result, event) = self
             .with_session(move |s| {
-                let result = s.merge_tune(&picks);
+                let result = s.merge_picks(&picks);
                 Ok((result, s.current_dirty_event()))
             })
             .await?;

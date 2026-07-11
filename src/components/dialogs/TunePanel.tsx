@@ -64,28 +64,19 @@ export function TunePanel({ locale }: { locale: Locale }) {
     const generation = ++refreshGeneration.current;
     const names = def.constants.map((c) => c.name);
     const valuesRes = await commands.getValues(names);
-    if (
-      valuesRes.status === "ok" &&
-      generation === refreshGeneration.current
-    ) {
+    if (valuesRes.status === "ok" && generation === refreshGeneration.current) {
       const map: Record<string, (typeof valuesRes.data)[number]> = {};
       names.forEach((name, i) => (map[name] = valuesRes.data[i]));
       useTuneStore.getState().setValues(map);
     }
     const boundsRes = await commands.resolveGaugeBounds();
-    if (
-      boundsRes.status === "ok" &&
-      generation === refreshGeneration.current
-    ) {
+    if (boundsRes.status === "ok" && generation === refreshGeneration.current) {
       useTuneStore.getState().setGaugeBounds(boundsRes.data);
     }
     const exprs = conditionExprs(def);
     if (exprs.length > 0) {
       const condRes = await commands.evalConditions(exprs);
-      if (
-        condRes.status === "ok" &&
-        generation === refreshGeneration.current
-      ) {
+      if (condRes.status === "ok" && generation === refreshGeneration.current) {
         const map: Record<string, boolean> = {};
         exprs.forEach((expr, i) => (map[expr] = condRes.data[i]));
         setConditions(map);
@@ -264,7 +255,9 @@ export function TunePanel({ locale }: { locale: Locale }) {
 
       <TuneDiff
         locale={locale}
-        onAfterMerge={() => (definition ? refresh(definition) : Promise.resolve())}
+        onAfterMerge={() =>
+          definition ? refresh(definition) : Promise.resolve()
+        }
       />
     </section>
   );
