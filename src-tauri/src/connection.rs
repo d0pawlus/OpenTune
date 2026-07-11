@@ -180,13 +180,27 @@ pub fn connect_simulator(
 
     let cfg = ReconnectConfig {
         max_attempts: 10,
-        base_delay: std::time::Duration::from_millis(500),
-        max_delay: std::time::Duration::from_secs(30),
+        // The in-process simulator needs the same bounded exponential shape,
+        // but not human-scale serial delays.
+        base_delay: std::time::Duration::from_millis(10),
+        max_delay: std::time::Duration::from_millis(100),
     };
     let mut mgr = ConnectionManager::new(def.comms.clone(), cfg, factory);
 
     emit(ConnectionState::Connecting);
-    let state = mgr.connect().map_err(|e| e.to_string())?;
+    let state = match mgr.connect() {
+        Ok(state) => state,
+        Err(error) => {
+            let failed = match mgr.state() {
+                state @ ConnectionState::Failed { .. } => state.clone(),
+                _ => ConnectionState::Failed {
+                    reason: error.to_string(),
+                },
+            };
+            emit(failed);
+            return Err(error.to_string());
+        }
+    };
     emit(state);
 
     Ok(ActiveConnection::Sim {
@@ -203,7 +217,7 @@ pub fn connect_serial(
     emit: &dyn Fn(ConnectionState),
 ) -> Result<ActiveConnection, String> {
     let port = port_name.clone();
-    let serial_cfg = SerialConfig::default();
+    let serial_cfg = serial_config_from_comms(&comms);
 
     let factory: SerialFactory =
         Box::new(move || Ok(SerialTransport::new(port.clone(), serial_cfg.clone())));
@@ -216,10 +230,32 @@ pub fn connect_serial(
     let mut mgr = ConnectionManager::new(comms, cfg, factory);
 
     emit(ConnectionState::Connecting);
-    let state = mgr.connect().map_err(|e| e.to_string())?;
+    let state = match mgr.connect() {
+        Ok(state) => state,
+        Err(error) => {
+            let failed = match mgr.state() {
+                state @ ConnectionState::Failed { .. } => state.clone(),
+                _ => ConnectionState::Failed {
+                    reason: error.to_string(),
+                },
+            };
+            emit(failed);
+            return Err(error.to_string());
+        }
+    };
     emit(state);
 
     Ok(ActiveConnection::Serial { manager: mgr })
+}
+
+fn serial_config_from_comms(comms: &CommsSettings) -> SerialConfig {
+    // A zero timeout would turn every read into an immediate false drop.
+    SerialConfig {
+        read_timeout: std::time::Duration::from_millis(u64::from(
+            comms.block_read_timeout_ms.max(1),
+        )),
+        ..SerialConfig::default()
+    }
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -312,5 +348,28 @@ mod tests {
         assert_eq!(comms.signature, EcuSimulator::SIGNATURE);
         assert_eq!(comms.query_command, "Q");
         assert_eq!(comms.envelope, EnvelopeFormat::Plain);
+    }
+
+    #[test]
+    fn serial_config_uses_the_ini_block_read_timeout() {
+        let mut comms = plain_comms();
+        comms.block_read_timeout_ms = 3_750;
+        let config = serial_config_from_comms(&comms);
+        assert_eq!(config.read_timeout, std::time::Duration::from_millis(3_750));
+        assert_eq!(config.write_timeout, SerialConfig::default().write_timeout);
+    }
+
+    #[test]
+    fn simulator_signature_mismatch_emits_failed_instead_of_staying_connecting() {
+        let mut def = plain_definition();
+        def.comms.signature = "wrong firmware".to_string();
+        let emitted = std::sync::Mutex::new(Vec::new());
+        let error = connect_simulator(&def, &|state| emitted.lock().unwrap().push(state))
+            .expect_err("wrong INI must fail");
+        assert!(error.contains("signature mismatch"));
+        assert!(matches!(
+            emitted.into_inner().unwrap().as_slice(),
+            [ConnectionState::Connecting, ConnectionState::Failed { .. }]
+        ));
     }
 }

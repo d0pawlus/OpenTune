@@ -53,9 +53,34 @@ pub(super) fn build_session(source: ConnectSource, emit: &Emitter) -> Result<Ses
     })
 }
 
-/// Blocking link-drop body: drop + restore the simulator link, run the M1
-/// reconnect loop, and emit every state it produced. The session is always
-/// handed back, even when the reconnect ends `Failed`.
+/// Blocking recovery body used after a real owner/session link error.
+/// Runs the M1 reconnect loop for either transport and emits every state.
+pub(super) fn reconnect_session(
+    mut session: Session,
+    emit: &Emitter,
+) -> (Option<Session>, Result<(), String>) {
+    let Some(conn) = session.conn.as_mut() else {
+        return (
+            Some(session),
+            Err("cannot reconnect without an active connection".to_string()),
+        );
+    };
+    let (states, rebooted) = match conn {
+        ActiveConnection::Sim { manager, .. } => {
+            let states = manager.reconnect_collect_states();
+            (states, manager.last_reconnect_caused_reidentify())
+        }
+        ActiveConnection::Serial { manager } => {
+            let states = manager.reconnect_collect_states();
+            (states, manager.last_reconnect_caused_reidentify())
+        }
+    };
+    finish_reconnect(session, states, rebooted, emit)
+}
+
+/// Blocking simulator demo body: keep the link down through the first attempt,
+/// restore it from the retry hook, then complete through the same recovery path
+/// used for real transport errors.
 ///
 /// Reboot re-read (M2 follow-up c): when the reconnect detected an ECU
 /// reboot (`last_reconnect_caused_reidentify` — secl went backwards), the
@@ -72,17 +97,34 @@ pub(super) fn link_drop(
     };
 
     simulator.set_link_dropped(true);
-    // Restore immediately so the first reconnect attempt succeeds (M2 note).
-    simulator.set_link_dropped(false);
+    let restore = Arc::clone(simulator);
+    let states = manager.reconnect_collect_states_with_retry_hook(move |attempt| {
+        if attempt == 1 {
+            restore.set_link_dropped(false);
+        }
+    });
+    let rebooted = manager.last_reconnect_caused_reidentify();
+    finish_reconnect(session, states, rebooted, emit)
+}
 
-    let states = manager.reconnect_collect_states();
-    let reconnected = matches!(states.last(), Some(ConnectionState::Connected { .. }));
+fn finish_reconnect(
+    mut session: Session,
+    states: Vec<ConnectionState>,
+    rebooted: bool,
+    emit: &Emitter,
+) -> (Option<Session>, Result<(), String>) {
+    let result = match states.last() {
+        Some(ConnectionState::Connected { .. }) => Ok(()),
+        Some(ConnectionState::Failed { reason }) => Err(reason.clone()),
+        other => Err(format!(
+            "reconnect ended without a terminal state: {other:?}"
+        )),
+    };
     for s in states {
         emit(OwnerEvent::Connection(ConnectionStateEvent::from(s)));
     }
 
-    let rebooted = manager.last_reconnect_caused_reidentify();
-    if reconnected && rebooted && session.tune.is_some() {
+    if result.is_ok() && rebooted && session.tune.is_some() {
         match session.load_tune() {
             Ok(ev) => emit(OwnerEvent::TuneDirty(ev)),
             Err(e) => {
@@ -93,7 +135,7 @@ pub(super) fn link_drop(
             }
         }
     }
-    (Some(session), Ok(()))
+    (Some(session), result)
 }
 
 /// Build an offline session (no ECU link) around a blank tune from `ini_path`.

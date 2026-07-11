@@ -25,7 +25,8 @@ use crate::connection::ActiveConnection;
 use crate::connection::{ConnectSource, Session};
 use crate::dto::{CaptureStatusDto, CellEditDto, DefinitionDto, FieldDiffDto, VeAnalysisReportDto};
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
-use ops::{build_session, link_drop};
+use crate::session::PollFrameError;
+use ops::{build_session, link_drop, reconnect_session};
 
 const NOT_CONNECTED: &str = "not connected";
 
@@ -207,6 +208,9 @@ pub fn spawn_owner_with_emitter(emit: Emitter) -> OwnerHandle {
 /// The owner-driven poll cadence: 25 Hz. UI emission is separately coalesced
 /// to ≤30 Hz by the [`RealtimePoller`]'s 33 ms gate.
 const POLL_INTERVAL: Duration = Duration::from_millis(40);
+/// Idle-link health cadence. Realtime polling itself is the health probe while
+/// active; this tick keeps M1 reconnect working before/without live gauges.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The owner's private state: the session it exclusively owns plus the
 /// realtime polling state (Task 6). `poller` holds the ≤30 Hz emit gate;
@@ -233,9 +237,11 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
         emit,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
+    let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
     // While polling is off (or a long command blocks the loop), ticks pile
     // up unobserved — skip them instead of bursting to "catch up".
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             // `biased` + commands first: a pending command (write/burn/…)
@@ -247,6 +253,7 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
                 None => break,
             },
             _ = tick.tick(), if owner.wants_poll() => owner.poll_tick().await,
+            _ = health_tick.tick(), if owner.wants_health_check() => owner.health_tick().await,
         }
     }
 }
@@ -469,6 +476,33 @@ impl Owner {
         self.polling && self.session.is_some()
     }
 
+    /// Probe an idle live link. During realtime, `poll_tick` is already the
+    /// probe, so this avoids sending an extra output-channel request.
+    fn wants_health_check(&self) -> bool {
+        !self.polling && matches!(&self.session, Some(Session { conn: Some(_), .. }))
+    }
+
+    async fn health_tick(&mut self) {
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            let result = session.check_link();
+            (session, result)
+        })
+        .await;
+        match result {
+            Ok((session, Ok(()))) => self.session = Some(session),
+            Ok((session, Err(_))) => {
+                self.session = Some(session);
+                let _ = self.recover_link().await;
+            }
+            Err(_) => {
+                self.polling = false;
+            }
+        }
+    }
+
     /// One 25 Hz poll tick: run [`Session::poll_frame`] on the blocking pool
     /// (it touches the wire — same `spawn_blocking` move-in/move-out pattern
     /// as [`Self::with_session`], extended to carry the poller's gate state),
@@ -491,6 +525,7 @@ impl Owner {
             Ok((session, poller, r)) => {
                 self.session = Some(session);
                 self.poller = Some(poller);
+                let link_failed = matches!(&r, Err(PollFrameError::Link(_)));
                 if let Ok(Some(frame)) = r {
                     // Task 8: tap the emitted frame for the capture ring
                     // BEFORE the event conversion consumes it below (rate
@@ -506,6 +541,9 @@ impl Owner {
                         .map(|c| (c.name, c.value))
                         .collect();
                     (self.emit)(OwnerEvent::Realtime(RealtimeFrameEvent { channels }));
+                }
+                if link_failed {
+                    let _ = self.recover_link().await;
                 }
             }
             // Panicked mid-poll: the session is lost (poisoned-equivalent,
@@ -603,6 +641,25 @@ impl Owner {
             .map_err(|e| format!("link drop panicked: {e}"))?;
         self.session = session;
         r
+    }
+
+    /// Recover after a real health/poll failure. A successful reconnect keeps
+    /// realtime armed so frames resume automatically; terminal failure stops
+    /// polling to avoid a reconnect storm.
+    async fn recover_link(&mut self) -> Result<(), String> {
+        let Some(session) = self.session.take() else {
+            return Err(NOT_CONNECTED.to_owned());
+        };
+        let emit = Arc::clone(&self.emit);
+        let (session, result) =
+            tokio::task::spawn_blocking(move || reconnect_session(session, &emit))
+                .await
+                .map_err(|e| format!("reconnect panicked: {e}"))?;
+        self.session = session;
+        if result.is_err() {
+            self.polling = false;
+        }
+        result
     }
 
     /// Merge picks, then emit the tune's *actual* dirty state — read after

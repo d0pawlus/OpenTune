@@ -38,13 +38,14 @@ Goal: a buildable, runnable, empty-but-real Tauri app and the dev infrastructure
   (Routing deferred — one screen; added when a second screen exists.)
 - ✅ Typed IPC plumbing (`app_info` command + `Heartbeat` event) with TS types
   **generated** from Rust via `tauri-specta` (the no-hand-duplication guardrail).
-- 🟦 CI: build + test + lint/format (clippy, rustfmt, eslint, prettier) on
-  **macOS + Linux**. `windows-latest` deferred (CI-only CRLF/Prettier line-ending
-  issue, not an app problem; re-enable with `.gitattributes eol=lf`).
+- ✅ CI: build + test + lint/format (Cargo tests, clippy, rustfmt, Vitest,
+  eslint, prettier) on **macOS + Linux + Windows**. Repository text files are
+  normalized to LF through `.gitattributes` so Prettier is deterministic on
+  every runner.
 - ✅ `CONTRIBUTING.md` dev setup verified end-to-end.
 
 **Demo:** the app builds to an empty shell; the full lint/test/build gate suite is
-green locally and in CI (macOS + Linux). Implemented via the
+green locally and runs in CI on macOS, Linux, and Windows. Implemented via the
 [M0 plan](superpowers/plans/2026-06-21-m0-foundations.md).
 
 ## M1 — Connect & identify ✅

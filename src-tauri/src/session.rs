@@ -36,6 +36,15 @@ const NO_OCH_BLOCK: &str =
 const SERIAL_UNSUPPORTED: &str = "live page operations are not yet wired for serial \
     connections (M3: persist MsProtocol in ConnectionManager); use the simulator for M2";
 
+/// A poll failure classified for the owner. Only link failures enter M1's
+/// reconnect state machine; definition/configuration failures remain local and
+/// must not create a reconnect storm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PollFrameError {
+    Link(String),
+    Configuration(String),
+}
+
 impl Session {
     /// The UI-facing projection of the parsed definition (menus, dialogs,
     /// constants, tables) for the frontend to render against.
@@ -77,6 +86,21 @@ impl Session {
             .collect())
     }
 
+    /// Probe the manager-owned live protocol while realtime polling is idle.
+    /// A failure is a concrete link-loss signal for the owner.
+    pub(crate) fn check_link(&mut self) -> Result<(), String> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| NO_CONNECTION.to_string())?;
+        match conn {
+            ActiveConnection::Sim { manager, .. } => manager.check_link(),
+            ActiveConnection::Serial { manager } => manager.check_link(),
+        }
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
     /// One realtime poll tick (M3 Task 6.5): read the full och block through
     /// the connection, hand it to the coalescing `poller`
     /// ([`RealtimePoller::poll_once`] decodes + gates emission to ≤30 Hz),
@@ -90,21 +114,25 @@ impl Session {
     /// a later glitch reconnect compares against a stale baseline, falsely
     /// detects a reboot, and the owner's reboot path re-reads the tune,
     /// silently discarding unburned edits.
-    pub fn poll_frame(
+    pub(crate) fn poll_frame(
         &mut self,
         poller: &mut RealtimePoller,
-    ) -> Result<Option<RealtimeFrame>, String> {
+    ) -> Result<Option<RealtimeFrame>, PollFrameError> {
         let Session { conn, def, .. } = self;
         let Some(conn) = conn.as_mut() else {
             return Ok(None); // offline: no live link, so no frame to report
         };
-        let len = u16::try_from(def.comms.och_block_size)
-            .map_err(|_| format!("ochBlockSize {} exceeds u16", def.comms.och_block_size))?;
+        let len = u16::try_from(def.comms.och_block_size).map_err(|_| {
+            PollFrameError::Configuration(format!(
+                "ochBlockSize {} exceeds u16",
+                def.comms.och_block_size
+            ))
+        })?;
         if len == 0 {
-            return Err(NO_OCH_BLOCK.to_string());
+            return Err(PollFrameError::Configuration(NO_OCH_BLOCK.to_string()));
         }
 
-        let mut proto = protocol_for(conn, &def.comms)?;
+        let mut proto = protocol_for(conn, &def.comms).map_err(PollFrameError::Configuration)?;
         let polled_secl = std::cell::Cell::new(None);
         let read_block = || {
             let block = proto
@@ -125,8 +153,8 @@ impl Session {
         }
 
         result.map_err(|e| match e {
-            RealtimeError::Poll(detail) => detail,
-            RealtimeError::NotConnected => "not connected".to_string(),
+            RealtimeError::Poll(detail) => PollFrameError::Link(detail),
+            RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
         })
     }
 

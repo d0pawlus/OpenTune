@@ -234,7 +234,14 @@ describe("App composition: offline tune survives a link disconnect", () => {
       },
     ],
     constants: [
-      { name: "baseFuel", units: "ms", digits: 1, low: 0, high: 25, kind: "Scalar" },
+      {
+        name: "baseFuel",
+        units: "ms",
+        digits: 1,
+        low: 0,
+        high: 25,
+        kind: "Scalar",
+      },
     ],
     tables: [],
     curves: [],

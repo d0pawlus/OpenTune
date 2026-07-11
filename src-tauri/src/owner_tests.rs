@@ -809,6 +809,82 @@ async fn m3_demo_bundled_ini_live_gauges_animate_and_stop() {
     assert_eq!(frames_after, 0, "no frames after stop_realtime");
 }
 
+// ── M1 acceptance: a real poll failure enters reconnect automatically ──────
+
+#[tokio::test]
+async fn realtime_transport_failure_automatically_reconnects_and_resumes() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let first_mark = events.lock().unwrap().len();
+    let _ = await_frame_since(&events, first_mark).await;
+
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+    let restore = Arc::clone(&sim);
+    std::thread::spawn(move || {
+        // Keep the link down long enough for normal polling and at least one
+        // reconnect attempt to observe the failure.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        restore.set_link_dropped(false);
+    });
+
+    for _ in 0..500 {
+        let recovered = {
+            let events = events.lock().unwrap();
+            let slice = &events[before_drop..];
+            slice.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+                )
+            }) && slice.iter().any(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+                )
+            })
+        };
+        if recovered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    {
+        let events = events.lock().unwrap();
+        let slice = &events[before_drop..];
+        let reconnecting = slice
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+                )
+            })
+            .expect("poll failure must emit Reconnecting");
+        let connected = slice
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    OwnerEvent::Connection(ConnectionStateEvent::Connected { .. })
+                )
+            })
+            .expect("restored link must emit Connected");
+        assert!(reconnecting < connected);
+    }
+
+    let after_reconnect = events.lock().unwrap().len();
+    let _ = await_frame_since(&events, after_reconnect).await;
+    send(&tx, |reply| Command::StopRealtime { reply })
+        .await
+        .expect("stop");
+}
+
 // ── 8.2 M3 demo: link-drop recovery — reconnect, reboot re-read, frames resume
 //
 // THE M3 demo: while realtime runs, the ECU reboots and the link drops. The
