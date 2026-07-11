@@ -21,7 +21,7 @@
 // Cell edits are NOT link-gated (M3 decision: only burn/undo/redo are
 // connected-only; setValue-family commands queue behind a reconnect) —
 // mirrors `Field.tsx`.
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { commands, events } from "../../ipc/bindings";
 import type { ConstantDto, TableDto } from "../../ipc/bindings";
 import { useTuneStore } from "../../stores/tune";
@@ -100,6 +100,10 @@ function Editor({ table, constants, locale }: EditorProps) {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"2d" | "3d">("2d");
   const [scaleFactor, setScaleFactor] = useState("1.0");
+  // The draft `<input autoFocus>` steals DOM focus from this surface; every
+  // draft-closing path refocuses it via `closeDraft` below (M4 final-review
+  // fix wave item 6) so the keyboard surface never silently goes dead.
+  const surfaceRef = useRef<HTMLDivElement>(null);
 
   // Fetch-then-merge the three arrays; refetch on every tune_dirty —
   // undo/redo/burn all emit it, keeping the grid honest even after its own
@@ -174,9 +178,17 @@ function Editor({ table, constants, locale }: EditorProps) {
     }
   };
 
+  // Closes the open draft and returns keyboard focus to the surface — the
+  // draft `<input>` (which stole focus via `autoFocus`) is about to unmount,
+  // and nothing else does this (M4 final-review fix wave item 6).
+  const closeDraft = (): void => {
+    setDraft(null);
+    surfaceRef.current?.focus();
+  };
+
   const commitDraft = (): void => {
     if (!draft) return;
-    setDraft(null);
+    closeDraft();
     // Field.tsx rules: empty/NaN drafts revert, never write. Comma accepted
     // as the PL-locale decimal separator, consistent with parseTsv.
     const text = draft.text.trim();
@@ -186,12 +198,23 @@ function Editor({ table, constants, locale }: EditorProps) {
     void applyEdits([{ index, value: next }]);
   };
 
+  // The grid renders display-reversed (top = highest data row; see
+  // TableGrid), but `toTsv`/`pasteEdits` themselves stay display-agnostic
+  // (ascending data-row order — M4 final-review fix wave item 7). Clipboard
+  // content must match what the user SEES, so the flip lives here only:
+  // reversing `toTsv`'s line order on copy, and un-reversing the parsed rows
+  // on paste before handing off to the unchanged `pasteEdits`. A round trip
+  // through the same anchor is then an identity operation.
   const copySelection = () => {
     // WKWebView caveat: clipboard access may need a user gesture — copy is
     // always triggered by Ctrl/Cmd+C, which is one; failures degrade to the
     // error line.
+    const displayOrderTsv = toTsv(grid, rect, digits)
+      .split("\n")
+      .reverse()
+      .join("\n");
     navigator.clipboard
-      .writeText(toTsv(grid, rect, digits))
+      .writeText(displayOrderTsv)
       .catch(() => setError(t("table.clipboardError", locale)));
   };
 
@@ -200,7 +223,8 @@ function Editor({ table, constants, locale }: EditorProps) {
       const text = await navigator.clipboard.readText();
       const data = parseTsv(text);
       if (!data) return;
-      const edits = pasteEdits(grid, { row: rect.r0, col: rect.c0 }, data);
+      const dataOrder = [...data].reverse();
+      const edits = pasteEdits(grid, { row: rect.r0, col: rect.c0 }, dataOrder);
       // Controller policy: paste must not edit non-finite cells (consistent
       // with the five ops). `pasteEdits` is frozen, so filter here on the
       // CURRENT target cell value.
@@ -260,7 +284,7 @@ function Editor({ table, constants, locale }: EditorProps) {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (draft) setDraft(null);
+      if (draft) closeDraft();
       else setSelection({ anchor: selection.focus, focus: selection.focus });
       return;
     }
@@ -322,10 +346,19 @@ function Editor({ table, constants, locale }: EditorProps) {
     }
   };
 
+  // An empty/unparseable factor must be a NO-OP, never factor 0 (M4
+  // final-review fix wave item 5). `Number("")` is 0, not NaN — treat a
+  // blank/whitespace-only input as NaN explicitly (same hazard class
+  // `commitDraft`'s `text === ""` check already guards against) so
+  // `Number.isFinite` alone can gate the button.
+  const scaleFactorText = scaleFactor.trim();
+  const parsedScaleFactor =
+    scaleFactorText === "" ? NaN : Number(scaleFactorText.replace(",", "."));
+  const scaleFactorValid = Number.isFinite(parsedScaleFactor);
+
   const applyScale = () => {
-    const factor = Number(scaleFactor.replace(",", "."));
-    if (Number.isNaN(factor)) return;
-    void applyEdits(scaleRect(grid, rect, factor));
+    if (!scaleFactorValid) return;
+    void applyEdits(scaleRect(grid, rect, parsedScaleFactor));
   };
 
   return (
@@ -343,6 +376,7 @@ function Editor({ table, constants, locale }: EditorProps) {
         onSmooth={() => void applyEdits(smoothRect(grid, rect))}
         onSetEqual={() => void applyEdits(setEqualRect(grid, rect))}
         onApplyScale={applyScale}
+        applyScaleDisabled={!scaleFactorValid}
       />
 
       {error && <p className="te-error">{error}</p>}
@@ -368,6 +402,7 @@ function Editor({ table, constants, locale }: EditorProps) {
         </div>
       ) : (
         <div
+          ref={surfaceRef}
           className="te-surface"
           tabIndex={0}
           role="application"

@@ -22,9 +22,17 @@ export function toTsv(g: Grid, rect: Rect, digits: number): string {
 }
 
 /**
- * Parses TSV text into a numeric grid, or `null` if any cell is not a
- * number. Accepts PL-locale comma decimals ("1,5" -> 1.5). A single trailing
- * blank line (a common paste artifact) is dropped before parsing.
+ * Parses TSV text into a numeric grid, or `null` if any cell is genuinely
+ * non-numeric garbage. Accepts PL-locale comma decimals ("1,5" -> 1.5). A
+ * single trailing blank line (a common paste artifact) is dropped before
+ * parsing.
+ *
+ * A blank/whitespace-only cell parses to `NaN`, not `0` (M4 final-review fix
+ * wave item 8, a controller-sanctioned contract change from the Task 4
+ * "blank -> 0" behavior): `toTsv` itself renders a non-finite cell as blank,
+ * so without this a copied NaN-hole pasted at a different position would
+ * silently parse back to a written `0` on a finite cell. `pasteEdits` below
+ * skips non-finite source values, restoring round-trip fidelity.
  */
 export function parseTsv(text: string): number[][] | null {
   const lines = text.split(/\r?\n/);
@@ -33,7 +41,12 @@ export function parseTsv(text: string): number[][] | null {
   for (const line of lines) {
     const row: number[] = [];
     for (const cell of line.split("\t")) {
-      const n = Number(cell.trim().replace(",", "."));
+      const trimmed = cell.trim();
+      if (trimmed === "") {
+        row.push(NaN);
+        continue;
+      }
+      const n = Number(trimmed.replace(",", "."));
       if (Number.isNaN(n)) return null;
       row.push(n);
     }
@@ -42,7 +55,11 @@ export function parseTsv(text: string): number[][] | null {
   return rows;
 }
 
-/** Builds cell edits from pasting `data` at `at`, clipped to `g`'s bounds. */
+/**
+ * Builds cell edits from pasting `data` at `at`, clipped to `g`'s bounds.
+ * A non-finite SOURCE value (a blank/NaN-hole cell) is skipped rather than
+ * written — the editor separately filters non-finite TARGET cells.
+ */
 export function pasteEdits(g: Grid, at: Cell, data: number[][]): CellEdit[] {
   const edits: CellEdit[] = [];
   for (let r = 0; r < data.length; r++) {
@@ -52,7 +69,9 @@ export function pasteEdits(g: Grid, at: Cell, data: number[][]): CellEdit[] {
     for (let c = 0; c < row.length; c++) {
       const targetCol = at.col + c;
       if (targetCol < 0 || targetCol >= g.cols) continue;
-      edits.push({ index: targetRow * g.cols + targetCol, value: row[c] });
+      const value = row[c];
+      if (!Number.isFinite(value)) continue;
+      edits.push({ index: targetRow * g.cols + targetCol, value });
     }
   }
   return edits;

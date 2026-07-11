@@ -121,6 +121,33 @@ describe("CurveEditor", () => {
     );
   });
 
+  it("committing a draft returns keyboard focus to the grid surface", async () => {
+    // M4 final-review fix wave item 6: TableGrid's draft `<input autoFocus>`
+    // steals focus from `.ce-surface` too (shared component) — must be
+    // refocused on commit, same as TableEditor.
+    const { container } = render(<CurveEditor locale="en" />);
+    await screen.findByRole("grid");
+    const surface = surfaceOf(container);
+    surface.focus();
+
+    fireEvent.keyDown(surface, { key: "ArrowRight" });
+    fireEvent.keyDown(surface, { key: "2" });
+    const input = await screen.findByDisplayValue("2");
+    expect(document.activeElement).toBe(input);
+
+    fireEvent.change(input, { target: { value: "25" } });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" });
+
+    await waitFor(() => expect(ipc.commands.setCells).toHaveBeenCalled());
+    expect(document.activeElement).toBe(surface);
+
+    const before = surface.getAttribute("aria-activedescendant");
+    fireEvent.keyDown(document.activeElement as HTMLElement, {
+      key: "ArrowRight",
+    });
+    expect(surface.getAttribute("aria-activedescendant")).not.toBe(before);
+  });
+
   it("renders the polyline preview with a points attribute for every bin", async () => {
     const { container } = render(<CurveEditor locale="en" />);
     await screen.findByRole("grid");

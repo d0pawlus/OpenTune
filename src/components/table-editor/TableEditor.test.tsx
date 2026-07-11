@@ -200,6 +200,96 @@ describe("TableEditor", () => {
     );
   });
 
+  it("(i) committing a draft returns keyboard focus to the grid surface", async () => {
+    // M4 final-review fix wave item 6: the draft `<input autoFocus>` steals
+    // DOM focus from the `.te-surface`; when the draft unmounts on commit,
+    // nothing refocuses the surface, so focus falls back to `document.body`
+    // and every subsequent keydown (dispatched on whatever the REAL
+    // activeElement is, unlike `fireEvent.keyDown(surface, ...)` on a fixed
+    // reference) is dead.
+    const { container } = render(<TableEditor locale="en" />);
+    await screen.findByRole("grid");
+    const surface = surfaceOf(container);
+    surface.focus();
+
+    fireEvent.keyDown(surface, { key: "5" });
+    const input = await screen.findByDisplayValue("5");
+    expect(document.activeElement).toBe(input); // autoFocus moved real focus
+
+    fireEvent.change(input, { target: { value: "55" } });
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Enter" });
+
+    await waitFor(() => expect(ipc.commands.setCells).toHaveBeenCalled());
+    expect(document.activeElement).toBe(surface);
+
+    // Enter's own "commit + move down" already clamped the active cell at
+    // the bottom edge (row 0), so exercise the OTHER direction to prove a
+    // real move happens post-commit.
+    const before = surface.getAttribute("aria-activedescendant");
+    fireEvent.keyDown(document.activeElement as HTMLElement, {
+      key: "ArrowUp",
+    });
+    expect(surface.getAttribute("aria-activedescendant")).not.toBe(before);
+  });
+
+  it("(g) TSV copy/paste round trip matches the visual (display) row order", async () => {
+    // M4 final-review fix wave item 7: the grid renders display-reversed
+    // (top = highest data row); copy/paste used to serialize/anchor in raw
+    // ascending data-row order, mirroring the block vertically relative to
+    // what the user sees. Select the whole 2x3 grid and copy: the TSV's
+    // FIRST line must be the visually TOP row (data row 1, load 80).
+    const { container } = render(<TableEditor locale="en" />);
+    await screen.findByRole("grid");
+    const surface = surfaceOf(container);
+
+    fireEvent.keyDown(surface, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(surface, { key: "c", ctrlKey: true });
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    const copied = writeText.mock.calls[0][0] as string;
+    const lines = copied.split("\n");
+    expect(lines[0]).toBe("70.0\t75.0\t80.0");
+    expect(lines[1]).toBe("60.0\t61.0\t62.0");
+
+    // Pasting the copied text back at the SAME anchor must be identity.
+    readText.mockResolvedValue(copied);
+    fireEvent.keyDown(surface, { key: "v", ctrlKey: true });
+
+    await waitFor(() =>
+      expect(ipc.commands.setCells).toHaveBeenCalledWith("veTable", [
+        { index: 0, value: 60 },
+        { index: 1, value: 61 },
+        { index: 2, value: 62 },
+        { index: 3, value: 70 },
+        { index: 4, value: 75 },
+        { index: 5, value: 80 },
+      ]),
+    );
+  });
+
+  it("(h) clearing the scale-factor input disables Apply (never sends factor 0)", async () => {
+    // M4 final-review fix wave item 5: `Number("")` is `0`, not `NaN`, so the
+    // old `Number.isNaN` guard let a cleared scale input zero the whole
+    // selection. An empty/unparseable factor must be a no-op — the button
+    // itself is disabled.
+    render(<TableEditor locale="en" />);
+    await screen.findByRole("grid");
+
+    const scaleInput = screen.getByLabelText(
+      "Scale factor",
+    ) as HTMLInputElement;
+    const applyButton = screen.getByRole("button", {
+      name: "Apply",
+    }) as HTMLButtonElement;
+    expect(applyButton.disabled).toBe(false);
+
+    fireEvent.change(scaleInput, { target: { value: "" } });
+    expect(applyButton.disabled).toBe(true);
+
+    fireEvent.click(applyButton);
+    expect(ipc.commands.setCells).not.toHaveBeenCalled();
+  });
+
   it("(f) clicking Interpolate with a multi-cell selection dispatches the Task 4 edits", async () => {
     const { container } = render(<TableEditor locale="en" />);
     await screen.findByRole("grid");

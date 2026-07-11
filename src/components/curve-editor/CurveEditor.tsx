@@ -74,6 +74,10 @@ function Editor({ curve, constants, locale }: EditorProps) {
   const [draft, setDraft] = useState<{ cell: Cell; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const cursorRef = useRef<SVGLineElement | null>(null);
+  // The draft `<input autoFocus>` (shared `TableGrid`) steals DOM focus from
+  // this surface; every draft-closing path refocuses it via `closeDraft`
+  // below (M4 final-review fix wave item 6, mirrors TableEditor).
+  const surfaceRef = useRef<HTMLDivElement>(null);
 
   // Fetch-then-merge [x_bins, y_bins] on mount + every tune_dirty — the
   // TableEditor 5.5 effect verbatim, with two names instead of three.
@@ -180,9 +184,17 @@ function Editor({ curve, constants, locale }: EditorProps) {
     }
   };
 
+  // Closes the open draft and returns keyboard focus to the surface — the
+  // draft `<input>` (which stole focus via `autoFocus`) is about to unmount,
+  // and nothing else does this (M4 final-review fix wave item 6).
+  const closeDraft = (): void => {
+    setDraft(null);
+    surfaceRef.current?.focus();
+  };
+
   const commitDraft = (): void => {
     if (!draft) return;
-    setDraft(null);
+    closeDraft();
     const text = draft.text.trim();
     const next = Number(text.replace(",", "."));
     if (text === "" || Number.isNaN(next)) return;
@@ -255,7 +267,7 @@ function Editor({ curve, constants, locale }: EditorProps) {
     }
     if (e.key === "Escape") {
       e.preventDefault();
-      if (draft) setDraft(null);
+      if (draft) closeDraft();
       else setSelection({ anchor: selection.focus, focus: selection.focus });
       return;
     }
@@ -351,6 +363,7 @@ function Editor({ curve, constants, locale }: EditorProps) {
       </figure>
 
       <div
+        ref={surfaceRef}
         className="ce-surface"
         tabIndex={0}
         role="application"

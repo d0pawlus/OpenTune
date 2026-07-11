@@ -16,6 +16,9 @@ export interface TableToolbarProps {
   onSmooth: () => void;
   onSetEqual: () => void;
   onApplyScale: () => void;
+  /** Disable Apply when `scaleFactor` doesn't parse to a finite number
+   * (empty input included) — never let the button send a factor of 0. */
+  applyScaleDisabled: boolean;
 }
 
 /**
@@ -37,6 +40,7 @@ export function TableToolbar({
   onSmooth,
   onSetEqual,
   onApplyScale,
+  applyScaleDisabled,
 }: TableToolbarProps) {
   return (
     <header className="te-toolbar">
@@ -65,7 +69,11 @@ export function TableToolbar({
             onChange={(e) => onScaleFactorChange(e.target.value)}
           />
         </label>
-        <button type="button" onClick={onApplyScale}>
+        <button
+          type="button"
+          onClick={onApplyScale}
+          disabled={applyScaleDisabled}
+        >
           {t("table.apply", locale)}
         </button>
         <button
