@@ -127,13 +127,23 @@ Poprawki z przeglądu M2/M3 dotykające kodu M2 (gałąź `review/m2-m3`).
   `Session::merge_picks`. Zachowany kontrakt M2: **każdy pick to osobny
   commit na drut** (merge może przerwać się w połowie po zapisaniu
   wcześniejszych picków) — nie batch'ujemy delt wielostronicowych.
-- **Utwardzenie parsera INI (nieblokujące, ale realne paniki).** Odrzucanie
-  niezadeklarowanych stron; sprawdzana arytmetyka offsetów/rozmiarów zamiast
-  `usize *` bez kontroli; pozycyjne `enable`/`visible` w parserze dialogów
-  poprawione (3. token = enable, 4. = visible wg gramatyki TunerStudio);
-  puste pola liczbowe → wartości domyślne zamiast `Number::Expr("")`.
-  `protocol/pages.rs`: kontrolowane błędy zamiast obcinania konwersji
-  rozmiar/id-strony.
+- **Utwardzenie parserów (nieblokujące, ale realne paniki) — utrzymane po
+  mergu na main:** pozycyjne `enable`/`visible` w parserze dialogów (3. token
+  = enable, 4. = visible wg gramatyki TunerStudio); operator potęgowania i
+  unarny `+` w parserze wyrażeń; walidacja offset+width kanałów wyjściowych
+  względem `ochBlockSize`; lepsze diagnostyki preprocesora; `protocol/pages.rs`
+  — kontrolowane błędy zamiast obcinania konwersji rozmiar/id-strony.
+- **Utwardzenie `[Constants]` (offset/size/strona) — ZASTĄPIONE przez M4
+  przy mergu na main.** Oryginalna remediacja odrzucała twardo niezadeklarowane
+  strony i przepełnienia arytmetyki offsetów, oraz mapowała puste pola liczbowe
+  na wartości domyślne. M4 rozwiązuje ten sam problem paniki **łagodnym**
+  parserem: przepełnienie offset/shape → `OffsetCheck::Overflow` (diagnostyka +
+  pominięcie stałej), nie twardy błąd — zgodnie z filozofią ingestii realnego
+  speeduino.ini. Przyjęto wersję M4; strict-reject i jego testy usunięte
+  (patrz nota reconcile w `crates/ini/tests/constants.rs`). Follow-up, jeśli
+  kiedyś potrzebna twarda walidacja: niezadeklarowana strona, zły `pageSize`,
+  puste pole liczbowe (`Number::Expr("")` — rzadki edge-case, nie utrata
+  danych).
 - **Odzysk po panice/reconnekcie w owner-tasku.** Panika w operacji sesji
   czyści sesję, rozbraja realtime i emituje `Disconnected` (koniec fałszywego
   „Connected"); po reconnekcie z rebootem snapshot jest czyszczony przed
