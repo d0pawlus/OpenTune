@@ -1,0 +1,175 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+.datalog {
+  --dl-line: color-mix(in oklch, var(--color-text) 18%, transparent);
+  margin-top: calc(var(--space-md) * 2);
+  padding: var(--space-md);
+  border: 1px solid var(--dl-line);
+  border-radius: 0.6rem;
+  color: var(--color-text);
+}
+
+.datalog h2,
+.datalog h3,
+.datalog h4 {
+  margin: 0.7rem 0;
+}
+
+.dl-offline {
+  margin-top: 0;
+  opacity: 0.75;
+}
+
+.dl-error {
+  color: var(--color-danger);
+}
+
+.dl-two-column,
+.dl-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+  gap: var(--space-md);
+}
+
+.dl-fieldset {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--dl-line);
+  border-radius: 0.45rem;
+}
+
+.dl-fieldset legend {
+  padding: 0 0.35rem;
+  font-weight: 650;
+}
+
+.datalog label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 550;
+}
+
+.datalog input,
+.datalog select,
+.datalog button {
+  min-height: 2rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--dl-line);
+  border-radius: 0.35rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.datalog input[type="text"] {
+  min-width: min(22rem, 70vw);
+}
+
+.datalog input[type="range"] {
+  width: min(32rem, 65vw);
+}
+
+.datalog button {
+  cursor: pointer;
+}
+
+.datalog button:focus-visible,
+.datalog input:focus-visible,
+.datalog select:focus-visible {
+  outline: 3px solid color-mix(in oklch, var(--color-accent) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.datalog button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.dl-recording {
+  border-color: color-mix(in oklch, var(--color-accent) 45%, var(--dl-line));
+}
+
+.dl-playback label:has(input[type="range"]) {
+  flex: 1 1 20rem;
+}
+
+.dl-inline-list,
+.dl-findings {
+  width: 100%;
+  max-height: 12rem;
+  margin: 0.5rem 0 0;
+  padding-left: 1.4rem;
+  overflow: auto;
+}
+
+.dl-inline-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.dl-channel-picker select {
+  min-width: 12rem;
+}
+
+.dl-axis-grid,
+.dl-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.6rem;
+  width: 100%;
+}
+
+.dl-chart {
+  min-width: 0;
+  padding: 0.4rem;
+  border: 1px solid var(--dl-line);
+  border-radius: 0.45rem;
+  overflow-x: auto;
+  background: var(--color-surface);
+}
+
+.dl-analysis {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--dl-line);
+}
+
+.dl-analysis-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+
+.dl-table-wrap {
+  max-width: 100%;
+  overflow: auto;
+}
+
+.datalog table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.datalog th,
+.datalog td {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--dl-line);
+  text-align: right;
+}
+
+.datalog th:first-child {
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .datalog * {
+    scroll-behavior: auto;
+  }
+}

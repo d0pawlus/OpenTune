@@ -118,9 +118,21 @@ impl Session {
         &mut self,
         poller: &mut RealtimePoller,
     ) -> Result<Option<RealtimeFrame>, PollFrameError> {
+        Ok(match self.poll_frame_full(poller)? {
+            Some((frame, emit)) => emit.then_some(frame),
+            None => None,
+        })
+    }
+
+    /// Acquire the complete decoded frame for owner-side consumers and return
+    /// the UI coalescing decision separately.
+    pub fn poll_frame_full(
+        &mut self,
+        poller: &mut RealtimePoller,
+    ) -> Result<Option<(RealtimeFrame, bool)>, PollFrameError> {
         let Session { conn, def, .. } = self;
         let Some(conn) = conn.as_mut() else {
-            return Ok(None); // offline: no live link, so no frame to report
+            return Ok(None); // offline: no live link, so no frame to acquire
         };
         let len = u16::try_from(def.comms.och_block_size).map_err(|_| {
             PollFrameError::Configuration(format!(
@@ -143,7 +155,7 @@ impl Session {
             }
             Ok(block)
         };
-        let result = poller.poll_once(read_block, def.as_ref());
+        let result = poller.poll_once_full(read_block, def.as_ref());
 
         if let Some(secl) = polled_secl.get() {
             match conn {
@@ -152,10 +164,12 @@ impl Session {
             }
         }
 
-        result.map_err(|e| match e {
-            RealtimeError::Poll(detail) => PollFrameError::Link(detail),
-            RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
-        })
+        result
+            .map(Some)
+            .map_err(|e| match e {
+                RealtimeError::Poll(detail) => PollFrameError::Link(detail),
+                RealtimeError::NotConnected => PollFrameError::Link("not connected".to_string()),
+            })
     }
 
     /// Set a constant, writing the changed bytes live to the ECU. Validated on

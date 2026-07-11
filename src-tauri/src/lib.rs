@@ -7,6 +7,8 @@ pub mod connection;
 pub mod dto;
 pub mod events;
 mod layout;
+mod log_bridge;
+mod log_commands;
 mod offline_commands;
 pub mod owner;
 mod realtime_commands;
@@ -50,6 +52,16 @@ fn build_specta() -> Builder<tauri::Wry> {
             analysis_commands::stop_capture,
             analysis_commands::capture_status,
             analysis_commands::run_ve_analyze,
+            log_commands::start_log,
+            log_commands::stop_log,
+            log_commands::add_log_marker,
+            log_commands::log_status,
+            log_commands::open_log,
+            log_commands::get_log_data,
+            log_commands::save_log,
+            log_commands::log_stats,
+            log_commands::detect_anomaly,
+            log_commands::virtual_dyno,
             layout::save_layout,
             layout::load_layout,
         ])
@@ -276,6 +288,32 @@ mod binding_gen {
             "GaugeDto",
             "FrontPageDto",
             "IndicatorDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_m5_log_and_analysis_api() {
+        let contents = export_and_read();
+        for needle in [
+            "startLog",
+            "stopLog",
+            "addLogMarker",
+            "logStatus",
+            "openLog",
+            "getLogData",
+            "saveLog",
+            "logStats",
+            "detectAnomaly",
+            "virtualDyno",
+            "LogDataDto",
+            "LogStatsReportDto",
+            "AnomalyReportDto",
+            "VirtualDynoReportDto",
         ] {
             assert!(
                 contents.contains(needle),

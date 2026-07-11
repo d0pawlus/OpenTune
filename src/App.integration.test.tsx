@@ -3,10 +3,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, fireEvent } from "@testing-library/react";
 import { Dashboard } from "./components/dashboard/Dashboard";
 import { TunePanel } from "./components/dialogs/TunePanel";
+import { DatalogPanel } from "./components/datalog/DatalogPanel";
 import * as ipc from "./ipc/bindings";
 import type { ConnectionStateEvent, DefinitionDto } from "./ipc/bindings";
 import { useConnectionStore } from "./stores/connection";
 import { useRealtimeStore } from "./stores/realtime";
+import { useDatalogStore } from "./stores/datalog";
 import { useTuneStore } from "./stores/tune";
 
 vi.mock("./ipc/bindings", () => ({
@@ -21,6 +23,17 @@ vi.mock("./ipc/bindings", () => ({
     saveLayout: vi.fn(),
     startRealtime: vi.fn(),
     stopRealtime: vi.fn(),
+    // Offline datalog panel.
+    logStatus: vi.fn(),
+    startLog: vi.fn(),
+    stopLog: vi.fn(),
+    addLogMarker: vi.fn(),
+    openLog: vi.fn(),
+    getLogData: vi.fn(),
+    saveLog: vi.fn(),
+    logStats: vi.fn(),
+    detectAnomaly: vi.fn(),
+    virtualDyno: vi.fn(),
   },
   events: {
     tuneDirtyEvent: { listen: vi.fn(() => Promise.resolve(() => {})) },
@@ -74,6 +87,7 @@ function AppPanels() {
     <>
       <Dashboard locale="en" theme="default" />
       <TunePanel locale="en" />
+      <DatalogPanel locale="en" />
     </>
   );
 }
@@ -101,6 +115,7 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
     });
     useTuneStore.getState().reset();
     useRealtimeStore.getState().clear();
+    useDatalogStore.getState().reset();
     vi.mocked(ipc.commands.getDefinition).mockResolvedValue({
       status: "ok",
       data: definition,
@@ -129,6 +144,10 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
       status: "ok",
       data: null,
     });
+    vi.mocked(ipc.commands.logStatus).mockResolvedValue({
+      status: "ok",
+      data: { active: false, path: null, format: null, record_count: 0 },
+    });
   });
 
   afterEach(() => {
@@ -137,6 +156,7 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
     useConnectionStore.setState({ connectionState: null });
     useTuneStore.getState().reset();
     useRealtimeStore.getState().clear();
+    useDatalogStore.getState().reset();
   });
 
   it("keeps both panels mounted and the tune store intact across a reconnect glitch", async () => {
@@ -193,7 +213,11 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
 
     setConnectionState({ type: "disconnected" });
 
-    expect(container.firstChild).toBeNull();
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: "Tune" })).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "Datalogs & analysis" }),
+    ).toBeTruthy();
     expect(useTuneStore.getState().definition).toBeNull();
     // The dashboard cleared the realtime store on unmount — stale channels
     // must not repaint on the next connect.
@@ -205,7 +229,11 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
 
     setConnectionState({ type: "failed", reason: "retries exhausted" });
 
-    expect(container.firstChild).toBeNull();
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.queryByRole("heading", { name: "Tune" })).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "Datalogs & analysis" }),
+    ).toBeTruthy();
     expect(useTuneStore.getState().definition).toBeNull();
   });
 

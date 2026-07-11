@@ -47,14 +47,25 @@ impl RealtimePoller {
         read_block: impl FnOnce() -> Result<Vec<u8>, RealtimeError>,
         def: &Definition,
     ) -> Result<Option<RealtimeFrame>, RealtimeError> {
+        let (frame, emit) = self.poll_once_full(read_block, def)?;
+        Ok(emit.then_some(frame))
+    }
+
+    /// Acquire and decode every tick while separately reporting whether the UI
+    /// emission gate opened. Datalogging uses the frame regardless of `emit`.
+    pub fn poll_once_full(
+        &mut self,
+        read_block: impl FnOnce() -> Result<Vec<u8>, RealtimeError>,
+        def: &Definition,
+    ) -> Result<(RealtimeFrame, bool), RealtimeError> {
         let block = read_block()?;
         let frame = decode_frame(def, &block);
         let now = Instant::now();
         match self.last_emit {
-            Some(last) if now.duration_since(last) < self.min_emit_interval => Ok(None),
+            Some(last) if now.duration_since(last) < self.min_emit_interval => Ok((frame, false)),
             _ => {
                 self.last_emit = Some(now);
-                Ok(Some(frame))
+                Ok((frame, true))
             }
         }
     }

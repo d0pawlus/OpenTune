@@ -508,6 +508,220 @@ pub struct VeAnalysisReportDto {
     pub used_samples: u32,
 }
 
+// ── M5: datalog and deterministic log analysis ─────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum LogFormatDto {
+    Csv,
+    MlgV1,
+}
+
+impl From<LogFormatDto> for opentune_datalog::LogFormat {
+    fn from(value: LogFormatDto) -> Self {
+        match value {
+            LogFormatDto::Csv => Self::Csv,
+            LogFormatDto::MlgV1 => Self::MlgV1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct LogSummaryDto {
+    pub fields: Vec<LogFieldDto>,
+    pub record_count: u32,
+    pub marker_count: u32,
+    pub duration_ms: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct LogFieldDto {
+    pub name: String,
+    pub units: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct MarkerDto {
+    pub record_index: u32,
+    pub t_ms: f64,
+    pub text: String,
+}
+
+/// Bounded columnar transfer: no object allocation per data point.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct LogDataDto {
+    pub offset: u32,
+    pub total_records: u32,
+    pub t_ms: Vec<f64>,
+    /// Field-major columns; non-finite/missing values become `null`.
+    pub columns: Vec<Vec<Option<f64>>>,
+    pub markers: Vec<MarkerDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct LogStatusDto {
+    pub active: bool,
+    pub path: Option<String>,
+    pub format: Option<LogFormatDto>,
+    pub record_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum ComparisonDto {
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+    Equal,
+    NotEqual,
+}
+
+impl From<ComparisonDto> for opentune_analysis::Comparison {
+    fn from(value: ComparisonDto) -> Self {
+        match value {
+            ComparisonDto::LessThan => Self::LessThan,
+            ComparisonDto::LessOrEqual => Self::LessOrEqual,
+            ComparisonDto::GreaterThan => Self::GreaterThan,
+            ComparisonDto::GreaterOrEqual => Self::GreaterOrEqual,
+            ComparisonDto::Equal => Self::Equal,
+            ComparisonDto::NotEqual => Self::NotEqual,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SampleFilterDto {
+    pub channel: String,
+    pub comparison: ComparisonDto,
+    pub value: f64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct LogStatsParamsDto {
+    pub channels: Vec<String>,
+    pub reject_when: Vec<SampleFilterDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct SummaryStatDto {
+    pub channel: String,
+    pub finite_count: u32,
+    pub missing_count: u32,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub mean: Option<f64>,
+    pub std_dev: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct ReasonCountDto {
+    pub reason: String,
+    pub count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct FilterDecisionDto {
+    pub row: u32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct LogStatsReportDto {
+    pub total_rows: u32,
+    pub accepted_rows: u32,
+    pub stats: Vec<SummaryStatDto>,
+    pub filtered: Vec<ReasonCountDto>,
+    pub decisions: Vec<FilterDecisionDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SensorThresholdDto {
+    pub channel: String,
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct AnomalyThresholdsDto {
+    pub sensors: Vec<SensorThresholdDto>,
+    pub afr_channel: String,
+    pub lean_afr: f64,
+    pub lean_min_rpm: f64,
+    pub rpm_channel: String,
+    pub load_channel: String,
+    pub lean_min_load: f64,
+    pub knock_channel: String,
+    pub knock_threshold: f64,
+    pub knock_min_rpm: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub enum AnomalyKindDto {
+    SensorDropout,
+    LeanSpike,
+    Knock,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct AnomalyDto {
+    pub row: u32,
+    pub t_ms: f64,
+    pub kind: AnomalyKindDto,
+    pub channel: String,
+    pub value: Option<f64>,
+    pub threshold: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct AnomalyReportDto {
+    pub inspected_rows: u32,
+    pub anomalies: Vec<AnomalyDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct VirtualDynoParamsDto {
+    pub speed_channel: String,
+    pub rpm_channel: String,
+    pub mass_kg: f64,
+    pub drag_coefficient: f64,
+    pub frontal_area_m2: f64,
+    pub rolling_resistance: f64,
+    pub drivetrain_loss: f64,
+    pub smoothing_window: u32,
+    pub air_density_kg_m3: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct DynoPointDto {
+    pub row: u32,
+    pub t_ms: f64,
+    pub speed_m_s: f64,
+    pub rpm: f64,
+    pub acceleration_m_s2: f64,
+    pub inertial_force_n: f64,
+    pub aero_force_n: f64,
+    pub rolling_force_n: f64,
+    pub wheel_power_w: f64,
+    pub wheel_hp: f64,
+    pub estimated_engine_power_w: f64,
+    pub estimated_engine_hp: f64,
+    pub estimated_engine_torque_nm: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct DynoConditionDto {
+    pub row: u32,
+    pub accepted: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct VirtualDynoReportDto {
+    pub points: Vec<DynoPointDto>,
+    pub conditions: Vec<DynoConditionDto>,
+    pub assumptions: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
