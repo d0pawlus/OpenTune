@@ -33,6 +33,17 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
     // the whole reason Wall #1 exists), so this ordering is a no-op there;
     // it only matters for a hypothetical/test file declaring both (see
     // `tests/parse_comms.rs`'s pinning test).
+    //
+    // `#if`/`#else` gates are resolved first, with the same empty
+    // active-symbol set `parse_definition` uses, so both entry points read
+    // the same live branches. On raw text the scattered scan used to
+    // collect keys from EVERY branch and last-wins-resolve `blockingFactor`
+    // to the dead trailing `#if COMMS_COMPAT` value (121) instead of the
+    // `#else`'s 251 on the real speeduino.ini. Idempotent when the caller
+    // already preprocessed (no directives remain).
+    let preprocessed = crate::preprocess(ini_text, &std::collections::HashSet::new());
+    let ini_text = preprocessed.as_str();
+
     let mut kv = extract_scattered_comms(ini_text);
     kv.extend(extract_comms_section(ini_text));
 

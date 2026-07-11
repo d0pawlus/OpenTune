@@ -153,3 +153,20 @@ fn parses_tuner_studio_section_alias() {
     assert_eq!(c.signature, "rusEFI v1.0");
     assert_eq!(c.blocking_factor, 64);
 }
+
+#[test]
+fn raw_real_ini_resolves_scattered_keys_from_live_if_branches() {
+    // Final-review finding: called on RAW (unpreprocessed) text, parse_comms
+    // used to collect scattered keys from EVERY `#if` branch and resolve
+    // last-wins to the dead trailing `#if COMMS_COMPAT` value
+    // (blockingFactor 121) instead of the `#else` branch's 251 that
+    // parse_definition yields on the same file. parse_comms now preprocesses
+    // internally (same empty symbol set as parse_definition), so both entry
+    // points agree.
+    let raw = include_str!("fixtures/speeduino-real-0832dc1d.ini");
+    let comms = parse_comms(raw).expect("raw real INI parses");
+    assert_eq!(
+        comms.blocking_factor, 251,
+        "raw-text entry point must match parse_definition's preprocessed value"
+    );
+}
