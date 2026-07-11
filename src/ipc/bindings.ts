@@ -70,6 +70,29 @@ export const commands = {
 	 */
 	mergeTune: (picks: string[]) => typedError<null, string>(__TAURI_INVOKE("merge_tune", { picks })),
 	/**
+	 *  Start a fresh offline session with a blank tune built from the INI at
+	 *  `ini_path` (no ECU link). Returns the parsed definition for the frontend
+	 *  to render against. Replaces any current session only if the INI parses.
+	 */
+	newTune: (iniPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("new_tune", { iniPath })),
+	/**
+	 *  Open a `.msq` tune file offline: build a session from `ini_path`, then
+	 *  load `msq_path` into it (signature-checked). Returns the parsed
+	 *  definition. Replaces any current session only if the INI and `.msq` load.
+	 */
+	openTune: (iniPath: string, msqPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("open_tune", { iniPath, msqPath })),
+	/**
+	 *  Save the current tune to `path` as a `.msq` file. Errors if no tune is
+	 *  loaded or the file cannot be written.
+	 */
+	saveTune: (path: string) => typedError<null, string>(__TAURI_INVOKE("save_tune", { path })),
+	/**
+	 *  Push the entire tune to the ECU: write every page's bytes, then burn.
+	 *  Used by the offline "Write to ECU" action, which has no read baseline to
+	 *  diff against. Requires a live connection (attach or connect first).
+	 */
+	writeTuneToEcu: () => typedError<null, string>(__TAURI_INVOKE("write_tune_to_ecu")),
+	/**
 	 *  Start the 25 Hz realtime poll loop (frames are emitted coalesced to
 	 *  ≤30 Hz as `RealtimeFrameEvent`s).
 	 */

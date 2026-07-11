@@ -5,6 +5,7 @@ import { useConnectionStore } from "./stores/connection";
 import { useRealtimeStore } from "./stores/realtime";
 import { Connect } from "./components/Connect";
 import { Dashboard } from "./components/dashboard/Dashboard";
+import { OfflinePanel } from "./components/offline/OfflinePanel";
 import { TunePanel } from "./components/dialogs/TunePanel";
 import type { Theme } from "./components/gauges/GaugeCanvas";
 import { t, type Locale } from "./i18n";
@@ -73,6 +74,8 @@ function App() {
       <p>heartbeat: {lastSeq ?? "—"}</p>
 
       <Connect locale={locale} />
+
+      <OfflinePanel locale={locale} />
 
       <Dashboard locale={locale} theme={theme} />
 

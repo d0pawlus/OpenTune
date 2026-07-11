@@ -266,6 +266,15 @@ impl Tune {
         &self.pages[self.page_index(page)]
     }
 
+    /// The definition this tune's pages/constants are shaped by.
+    ///
+    /// Public accessor for out-of-crate consumers (e.g. `project`'s `.msq`
+    /// read/write) that need the signature, pages, and constants but must
+    /// not reach into `Tune`'s private byte state.
+    pub fn definition(&self) -> &Definition {
+        &self.def
+    }
+
     /// Index into `self.pages` for a page **number**.
     ///
     /// # Panics

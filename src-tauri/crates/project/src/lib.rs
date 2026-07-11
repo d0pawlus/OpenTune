@@ -1,2 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! opentune-project — placeholder crate (M0). Filled in a later milestone.
+//! Project-file persistence. Currently: `.msq` tune read/write (offline tuning).
+//! Full project bundles (INI + tune + dashboard + settings) remain M6.
+
+pub mod msq;

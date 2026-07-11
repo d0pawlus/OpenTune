@@ -121,6 +121,30 @@ pub enum Command {
     DebugSimulator {
         reply: Reply<Arc<opentune_simulator::EcuSimulator>>,
     },
+    /// Build a fresh offline session (no ECU link) around a blank tune from
+    /// `ini_path` (M4 Task 3 — offline tune lifecycle).
+    NewTune {
+        ini_path: String,
+        reply: Reply<DefinitionDto>,
+    },
+    /// Build a fresh offline session and load a `.msq` into its tune
+    /// (M4 Task 3 — offline tune lifecycle).
+    OpenTune {
+        ini_path: String,
+        msq_path: String,
+        reply: Reply<DefinitionDto>,
+    },
+    /// Serialize the current tune to `.msq` at `path` (M4 Task 3 — offline
+    /// tune lifecycle).
+    SaveTune {
+        path: String,
+        reply: Reply<()>,
+    },
+    /// Push the entire tune to the ECU: write every page, then burn (M4
+    /// Task 4 — offline "Write to ECU"). Requires a live connection.
+    WriteTuneToEcu {
+        reply: Reply<()>,
+    },
 }
 
 /// An event the owner wants delivered to the frontend. Decouples the loop
@@ -238,7 +262,18 @@ impl Owner {
                 let _ = reply.send(self.connect(source).await);
             }
             Command::Disconnect { reply } => {
-                self.session = None;
+                // An offline-origin tune must SURVIVE disconnect (design spec
+                // §"Disconnect while editing"): drop the live link but keep the
+                // session so the tune stays editable/saveable in offline mode.
+                // An online (FRESH-read) tune is destroyed as before, so a
+                // later connect FRESH-reads rather than ATTACHing a stale tune.
+                match self.session.take() {
+                    Some(mut s) if s.offline_origin && s.tune.is_some() => {
+                        s.conn = None;
+                        self.session = Some(s);
+                    }
+                    _ => {} // online (or empty) session: dropped by `take`
+                }
                 // Realtime is explicit-start only — a fresh connection must
                 // not silently resume a previous session's polling.
                 self.polling = false;
@@ -381,13 +416,42 @@ impl Owner {
             Command::DebugSimulator { reply } => {
                 let r = match &self.session {
                     Some(Session {
-                        conn: ActiveConnection::Sim { simulator, .. },
+                        conn: Some(ActiveConnection::Sim { simulator, .. }),
                         ..
                     }) => Ok(Arc::clone(simulator)),
                     Some(_) => Err("not a simulator connection".to_owned()),
                     None => Err(NOT_CONNECTED.to_owned()),
                 };
                 let _ = reply.send(r);
+            }
+            Command::NewTune { ini_path, reply } => {
+                let _ = reply.send(self.new_tune(ini_path).await);
+            }
+            Command::OpenTune {
+                ini_path,
+                msq_path,
+                reply,
+            } => {
+                let _ = reply.send(self.open_tune(ini_path, msq_path).await);
+            }
+            Command::SaveTune { path, reply } => {
+                let r = self
+                    .with_session(move |s| {
+                        let tune = s
+                            .tune
+                            .as_ref()
+                            .ok_or_else(|| crate::session::NO_TUNE.to_string())?;
+                        let xml = opentune_project::msq::tune_to_msq(tune);
+                        std::fs::write(&path, xml)
+                            .map_err(|e| format!("cannot write `{path}`: {e}"))
+                    })
+                    .await;
+                let _ = reply.send(r);
+            }
+            Command::WriteTuneToEcu { reply } => {
+                let r = self.with_session(Session::write_all_to_ecu).await;
+                self.emit_dirty(&r);
+                let _ = reply.send(r.map(|_| ()));
             }
         }
     }
@@ -476,19 +540,48 @@ impl Owner {
         }
     }
 
-    /// Tear down any current session, then build a fresh one: parse the
-    /// definition, open the transport, and run the handshake (all blocking).
+    /// Connect to an ECU. Branches on whether an offline tune is already
+    /// loaded:
+    /// - **ATTACH**: an offline session (`conn: None`, `tune: Some`) is kept
+    ///   as-is — only the live link is added, after the ECU's signature is
+    ///   verified against the offline tune's INI. The user's offline edits
+    ///   are never overwritten by a read.
+    /// - **FRESH**: no offline tune is loaded (or the session already has a
+    ///   connection) — tear down and build a brand-new session, reading the
+    ///   tune from the ECU (unchanged M2/M3 behavior).
+    ///
     /// `Connecting`/`Connected` are emitted from inside the handshake so a
-    /// slow serial connect still shows live progress.
+    /// slow serial connect still shows live progress either way.
     async fn connect(&mut self, source: ConnectSource) -> Result<(), String> {
-        self.session = None;
-        // Realtime is explicit-start only: a fresh session never inherits a
-        // previous session's polling (same rule as Disconnect).
-        self.polling = false;
-        self.poller = None;
-        // Nor a previous session's capture (Task 8, same rule).
-        self.capture = None;
-        self.capturing = false;
+        // ATTACH: an offline tune is loaded — keep it, just add the live link
+        // (never overwrite the user's unsaved offline edits with an ECU read).
+        if matches!(&self.session, Some(s) if s.conn.is_none() && s.tune.is_some()) {
+            let mut session = self.session.take().expect("checked by matches! above");
+            let emit = Arc::clone(&self.emit);
+            // Always hand the session back (tuple pattern, same as
+            // `with_session`/`simulate_link_drop`): a *failed* attach — the
+            // signature guard rejecting a mismatched ECU, or `connect_serial`
+            // erroring on a bad port — must leave the user's unsaved offline
+            // tune intact, never destroyed. Only a genuine task panic loses it.
+            let (session, r) = tokio::task::spawn_blocking(move || {
+                let r = ops::attach_connection(&mut session, source, &emit);
+                (session, r)
+            })
+            .await
+            .map_err(|e| format!("attach panicked: {e}"))?;
+            self.session = Some(session);
+            // A refused attach may have already emitted `Connected` (serial
+            // `connect_serial` connects before the signature guard rejects) —
+            // correct the UI back to disconnected so it doesn't stay stuck on
+            // a false "Connected". The offline tune itself survived above.
+            if r.is_err() {
+                (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
+            }
+            return r;
+        }
+        // FRESH: no offline tune — tear down (incl. polling/capture) and build
+        // a brand-new session, reading the tune from the ECU.
+        self.reset_session();
         let emit = Arc::clone(&self.emit);
         let session = tokio::task::spawn_blocking(move || build_session(source, &emit))
             .await
@@ -526,6 +619,60 @@ impl Owner {
             (self.emit)(OwnerEvent::TuneDirty(ev.clone()));
         }
         result.map(|_| event)
+    }
+
+    /// Tear down the current session and any realtime polling state — the
+    /// shared body of `new_tune`/`open_tune`: an offline session never
+    /// inherits a previous session's live link or polling (same rule as
+    /// `Disconnect`/`connect`).
+    ///
+    /// If the torn-down session held a live link, emit `Disconnected` so the
+    /// UI doesn't keep showing a false "connected" after e.g. creating a new
+    /// offline tune while connected.
+    fn reset_session(&mut self) {
+        let had_link = matches!(&self.session, Some(s) if s.conn.is_some());
+        self.session = None;
+        self.polling = false;
+        self.poller = None;
+        // A replaced session never inherits a previous session's capture
+        // (same M3 polling rule, Task 8) — matches the Disconnect teardown.
+        self.capture = None;
+        self.capturing = false;
+        if had_link {
+            (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
+        }
+    }
+
+    /// Build a blank offline tune from `ini_path` and make it the current
+    /// session. Built off-loop first — a bad INI must not wipe the user's
+    /// current session before the replacement is known to succeed.
+    async fn new_tune(&mut self, ini_path: String) -> Result<DefinitionDto, String> {
+        let session = tokio::task::spawn_blocking(move || ops::build_offline_session(&ini_path))
+            .await
+            .map_err(|e| format!("new_tune panicked: {e}"))??;
+        let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
+        self.session = Some(session);
+        Ok(dto)
+    }
+
+    /// Build an offline tune from `ini_path` with a `.msq` loaded into it,
+    /// and make it the current session. Same build-first ordering as
+    /// [`Self::new_tune`].
+    async fn open_tune(
+        &mut self,
+        ini_path: String,
+        msq_path: String,
+    ) -> Result<DefinitionDto, String> {
+        let session = tokio::task::spawn_blocking(move || {
+            ops::build_offline_session_from_msq(&ini_path, &msq_path)
+        })
+        .await
+        .map_err(|e| format!("open_tune panicked: {e}"))??;
+        let dto = DefinitionDto::from(session.def.as_ref());
+        self.reset_session();
+        self.session = Some(session);
+        Ok(dto)
     }
 }
 

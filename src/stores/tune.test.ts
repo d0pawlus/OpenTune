@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useTuneStore } from "./tune";
 import * as ipc from "../ipc/bindings";
-import type { TuneDirtyEvent, Value } from "../ipc/bindings";
+import type { DefinitionDto, TuneDirtyEvent, Value } from "../ipc/bindings";
 
 // Mock the IPC module: the store calls `commands.setValue`/`setCells` for
 // live writes.
@@ -170,5 +170,43 @@ describe("tune store", () => {
     expect(useTuneStore.getState().activeCurve).toBe("curve1");
     expect(useTuneStore.getState().activeDialog).toBeNull();
     expect(useTuneStore.getState().activeTable).toBeNull();
+  });
+});
+
+const DEF = {
+  signature: "x",
+  menus: [],
+  dialogs: [],
+  constants: [],
+  tables: [],
+  curves: [],
+  gauges: [],
+  frontpage: { gaugeSlots: [], indicators: [] },
+} as unknown as DefinitionDto;
+
+describe("tune store offline flag", () => {
+  beforeEach(() => useTuneStore.getState().reset());
+
+  it("is offline=false initially", () => {
+    expect(useTuneStore.getState().offline).toBe(false);
+    expect(useTuneStore.getState().definition).toBeNull();
+  });
+
+  it("setOfflineDefinition marks the tune offline", () => {
+    useTuneStore.getState().setOfflineDefinition(DEF);
+    expect(useTuneStore.getState().offline).toBe(true);
+    expect(useTuneStore.getState().definition).not.toBeNull();
+  });
+
+  it("setDefinition (online) is not offline", () => {
+    useTuneStore.getState().setDefinition(DEF);
+    expect(useTuneStore.getState().offline).toBe(false);
+  });
+
+  it("reset clears offline + definition", () => {
+    useTuneStore.getState().setOfflineDefinition(DEF);
+    useTuneStore.getState().reset();
+    expect(useTuneStore.getState().offline).toBe(false);
+    expect(useTuneStore.getState().definition).toBeNull();
   });
 });
