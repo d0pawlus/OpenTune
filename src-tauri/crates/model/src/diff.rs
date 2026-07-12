@@ -131,40 +131,71 @@ pub fn merge(base: &mut Tune, incoming: &Tune, picks: &[String]) {
 
 /// Apply field- or cell-level picks from `incoming` to `base`.
 ///
-/// Invalid names, non-array `Cells` picks, and out-of-range indices degrade
-/// per pick: valid selected cells still land, while a pick with no valid
-/// changes records no edit.
+/// Invalid names and non-array `Cells` picks degrade per pick: an `All` pick
+/// on an unresolvable/rejected name is a no-op; a `Cells` pick on a
+/// non-array or unknown name is a no-op too. Out-of-bounds cell indices
+/// within a valid `Cells` pick are skipped individually — the pick's other,
+/// in-bounds indices still land.
+///
+/// `Cells` picks are applied through [`Tune::set_cells`], which validates
+/// and encodes only the touched indices. This matters because `base` may
+/// legitimately hold cells outside the constant's current `[low, high]`
+/// range (a stale tune vs. a newer/tighter INI — `Tune::load_page` never
+/// range-checks): such an untouched cell must never block a pick that edits
+/// a *different*, in-range cell. Whole-array revalidation (the old
+/// `base.set(name, whole_array)` path) would range-check every element,
+/// including untouched ones, and silently drop the entire pick.
 pub fn merge_picks(base: &mut Tune, incoming: &Tune, picks: &[MergePick]) {
     for pick in picks {
         let name = pick.name();
-        let value = match pick {
-            MergePick::All(_) => incoming.get(name),
-            MergePick::Cells { indices, .. } => {
-                let (Ok(Value::Array(mut current)), Ok(Value::Array(incoming))) =
-                    (base.get(name), incoming.get(name))
-                else {
+        match pick {
+            MergePick::All(_) => {
+                let Ok(value) = incoming.get(name) else {
                     continue;
                 };
-                let mut changed = false;
-                for &index in indices {
-                    let (Some(dst), Some(&src)) = (current.get_mut(index), incoming.get(index))
-                    else {
-                        continue;
-                    };
-                    if *dst != src {
-                        *dst = src;
-                        changed = true;
-                    }
-                }
-                if !changed {
+                let _ = base.set(name, value);
+            }
+            MergePick::Cells { indices, .. } => {
+                let Some(cells) = changed_cells(base, incoming, name, indices) else {
+                    continue;
+                };
+                if cells.is_empty() {
                     continue;
                 }
-                Ok(Value::Array(current))
+                let _ = base.set_cells(name, &cells);
             }
-        };
-        let Ok(value) = value else {
-            continue;
-        };
-        let _ = base.set(name, value);
+        }
     }
+}
+
+/// The `(index, value)` pairs among `indices` where `incoming`'s array cell
+/// differs from `base`'s — ready to hand to [`Tune::set_cells`]. `None` when
+/// `name` doesn't resolve to an array on both tunes (unknown name, type
+/// mismatch, or the shared-`Definition` precondition doesn't hold). Indices
+/// out of bounds on either side, or that don't fit in a `u32`, are skipped
+/// rather than failing the whole pick.
+fn changed_cells(
+    base: &Tune,
+    incoming: &Tune,
+    name: &str,
+    indices: &[usize],
+) -> Option<Vec<(u32, f64)>> {
+    let (Value::Array(current), Value::Array(incoming)) =
+        (base.get(name).ok()?, incoming.get(name).ok()?)
+    else {
+        return None;
+    };
+    Some(
+        indices
+            .iter()
+            .filter_map(|&index| {
+                let &src = incoming.get(index)?;
+                let &dst = current.get(index)?;
+                if dst == src {
+                    return None;
+                }
+                u32::try_from(index).ok().map(|i| (i, src))
+            })
+            .collect(),
+    )
 }

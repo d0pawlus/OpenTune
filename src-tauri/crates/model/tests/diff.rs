@@ -9,13 +9,26 @@
 
 mod common;
 
-use common::{scalar, tune};
+use common::{load1, scalar, tune};
 use opentune_ini::{ConstantKind, Endianness, Number, ScalarType, Shape};
 use opentune_model::{diff, merge, merge_picks, CellDiff, MergePick, Value};
 
 /// A 2x2 `U08` array constant ("map") at offset 8, scale 1.0.
 fn table_const() -> opentune_ini::ConstantDef {
     let mut c = scalar("map", ScalarType::U08, 8, 1.0, 0.0, 255.0);
+    c.kind = ConstantKind::Array {
+        elem: ScalarType::U08,
+        shape: Shape { rows: 2, cols: 2 },
+    };
+    c
+}
+
+/// A 2x2 `U08` array constant ("map") at offset 0 with a narrower `[0, 100]`
+/// range — for provoking an untouched, out-of-declared-range cell the same
+/// way `model/tests/tune.rs`'s
+/// `set_cells_untouched_out_of_range_cell_does_not_block_other_edits` does.
+fn narrow_table_const() -> opentune_ini::ConstantDef {
+    let mut c = scalar("map", ScalarType::U08, 0, 1.0, 0.0, 100.0);
     c.kind = ConstantKind::Array {
         elem: ScalarType::U08,
         shape: Shape { rows: 2, cols: 2 },
@@ -284,4 +297,51 @@ fn merge_cell_pick_ignores_invalid_indices_and_non_arrays() {
         Value::Array(vec![0.0, 0.0, 0.0, 0.0])
     );
     assert_eq!(base.get("rpmK").unwrap(), Value::Scalar(0.0));
+}
+
+#[test]
+fn merge_cells_pick_lands_despite_an_untouched_out_of_range_cell() {
+    // M2/M3 review fix wave item 2 — mirrors
+    // `set_cells_untouched_out_of_range_cell_does_not_block_other_edits`
+    // (model/tests/tune.rs) at the merge layer. `base`'s cell 1 is outside
+    // the constant's declared [0, 100] range (a stale tune vs. a newer/
+    // tighter INI is a legitimate state — `load_page` never range-checks).
+    // A `Cells` pick on a DIFFERENT, in-range cell (index 3) must still
+    // land: applying the pick through `Tune::set_cells` validates only the
+    // touched cell, unlike the old `base.set(name, whole_array)` path which
+    // range-checked every element and silently dropped the whole pick.
+    let map = narrow_table_const();
+    let mut base = tune(Endianness::Little, vec![map.clone()]);
+    load1(&mut base, &[0, 200, 0, 0]); // cell 1 = 200.0, outside [0, 100]
+
+    let mut incoming = tune(Endianness::Little, vec![map]);
+    incoming
+        .set("map", Value::Array(vec![0.0, 0.0, 0.0, 55.0]))
+        .unwrap();
+
+    merge_picks(
+        &mut base,
+        &incoming,
+        &[MergePick::Cells {
+            name: "map".to_string(),
+            indices: vec![3],
+        }],
+    );
+
+    assert_eq!(
+        base.get("map").unwrap(),
+        Value::Array(vec![0.0, 200.0, 0.0, 55.0]),
+        "the picked in-range cell lands; the untouched out-of-range cell is unaffected"
+    );
+    assert_eq!(
+        base.page_bytes(1)[1],
+        200,
+        "the untouched out-of-range cell's bytes stay byte-identical"
+    );
+
+    assert!(base.undo(), "one gesture = one undo step");
+    assert_eq!(
+        base.get("map").unwrap(),
+        Value::Array(vec![0.0, 200.0, 0.0, 0.0])
+    );
 }
