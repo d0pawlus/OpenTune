@@ -9,7 +9,31 @@ permissions:
   contents: write
 
 jobs:
+  # Reset the rolling nightly release + tag to the current commit, once, before
+  # the matrix. We PRE-CREATE the (empty) release rather than let each matrix leg
+  # find-or-create it: with the old release deleted, the two near-simultaneous
+  # macos legs would otherwise both see "no release" and race to create it
+  # (duplicate/split releases). Pre-creating means every leg only UPLOADS. This
+  # also keeps the tag — and GitHub's auto-generated "Source code" archives — on
+  # the current commit instead of frozen at the first-ever nightly while the
+  # binaries refresh (GPL source/binary drift). Runs once; the matrix waits on it.
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reset nightly release + tag to the current commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
+          gh release create nightly \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title 'OpenTune Nightly' \
+            --notes 'Automated nightly build of the default branch. Unsigned, for testing only. Not a stable release — install at your own risk (Gatekeeper / SmartScreen warnings expected).' \
+            --prerelease
+
   build-nightly:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -24,11 +48,16 @@ jobs:
             args: ''
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - uses: dtolnay/rust-toolchain@stable
+      # Actions pinned to full commit SHAs — supply-chain: contents: write and
+      # publishes installers. Update the SHA and its version comment together.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          persist-credentials: false # keep the write-token out of .git/config (npm ci / build.rs run untrusted code)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable # required once pinned by SHA — no ref name left to imply it
           targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - name: Install Linux Tauri deps
         if: matrix.platform == 'ubuntu-22.04'
@@ -36,11 +65,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
       - run: npm ci
-      - uses: tauri-apps/tauri-action@v1
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # ponytail: rolling nightly tag — action finds existing release, clobbers old assets, moves tag.
+          # Rolling nightly: the prepare job already created the release+tag at
+          # this commit, so every matrix leg only uploads its installer to the
+          # existing release (no per-leg create race).
           tagName: nightly
           releaseName: 'OpenTune Nightly'
           releaseBody: |
