@@ -303,6 +303,23 @@ impl Tune {
         self.baseline = self.pages.clone();
     }
 
+    /// Re-baseline the whole tune after a non-ECU full load (e.g. an offline
+    /// `.msq` import applied via repeated [`Tune::set`] calls), clearing
+    /// dirty state and undo/redo history.
+    ///
+    /// Mirrors [`Tune::load_page`]'s documented "loading is not an edit"
+    /// contract at the whole-tune level: the current bytes become the new
+    /// flash baseline, and the undo/redo stacks are cleared because their
+    /// recorded edits are pseudo-edits produced by the load itself, not
+    /// something the user did — replaying (or undoing) them would silently
+    /// walk the tune toward the loader's per-field default instead of
+    /// leaving values exactly as read from the file.
+    pub fn mark_loaded(&mut self) {
+        self.baseline = self.pages.clone();
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     /// The raw bytes of a page, keyed by page **number** (`PageDef::number`),
     /// not by its index in `def.pages`.
     ///

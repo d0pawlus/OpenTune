@@ -50,6 +50,35 @@ fn mark_burned_clears_dirty() {
 }
 
 #[test]
+fn mark_loaded_rebaselines_and_clears_undo_redo() {
+    // M2/M3 review fix wave item 1: an offline `.msq` import applies every
+    // constant via `Tune::set` (the edit path). `mark_loaded` re-baselines
+    // the whole tune to its current bytes and clears undo/redo — mirroring
+    // `load_page`'s "loading is not an edit" contract at the whole-tune
+    // level — so a freshly opened file reads clean with no pseudo-edits to
+    // undo.
+    let mut t = tune(Endianness::Little, vec![u08("c", 0)]);
+    t.set("c", Value::Scalar(9.0)).unwrap();
+    assert!(t.is_dirty());
+
+    t.mark_loaded();
+
+    assert!(
+        !t.is_dirty(),
+        "mark_loaded re-baselines to the tune's current bytes"
+    );
+    assert!(t.dirty_pages().is_empty());
+    assert!(
+        !t.undo(),
+        "undo history must be empty after mark_loaded — nothing to undo"
+    );
+    assert!(
+        !t.redo(),
+        "redo history must be empty after mark_loaded too"
+    );
+}
+
+#[test]
 fn set_writing_identical_bytes_records_nothing() {
     let mut t = tune(Endianness::Little, vec![u08("c", 0)]);
     load1(&mut t, &[50]);

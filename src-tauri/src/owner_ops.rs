@@ -201,6 +201,14 @@ pub(super) fn build_offline_session(ini_path: &str) -> Result<Session, String> {
 }
 
 /// Build an offline session and load a `.msq` into its tune (signature-checked).
+///
+/// `load_msq_into` applies every constant through `Tune::set` — the normal
+/// edit path — so a freshly parsed `.msq` re-baselines via `mark_loaded`
+/// once it succeeds: opening a file is not an edit, and the tune must read
+/// clean with an empty undo/redo history, exactly like `load_page`'s
+/// contract. A partial apply (`MsqReport.failed` non-empty) still returns
+/// `Ok` from `load_msq_into` — the tune is re-baselined to whatever landed;
+/// the report (surfaced separately) carries the per-constant failures.
 pub(super) fn build_offline_session_from_msq(
     ini_path: &str,
     msq_path: &str,
@@ -213,6 +221,7 @@ pub(super) fn build_offline_session_from_msq(
         .as_mut()
         .ok_or_else(|| "internal error: offline session missing tune".to_string())?;
     opentune_project::msq::load_msq_into(tune, &xml).map_err(|e| e.to_string())?;
+    tune.mark_loaded();
     Ok(session)
 }
 
@@ -311,6 +320,43 @@ mod offline_build_tests {
             ),
             other => panic!("expected a scalar reqFuel, got {other:?}"),
         }
+    }
+
+    /// M2/M3 review fix wave item 1: `load_msq_into` applies every constant
+    /// via `Tune::set` — the normal edit path — so without an explicit
+    /// re-baseline a freshly opened `.msq` would read dirty and carry an
+    /// undo stack of pseudo-edits that silently walk values toward the
+    /// INI-blank default. A reopened session's tune must read clean, and
+    /// undo must be a no-op that changes nothing.
+    #[test]
+    fn reopened_msq_session_tune_is_clean_and_undo_is_a_no_op() {
+        let scratch = ScratchFile::new("reopen-clean");
+
+        let mut session = build_offline_session(INI).unwrap();
+        let tune = session.tune.as_mut().unwrap();
+        tune.set("reqFuel", opentune_model::Value::Scalar(14.7))
+            .unwrap();
+        let xml = opentune_project::msq::tune_to_msq(tune);
+        std::fs::write(&scratch.0, xml).unwrap();
+
+        let mut reopened =
+            build_offline_session_from_msq(INI, scratch.0.to_str().unwrap()).unwrap();
+        let reopened_tune = reopened.tune.as_mut().unwrap();
+        assert!(
+            !reopened_tune.is_dirty(),
+            "a freshly opened .msq must read clean, not as a pile of pseudo-edits"
+        );
+
+        let before = reopened_tune.get("reqFuel").unwrap();
+        assert!(
+            !reopened_tune.undo(),
+            "undo stack must be empty after opening a .msq"
+        );
+        assert_eq!(
+            reopened_tune.get("reqFuel").unwrap(),
+            before,
+            "undo must not silently change a value the user never touched"
+        );
     }
 
     #[test]
