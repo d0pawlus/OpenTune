@@ -5,7 +5,7 @@ communication is **driven by the firmware INI** wherever possible: the INI decla
 which commands and timeouts to use, so the same generic engine works across
 Speeduino, rusEFI, and the MegaSquirt family.
 
-It is an *implementer's reference*. Authoritative details live in the firmware
+It is an _implementer's reference_. Authoritative details live in the firmware
 projects and their INIs; exact command bytes and quirks must be confirmed against
 real firmware and covered by tests.
 
@@ -13,9 +13,10 @@ real firmware and covered by tests.
 
 OpenTune separates two concerns (see [ARCHITECTURE.md §5.1–5.2](ARCHITECTURE.md#5-backend-rust-modules)):
 
-- **Transport** — moves raw bytes. Implementations: USB serial (primary), TCP
-  (Wi-Fi/serial bridges), and the in-process **simulator**. CAN is a future
-  candidate. The transport knows nothing about message meaning.
+- **Transport** — moves raw bytes. Implementations: USB serial (primary) and the
+  in-process **simulator**. TCP (Wi-Fi/serial bridges) and CAN are future candidates
+  — not yet built (YAGNI until a real use case lands). The transport knows nothing
+  about message meaning.
 - **Protocol** — the conversation: handshake, reading/writing memory pages,
   burning to flash, and streaming real-time data. Parameterized by INI settings.
 
@@ -36,15 +37,15 @@ access through a single owner task (see
 
 ### Typical operations
 
-| Operation | Purpose |
-| --- | --- |
-| **Signature / query** | Identify the firmware; match it to an INI. |
-| **Version info** | Human-readable firmware version string. |
-| **Read page** | Read a region of configuration memory (a "page"). |
-| **Write** | Write bytes at a page offset — applies *live* to ECU RAM. |
-| **Burn** | Persist the current RAM page(s) to non-volatile flash. |
-| **Get real-time data** | Fetch one frame of output channels (telemetry). |
-| **Command/action** | Named actions (e.g., output tests) from the INI. |
+| Operation              | Purpose                                                   |
+| ---------------------- | --------------------------------------------------------- |
+| **Signature / query**  | Identify the firmware; match it to an INI.                |
+| **Version info**       | Human-readable firmware version string.                   |
+| **Read page**          | Read a region of configuration memory (a "page").         |
+| **Write**              | Write bytes at a page offset — applies _live_ to ECU RAM. |
+| **Burn**               | Persist the current RAM page(s) to non-volatile flash.    |
+| **Get real-time data** | Fetch one frame of output channels (telemetry).           |
+| **Command/action**     | Named actions (e.g., output tests) from the INI.          |
 
 The specific command characters/bytes, page-select mechanism, timeouts, and
 inter-command delays are taken from the INI's communication settings (e.g., query
@@ -124,7 +125,8 @@ bottleneck.
 
 - **Serial (primary):** cross-platform via `serialport`; baud and port from user
   settings; VID/PID hints help identify likely ECUs during enumeration.
-- **TCP:** for Wi-Fi/serial bridges and remote setups; same protocol over a socket.
+- **TCP (planned, not yet built):** for Wi-Fi/serial bridges and remote setups;
+  same protocol over a socket. Out of scope until a real TCP-bridge use case lands.
 - **Simulator:** an in-process transport+protocol that emulates a real INI for
   hardware-free development and CI (see
   [ARCHITECTURE.md §10](ARCHITECTURE.md#10-the-ecu-simulator)).

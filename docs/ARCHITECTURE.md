@@ -4,7 +4,7 @@ This document describes the architecture of OpenTune — a cross-platform,
 open-source tuning application for engine management ECUs, intended as a modern
 replacement for TunerStudio.
 
-It is the canonical reference for *how the system is built and why*. Decisions
+It is the canonical reference for _how the system is built and why_. Decisions
 with long-lived consequences are captured as ADRs in [`adr/`](adr/); this
 document focuses on the overall structure and the interaction between components.
 
@@ -46,7 +46,7 @@ document focuses on the overall structure and the interaction between components
   mobile (Android/iOS) companion is a planned ecosystem direction — live view
   first, tune editing later; the decoupled core crates (§5) are what keep that
   open. See [ROADMAP.md](ROADMAP.md) "Beyond 1.0".
-- Not a firmware development tool; we *tune and configure* ECUs, we don't build
+- Not a firmware development tool; we _tune and configure_ ECUs, we don't build
   their firmware.
 - No proprietary/encrypted INI handling (some commercial firmwares ship locked
   definitions); we focus on open and openly-documented definitions.
@@ -71,25 +71,25 @@ OpenTune adopts the same philosophy:
 This is the single most important architectural decision (see
 [ADR-0002](adr/0002-data-driven-ini.md)). It means:
 
-- Speeduino, MegaSquirt, and rusEFI are supported *by the same code*, differing
+- Speeduino, MegaSquirt, and rusEFI are supported _by the same code_, differing
   only in their INI.
 - New firmware versions are supported by dropping in a new INI.
-- ECU-specific behavior that *can't* be expressed in INI is isolated behind small,
+- ECU-specific behavior that _can't_ be expressed in INI is isolated behind small,
   well-defined extension points (see §5.2 and §15).
 
 ## 3. Technology stack
 
-| Layer | Choice | Rationale (see ADRs) |
-| --- | --- | --- |
-| App shell | **Tauri v2** | Native, tiny binaries, secure IPC, excellent macOS/Apple-Silicon support. [ADR-0001](adr/0001-tauri-stack.md) |
-| Backend language | **Rust** | Memory-safe systems language; great serial + concurrency story; fast INI/realtime parsing. |
-| Serial I/O | **`serialport`** (serialport-rs) | Mature cross-platform serial crate. |
-| Frontend | **React + TypeScript + Vite** | Mainstream, huge contributor pool, fast HMR. [ADR-0003](adr/0003-frontend-stack.md) |
-| State | **Zustand** | Minimal, fast, ergonomic global state. |
-| Time-series charts | **uPlot** | Extremely fast canvas charting for large datalogs. |
-| 3D tables | **three.js** (via a thin React wrapper) | GPU-accelerated 3D surfaces for VE/ignition tables. |
-| 2D table grids / gauges | **HTML Canvas** (custom) | Direct canvas rendering for high-frequency redraws. |
-| Packaging/CI | **GitHub Actions** | Cross-platform build + sign + release. |
+| Layer                   | Choice                                  | Rationale (see ADRs)                                                                                          |
+| ----------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| App shell               | **Tauri v2**                            | Native, tiny binaries, secure IPC, excellent macOS/Apple-Silicon support. [ADR-0001](adr/0001-tauri-stack.md) |
+| Backend language        | **Rust**                                | Memory-safe systems language; great serial + concurrency story; fast INI/realtime parsing.                    |
+| Serial I/O              | **`serialport`** (serialport-rs)        | Mature cross-platform serial crate.                                                                           |
+| Frontend                | **React + TypeScript + Vite**           | Mainstream, huge contributor pool, fast HMR. [ADR-0003](adr/0003-frontend-stack.md)                           |
+| State                   | **Zustand**                             | Minimal, fast, ergonomic global state.                                                                        |
+| Time-series charts      | **uPlot**                               | Extremely fast canvas charting for large datalogs.                                                            |
+| 3D tables               | **three.js** (via a thin React wrapper) | GPU-accelerated 3D surfaces for VE/ignition tables.                                                           |
+| 2D table grids / gauges | **HTML Canvas** (custom)                | Direct canvas rendering for high-frequency redraws.                                                           |
+| Packaging/CI            | **GitHub Actions**                      | Cross-platform build + sign + release.                                                                        |
 
 See ADRs for the full reasoning and alternatives considered.
 
@@ -135,7 +135,7 @@ flowchart TB
     TRANS <-->|USB serial / CAN / TCP| HW["Physical ECU"]
 ```
 
-**Layering rule:** dependencies point *downward and inward*. The frontend depends
+**Layering rule:** dependencies point _downward and inward_. The frontend depends
 on the IPC contract, not on backend internals. Within the backend, the transport
 layer knows nothing about INI; the protocol layer depends on the model and
 transport; the real-time engine orchestrates protocol + logger. This keeps each
@@ -157,7 +157,7 @@ src-tauri/
 │   ├── realtime/     # Polling loop, channel decoding, broadcasting
 │   ├── datalog/      # MLG/CSV readers & writers
 │   ├── analysis/     # Deterministic tuning/analysis: ve_analyze, virtual_dyno, …
-│   ├── ai/           # AI tool registry, permission policy, provider abstraction
+│   ├── ai/           # (planned, M7) AI tool registry, permission policy, provider abstraction
 │   ├── project/      # .msq read/write, project save/load, settings
 │   └── simulator/    # Virtual ECU for dev/testing
 └── src/              # Tauri app: wires crates together, defines commands/events
@@ -167,15 +167,17 @@ src-tauri/
 
 - A `Transport` trait: `open`, `close`, `read`, `write`, `flush`, configurable
   timeouts. Async (Tokio) with a blocking-serial bridge where needed.
-- Implementations: `SerialTransport` (USB/UART via `serialport`), `TcpTransport`
-  (network bridges/Wi-Fi modules), and `SimTransport` (in-process simulator).
+- Implementations: `SerialTransport` (USB/UART via `serialport`) and `SimTransport`
+  (in-process simulator). A `TcpTransport` (network/Wi-Fi bridges) is planned but
+  intentionally not yet built — out of scope until a real TCP-bridge use case lands
+  (YAGNI).
 - Port discovery & hot-plug detection (enumerate ports, identify likely ECUs by
   USB VID/PID where known).
 - **Knows nothing about protocol semantics** — it moves bytes.
 
 ### 5.2 `protocol` — the conversation with the ECU
 
-The protocol is itself *largely data-driven* from the INI (`queryCommand`,
+The protocol is itself _largely data-driven_ from the INI (`queryCommand`,
 `signature`, `ochGetCommand`, `pageReadCommand`, `pageValueWrite`, `burnCommand`,
 CRC commands, timeouts, etc. — see [`protocol.md`](protocol.md)).
 
@@ -185,7 +187,7 @@ CRC commands, timeouts, etc. — see [`protocol.md`](protocol.md)).
 - A default **generic MS/TS-compatible** implementation parameterized by the INI
   communication settings — this covers Speeduino, rusEFI, and MegaSquirt families.
 - **Extension points** for the rare ECU-specific quirk that INI can't express,
-  selected by signature. These are the *only* place ECU-specific code should live.
+  selected by signature. These are the _only_ place ECU-specific code should live.
 - Handles framing, CRC32 (newer "CRC protocol"), retries/backoff, page activation
   delays, and big/little-endian fields.
 
@@ -244,7 +246,7 @@ so contributors and CI can run the whole app without hardware. See §10.
 Pure, side-effect-free, **deterministic** capabilities with explicit
 `(data + params) → result + justification` contracts: `ve_analyze`,
 `virtual_dyno`, `log_stats`, `detect_anomaly`. Same input → identical output; every
-result carries *why* (which log samples drove it, how many, what was filtered).
+result carries _why_ (which log samples drove it, how many, what was filtered).
 Independent of AI and UI. **One engine, many consumers:** the manual AutoTune
 button, the AI layer, and future autonomy all call the same functions — there is
 exactly one implementation of each tuning operation.
@@ -320,17 +322,23 @@ also backs the MCP server for external agents. Off by default (opt-in, BYOK).
 
 The boundary between frontend and backend is a **typed, versioned contract**. To
 avoid drift, Rust types are the source of truth and TypeScript types are
-**generated** from them (e.g., via `ts-rs` or `specta`).
+**generated** from them via `tauri-specta` (see `src/ipc/bindings.ts`, which is
+auto-generated — never hand-edit).
 
 Two interaction styles:
 
-- **Commands** (request/response): `connect`, `disconnect`, `list_ports`,
-  `load_definition`, `read_tune`, `set_constant`, `burn`, `open_project`,
-  `save_msq`, `start_log`, `stop_log`, `start_realtime`, `stop_realtime`, …
+- **Commands** (request/response), representative of the ~40 registered:
+  `connect`, `disconnect`, `list_ports`, `get_definition`, `load_tune`,
+  `get_values`, `set_value`/`set_cells`, `burn_tune`, `undo_tune`/`redo_tune`,
+  `new_tune`/`open_tune`/`save_tune`/`write_tune_to_ecu`,
+  `start_realtime`/`stop_realtime`, `run_ve_analyze`, `start_capture`/
+  `stop_capture`, `start_log`/`stop_log`, `log_stats`/`detect_anomaly`/
+  `virtual_dyno`, …
 - **Events** (backend → frontend push): `realtime_frame` (throttled),
   `connection_state`, `progress` (long reads/writes), `log_status`, `error`.
 
 Design rules:
+
 - The frontend treats the backend as the **single source of truth** for tune and
   connection state; it does not duplicate authority over hardware.
 - High-frequency data (realtime) flows via **events**, never request/response.
@@ -366,12 +374,12 @@ sequenceDiagram
     participant FE as Frontend
     participant BE as Backend
     participant ECU
-    FE->>BE: set_constant(name, value)
+    FE->>BE: set_value(name, value)
     BE->>BE: scale value → bytes, update model (dirty, undo)
     BE->>ECU: write(page, offset, bytes)  (live to RAM)
     BE-->>FE: ack + updated field state
     Note over FE,ECU: ...more edits...
-    FE->>BE: burn(page)
+    FE->>BE: burn_tune(page)
     BE->>ECU: burn command (RAM → flash)
     BE-->>FE: burn complete, clear "unburned" flag
 ```
@@ -402,13 +410,13 @@ it makes the project **easy to develop and to test** (a stated goal).
 
 ## 11. File formats & interoperability
 
-| Format | Direction | Purpose |
-| --- | --- | --- |
-| `.ini` (TS definition) | read | Firmware definition (memory, UI, comms). |
-| `.msq` (XML) | read/write | Tune files — interoperable with TunerStudio. |
-| `.mlg` (binary) | read/write | TunerStudio-compatible datalogs. |
-| `.csv` | read/write | Portable datalogs / spreadsheet analysis. |
-| OpenTune project | read/write | Bundle: INI + tune + dashboards + settings. |
+| Format                 | Direction  | Purpose                                      |
+| ---------------------- | ---------- | -------------------------------------------- |
+| `.ini` (TS definition) | read       | Firmware definition (memory, UI, comms).     |
+| `.msq` (XML)           | read/write | Tune files — interoperable with TunerStudio. |
+| `.mlg` (binary)        | read/write | TunerStudio-compatible datalogs.             |
+| `.csv`                 | read/write | Portable datalogs / spreadsheet analysis.    |
+| OpenTune project       | read/write | Bundle: INI + tune + dashboards + settings.  |
 
 Interoperability is a hard requirement: users must be able to bring their
 existing INIs, tunes, and logs, and take them elsewhere.
@@ -459,9 +467,12 @@ existing INIs, tunes, and logs, and take them elsewhere.
 └── .github/workflows/           # CI: build/test/release
 ```
 
-(Through M1 the app shell, typed IPC, CI, and the `ini`/`transport`/`protocol`/`simulator`
-crates are implemented; `model`/`realtime`/`datalog`/`project` remain placeholders filled
-as later milestones land — see the [roadmap](ROADMAP.md).)
+(Through M5 the full backend is implemented: all domain crates — `ini`, `model`,
+`protocol`, `transport`, `realtime`, `datalog`, `analysis`, `project`, `simulator` —
+plus the app shell, typed IPC, CI, table/curve/3D editors, deterministic auto-tune,
+and datalog capture with analysis. M6 — interop hardening, packaging, signed builds,
+and the first public release — is in progress; see the [roadmap](ROADMAP.md). The
+`ai` crate (§5.10) is planned for M7.)
 
 ## 15. Risks and open questions
 
@@ -481,5 +492,5 @@ as later milestones land — see the [roadmap](ROADMAP.md).)
 
 ---
 
-*This is a living document. Material changes should be accompanied by a new or
-updated ADR in [`adr/`](adr/).*
+_This is a living document. Material changes should be accompanied by a new or
+updated ADR in [`adr/`](adr/)._
