@@ -1,0 +1,51 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # 03:17 UTC daily — off-peak, avoids :00 fleet pileup
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-nightly:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest # Apple Silicon
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest # Intel
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04 # older glibc baseline for wider distro compat
+            args: ''
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - name: Install Linux Tauri deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
+      - run: npm ci
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # ponytail: rolling nightly tag — action finds existing release, clobbers old assets, moves tag.
+          tagName: nightly
+          releaseName: 'OpenTune Nightly'
+          releaseBody: |
+            Automated nightly build of the default branch. Unsigned, for testing only.
+            Not a stable release — install at your own risk (Gatekeeper / SmartScreen warnings expected).
+          releaseDraft: false
+          prerelease: true
+          args: ${{ matrix.args }}
