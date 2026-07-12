@@ -41,6 +41,7 @@ import { arrayOf, labelsOf, numericOf } from "./binValues";
 import { TableGrid } from "./TableGrid";
 import { TableToolbar } from "./TableToolbar";
 import { AutoTunePanel } from "../autotune/AutoTunePanel";
+import { SurfaceErrorBoundary } from "../surface/SurfaceErrorBoundary";
 import "./table-editor.css";
 
 // The React.lazy boundary IS the bundle-chunk boundary (locked decision 9):
@@ -383,22 +384,27 @@ function Editor({ table, constants, locale }: EditorProps) {
 
       {view === "3d" ? (
         <div className="te-3d">
-          <Suspense
-            fallback={
-              <p className="te-3d-loading">{t("surface.loading", locale)}</p>
-            }
+          <SurfaceErrorBoundary
+            fallbackLabel={t("surface.unavailable", locale)}
+            retryLabel={t("surface.retry", locale)}
           >
-            <LazySurfaceView
-              xBins={numericOf(xBinArray)}
-              yBins={numericOf(yBinArray)}
-              values={gridValues}
-              heatLo={heatLo}
-              heatHi={heatHi}
-              xChannel={table.x_channel}
-              yChannel={table.y_channel}
-              unavailableLabel={t("surface.unavailable", locale)}
-            />
-          </Suspense>
+            <Suspense
+              fallback={
+                <p className="te-3d-loading">{t("surface.loading", locale)}</p>
+              }
+            >
+              <LazySurfaceView
+                xBins={numericOf(xBinArray)}
+                yBins={numericOf(yBinArray)}
+                values={gridValues}
+                heatLo={heatLo}
+                heatHi={heatHi}
+                xChannel={table.x_channel}
+                yChannel={table.y_channel}
+                unavailableLabel={t("surface.unavailable", locale)}
+              />
+            </Suspense>
+          </SurfaceErrorBoundary>
         </div>
       ) : (
         <div
