@@ -10,7 +10,7 @@
 ## Download (pre-release)
 
 Unsigned test builds are published on the
-[Releases page](https://github.com/d0pawlus/TuningSoftware/releases).
+[Releases page](https://github.com/d0pawlus/OpenTune/releases).
 These are pre-1.0 builds for testing — expect OS warnings:
 
 - **macOS** — the app is not notarized yet. Right-click the app → *Open*
@@ -88,11 +88,13 @@ See [`docs/protocol.md`](docs/protocol.md) and
 
 ## Project status
 
-🚧 **Pre-alpha — active implementation.** Milestones M0–M4 are implemented:
-the Tauri application can parse firmware INIs and identify the simulator or a
-serial ECU. The hardware-free simulator supports the current end-to-end
-read/edit/burn, realtime dashboard, table/curve editor, and deterministic VE
-analysis flows. M5 datalogging and analysis is next.
+🚧 **Pre-alpha — active implementation.** Milestones M0–M5 are implemented:
+the Tauri application can parse firmware INIs, identify the simulator or a
+serial ECU, and run the end-to-end flow on the hardware-free simulator —
+read/edit/burn, realtime dashboard, table/curve/3D editors, deterministic
+auto-tune, and datalog capture with analysis. M6 (interop hardening, packaging,
+signed/notarized builds, first public release) is in progress; see
+[ROADMAP — M6](docs/ROADMAP.md#m6--interop-polish--first-release-).
 
 The project is not ready for production tuning yet. Real-hardware coverage,
 packaging/signing, and broader firmware compatibility remain pre-1.0 work; see
