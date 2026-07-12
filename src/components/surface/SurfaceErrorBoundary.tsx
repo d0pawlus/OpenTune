@@ -22,9 +22,12 @@ interface Props {
 interface State {
   error: Error | null;
   // Bumped on retry → the wrapper div's `key` changes → React unmounts and
-  // remounts the subtree, re-attempting the React.lazy import() (Vite's
-  // dynamic-import cache means a re-render alone re-throws the rejected
-  // promise; a remount is what actually re-fetches).
+  // remounts the subtree, giving a render/lifecycle throw from SurfaceView a
+  // fresh attempt (a transient WebGL-init throw can recover this way). It does
+  // NOT re-fetch a failed lazy chunk: the module-scoped `lazy()` object
+  // memoizes its rejected payload, so on remount React.lazy re-throws the
+  // cached rejection without re-importing. Retry therefore recovers render
+  // throws, not chunk-load failures — the fallback still beats a blank panel.
   retryKey: number;
 }
 

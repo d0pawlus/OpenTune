@@ -1,4 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Transparent remount wrapper (SurfaceErrorBoundary bumps its key on retry).
+   Must pass .te-3d's definite height through, or .surface-view's height:100%
+   has no definite parent and the canvas collapses to its intrinsic ~150px. */
+.surface-error-boundary {
+  height: 100%;
+}
+
 .surface-view {
   position: relative;
   width: 100%;
