@@ -393,6 +393,114 @@ fn health_check_accepts_u8_counter_wrap() {
     assert_eq!(mgr.check_link().unwrap(), 1);
 }
 
+// ── Fix A: wrap-aware secl regression check ────────────────────────────────
+//
+// `secl` is a u8 second-counter that wraps at 256 continuously. A bare
+// `new_secl < last_secl` compare (the pre-fix reconnect logic) misreads an
+// ordinary wrap during a multi-second reconnect as an ECU reboot, which then
+// wipes the merge snapshot and silently re-baselines the tune from the ECU's
+// RAM — the user power-cycles trusting "nothing to burn" and loses edits.
+// `check_link`'s old window (`last >= 250 && new <= 5`) only covered a
+// narrow slice of the wrap; both sites now share one half-range discriminator.
+
+#[test]
+fn reconnect_across_secl_wrap_does_not_trigger_reidentify() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    // secl at 253 when the initial connect captures the baseline.
+    sim.advance_secl(253);
+
+    let sim_factory = Arc::clone(&sim);
+    let comms = speeduino_comms();
+
+    let mut call_count = 0u32;
+    let mut mgr = ConnectionManager::new(comms.clone(), fast_config(), move || {
+        call_count += 1;
+        if call_count > 1 {
+            // Ordinary wrap during the outage: the counter continues past
+            // 255 and lands at 1 — the ECU never rebooted.
+            sim_factory.reset_secl();
+            sim_factory.advance_secl(1);
+            sim_factory.set_link_dropped(false);
+        }
+        Ok(sim_factory.client_transport())
+    });
+
+    mgr.connect().unwrap();
+    assert_eq!(mgr.last_secl(), 253);
+
+    sim.set_link_dropped(true);
+    let states = mgr.reconnect_collect_states();
+    assert!(
+        matches!(states.last().unwrap(), ConnectionState::Connected { .. }),
+        "wrap reconnect must end Connected"
+    );
+    assert!(
+        !mgr.last_reconnect_caused_reidentify(),
+        "a u8 wrap during reconnect (253 -> 1) must not read as a reboot"
+    );
+}
+
+#[test]
+fn reconnect_genuine_reboot_within_wrap_window_still_triggers_reidentify() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    sim.advance_secl(100);
+
+    let sim_factory = Arc::clone(&sim);
+    let comms = speeduino_comms();
+
+    let mut call_count = 0u32;
+    let mut mgr = ConnectionManager::new(comms.clone(), fast_config(), move || {
+        call_count += 1;
+        if call_count > 1 {
+            // Genuine reboot: secl resets and only advances a couple of
+            // seconds before the reconnect succeeds.
+            sim_factory.reset_secl();
+            sim_factory.advance_secl(2);
+            sim_factory.set_link_dropped(false);
+        }
+        Ok(sim_factory.client_transport())
+    });
+
+    mgr.connect().unwrap();
+    assert_eq!(mgr.last_secl(), 100);
+
+    sim.set_link_dropped(true);
+    let states = mgr.reconnect_collect_states();
+    assert!(
+        matches!(states.last().unwrap(), ConnectionState::Connected { .. }),
+        "reboot reconnect must end Connected"
+    );
+    assert!(
+        mgr.last_reconnect_caused_reidentify(),
+        "secl 100 -> 2 across reconnect must still read as a reboot"
+    );
+}
+
+#[test]
+fn health_check_accepts_a_larger_elapsed_wrap() {
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    sim.advance_secl(240);
+    let sim_factory = Arc::clone(&sim);
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+
+    sim.reset_secl();
+    sim.advance_secl(10);
+    assert_eq!(
+        mgr.check_link().unwrap(),
+        10,
+        "240 -> 10 is forward wrap motion, not a regression"
+    );
+}
+
 /// Tiny plain-protocol transport whose identity can differ between factory
 /// calls. This pins the reconnect-only signature guard without hardware.
 struct IdentityTransport {

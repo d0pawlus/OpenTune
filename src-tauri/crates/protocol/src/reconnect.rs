@@ -14,6 +14,15 @@ use crate::{ConnectionState, MsProtocol, Protocol, ProtocolError, Result};
 use opentune_ini::CommsSettings;
 use opentune_transport::Transport;
 
+/// True when `new` cannot be a forward step from `last` on the wrapping u8
+/// second counter — i.e. the counter regressed (reboot signal).
+/// ponytail: half-range discriminator — a reboot landing within 128 s of the
+/// old counter position is indistinguishable from forward motion; upgrade
+/// path is pairing secl with a page checksum/identify probe.
+fn secl_regressed(last: u8, new: u8) -> bool {
+    new.wrapping_sub(last) >= 128
+}
+
 /// Backoff + retry configuration.
 #[derive(Debug, Clone)]
 pub struct ReconnectConfig {
@@ -113,11 +122,10 @@ where
             opentune_transport::TransportError::Disconnected,
         ))?;
         let secl = proto.read_secl()?;
-        // A small backwards jump is a reboot signal. Preserve the old baseline
-        // and let the owner enter reconnect so the normal re-identify/re-read
-        // path runs. The one legitimate backwards transition is u8 wrap.
-        let wrapped = self.last_secl >= 250 && secl <= 5;
-        if secl < self.last_secl && !wrapped {
+        // A backwards jump outside normal wrap motion is a reboot signal.
+        // Preserve the old baseline and let the owner enter reconnect so the
+        // normal re-identify/re-read path runs.
+        if secl_regressed(self.last_secl, secl) {
             return Err(ProtocolError::MalformedResponse(format!(
                 "ECU second counter moved backwards ({} -> {secl})",
                 self.last_secl
@@ -158,10 +166,11 @@ where
 
     /// Run the reconnect loop, collecting the emitted states. Thin delegation
     /// to [`Self::reconnect_streaming`] with no observer and no cancellation.
-    /// On success, compares new secl with `last_secl`:
-    /// - secl advanced → glitch (GREEN: test 3).
-    /// - secl went backwards → reboot; `last_reconnect_caused_reidentify = true`
-    ///   (GREEN: test 4).
+    /// On success, compares new secl with `last_secl` via [`secl_regressed`]
+    /// (wrap-aware):
+    /// - forward motion, including an ordinary u8 wrap → glitch (GREEN: test 3).
+    /// - a regression outside normal wrap motion → reboot;
+    ///   `last_reconnect_caused_reidentify = true` (GREEN: test 4).
     pub fn reconnect_collect_states(&mut self) -> Vec<ConnectionState> {
         self.reconnect_streaming(|_| {}, || false, |_| {})
     }
@@ -238,7 +247,8 @@ where
 
             match result {
                 Ok((state, proto, new_secl)) => {
-                    self.last_reconnect_caused_reidentify = new_secl < self.last_secl;
+                    self.last_reconnect_caused_reidentify =
+                        secl_regressed(self.last_secl, new_secl);
                     self.last_secl = new_secl;
                     self.protocol = Some(proto);
                     self.state = state.clone();
