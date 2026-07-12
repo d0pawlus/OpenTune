@@ -7,6 +7,24 @@
 
 ---
 
+## Download (pre-release)
+
+Unsigned test builds are published on the
+[Releases page](https://github.com/d0pawlus/TuningSoftware/releases).
+These are pre-1.0 builds for testing — expect OS warnings:
+
+- **macOS** — the app is not notarized yet. Right-click the app → *Open*
+  (once), or clear the quarantine flag: `xattr -cr /Applications/OpenTune.app`.
+- **Windows** — SmartScreen will warn about an unknown publisher.
+  *More info* → *Run anyway*.
+- **Linux** — download the `.AppImage`, then `chmod +x OpenTune_*.AppImage`
+  and run it. A `.deb` is also provided for Debian/Ubuntu. Serial-port access
+  may require adding your user to the `dialout` group
+  (`sudo usermod -aG dialout $USER`, then re-login).
+
+Signed and notarized builds are planned before 1.0 (see
+[ROADMAP — M6](docs/ROADMAP.md)).
+
 ## Why this project exists
 
 [TunerStudio](https://www.tunerstudio.com/) is the de-facto standard tuning
