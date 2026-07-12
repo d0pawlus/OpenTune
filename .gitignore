@@ -40,3 +40,5 @@ Thumbs.db
 *.mlg
 .superpowers/
 .claude/
+.playwright-mcp/
+.worktrees/

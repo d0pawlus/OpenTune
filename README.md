@@ -7,6 +7,28 @@
 
 ---
 
+## Download (pre-release)
+
+Unsigned test builds will be published on the
+[Releases page](https://github.com/d0pawlus/OpenTune/releases) once the first
+`v*` release tag is cut (planned as part of M6 — see
+[ROADMAP — M6](docs/ROADMAP.md)). Until then, build from source with
+`npm run tauri build` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+
+When pre-release builds are available, expect OS warnings:
+
+- **macOS** — the app is not notarized yet. Right-click the app → _Open_
+  (once), or clear the quarantine flag: `xattr -cr /Applications/OpenTune.app`.
+- **Windows** — SmartScreen will warn about an unknown publisher.
+  _More info_ → _Run anyway_.
+- **Linux** — download the `.AppImage`, then `chmod +x OpenTune_*.AppImage`
+  and run it. A `.deb` is also provided for Debian/Ubuntu. Serial-port access
+  may require adding your user to the `dialout` group
+  (`sudo usermod -aG dialout $USER`, then re-login).
+
+Signed and notarized builds are planned before 1.0 (see
+[ROADMAP — M6](docs/ROADMAP.md)).
+
 ## Why this project exists
 
 [TunerStudio](https://www.tunerstudio.com/) is the de-facto standard tuning
@@ -25,11 +47,11 @@ that the community can own and evolve.
 
 ## Vision & principles
 
-1. **Universal by design.** Almost everything ECU-specific is *data-driven* from
+1. **Universal by design.** Almost everything ECU-specific is _data-driven_ from
    the firmware's `.ini` definition file (the same format TunerStudio uses). The
    application core is generic — supporting a new ECU means supporting its INI,
    not writing new code. This is how we target Speeduino, MegaSquirt, rusEFI and
-   "many others" *at once*.
+   "many others" _at once_.
 2. **Fast and lean.** Tauri (Rust backend + web frontend) gives us native
    performance, tiny binaries, and a serial/real-time data path written in Rust.
 3. **Easy to develop.** A documented, modular architecture, a built-in **ECU
@@ -48,12 +70,12 @@ that the community can own and evolve.
 
 ## Target platforms
 
-| Platform | Status (planned) |
-| --- | --- |
+| Platform                     | Status (planned)   |
+| ---------------------------- | ------------------ |
 | macOS (Apple Silicon, arm64) | First-class target |
-| macOS (Intel, x64) | Supported |
-| Windows 10/11 (x64) | Supported |
-| Linux (x64, arm64) | Supported |
+| macOS (Intel, x64)           | Supported          |
+| Windows 10/11 (x64)          | Supported          |
+| Linux (x64, arm64)           | Supported          |
 
 ## Supported ECUs (goal)
 
@@ -70,11 +92,13 @@ See [`docs/protocol.md`](docs/protocol.md) and
 
 ## Project status
 
-🚧 **Pre-alpha — active implementation.** Milestones M0–M4 are implemented:
-the Tauri application can parse firmware INIs and identify the simulator or a
-serial ECU. The hardware-free simulator supports the current end-to-end
-read/edit/burn, realtime dashboard, table/curve editor, and deterministic VE
-analysis flows. M5 datalogging and analysis is next.
+🚧 **Pre-alpha — active implementation.** Milestones M0–M5 are implemented:
+the Tauri application can parse firmware INIs, identify the simulator or a
+serial ECU, and run the end-to-end flow on the hardware-free simulator —
+read/edit/burn, realtime dashboard, table/curve/3D editors, deterministic
+auto-tune, and datalog capture with analysis. M6 (interop hardening, packaging,
+signed/notarized builds, first public release) is in progress; see
+[ROADMAP — M6](docs/ROADMAP.md#m6--interop-polish--first-release-).
 
 The project is not ready for production tuning yet. Real-hardware coverage,
 packaging/signing, and broader firmware compatibility remain pre-1.0 work; see
@@ -87,7 +111,7 @@ Start here:
 - [`docs/research/market-and-user-research.md`](docs/research/market-and-user-research.md)
   — what TunerStudio users actually need, the competitive landscape, and the
   formats/protocol terrain (with sources).
-- [`docs/adr/`](docs/adr/) — Architecture Decision Records (the *why* behind key
+- [`docs/adr/`](docs/adr/) — Architecture Decision Records (the _why_ behind key
   choices).
 - [`docs/ini-format.md`](docs/ini-format.md) — the firmware definition format.
 - [`docs/protocol.md`](docs/protocol.md) — the ECU communication protocol.
@@ -122,7 +146,7 @@ flowchart LR
 [`docs/adr/0005-license.md`](docs/adr/0005-license.md). This matches the ethos of
 the open ECU ecosystem (Speeduino and rusEFI firmware are GPL) and protects the
 work from a closed-source fork. Source files will carry
-`SPDX-License-Identifier: GPL-3.0-or-later` headers once code lands.
+`SPDX-License-Identifier: GPL-3.0-or-later` headers in source files.
 
 ## Acknowledgements
 
