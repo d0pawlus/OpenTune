@@ -27,6 +27,19 @@ jobs:
       - run: npm run test
       - run: npm run rust:fmt
       - run: npm run rust:clippy
-      - run: npm run rust:test
+      # The `opentune` app crate's test binary transitively links the Tauri
+      # Windows GUI stack but ships without the application manifest (Common
+      # Controls v6) that tauri-build embeds only into the real app binary, so
+      # it aborts at process startup with STATUS_ENTRYPOINT_NOT_FOUND
+      # (0xc0000139). Its tests (tauri-specta binding generation + command-level
+      # integration) are OS-independent and still run on Linux/macOS; the sub-
+      # crates don't link Tauri, so they run everywhere. See tauri-apps/tauri
+      # discussion #11179.
+      - name: Rust tests (full workspace)
+        if: matrix.os != 'windows-latest'
+        run: npm run rust:test
+      - name: Rust tests (Windows — exclude Tauri app crate)
+        if: matrix.os == 'windows-latest'
+        run: cargo test --workspace --exclude opentune --manifest-path src-tauri/Cargo.toml
       - run: npm run build
       - run: cargo build --workspace --manifest-path src-tauri/Cargo.toml
