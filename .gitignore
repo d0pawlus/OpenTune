@@ -10,6 +10,8 @@ dist/
 dist-ssr/
 .vite/
 *.local
+*.tsbuildinfo
+.tsc-cache/
 
 # --- Tauri ---
 src-tauri/target/
