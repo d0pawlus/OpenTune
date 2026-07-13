@@ -294,6 +294,42 @@ describe("Dashboard", () => {
     );
   });
 
+  // M2/M3 re-review finding 6 (frontend half): starting realtime is a
+  // wire-touching action and must be gated on a strict `connected` link,
+  // like TunePanel's wire buttons — a click landing mid-reconnect would
+  // reach the backend with a dead/absent link. Stopping stays available:
+  // it only disarms.
+  it("disables starting live realtime while reconnecting", async () => {
+    vi.mocked(ipc.commands.startRealtime).mockClear();
+    useConnectionStore.setState({
+      connectionState: { type: "reconnecting", attempt: 1 },
+    });
+    render(<Dashboard locale="en" theme="default" />);
+
+    const start = (await screen.findByRole("button", {
+      name: "Start live",
+    })) as HTMLButtonElement;
+    expect(start.disabled).toBe(true);
+    fireEvent.click(start);
+    expect(ipc.commands.startRealtime).not.toHaveBeenCalled();
+  });
+
+  it("keeps stopping live realtime available while reconnecting", async () => {
+    render(<Dashboard locale="en" theme="default" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Start live" }));
+    await screen.findByRole("button", { name: "Stop live" });
+
+    act(() => {
+      useConnectionStore.setState({
+        connectionState: { type: "reconnecting", attempt: 1 },
+      });
+    });
+    const stop = screen.getByRole("button", {
+      name: "Stop live",
+    }) as HTMLButtonElement;
+    expect(stop.disabled).toBe(false);
+  });
+
   it("unmounts the panel when the connection is lost for good", async () => {
     const { container } = render(<Dashboard locale="en" theme="default" />);
     await screen.findByRole("img", { name: "Engine Speed" });

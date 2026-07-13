@@ -18,6 +18,14 @@ interface RealtimeStore {
   channels: Record<string, number>;
   /** Reflect one `RealtimeFrameEvent` into the channel map. */
   applyFrame: (frame: RealtimeFrameEvent) => void;
+  /**
+   * Reflect one replayed log row. Unlike the live {@link applyFrame}
+   * (fail-open: a null glitch keeps the last good value), a null here is a
+   * genuine gap recorded in the log — the user may be scrubbing to diagnose
+   * that very dropout — so the channel is cleared and its gauge renders
+   * neutral.
+   */
+  applyReplayRow: (frame: RealtimeFrameEvent) => void;
   /** Imperative read for the rAF paint loop; `undefined` = never seen. */
   getChannel: (name: string) => number | undefined;
   /** Drop every channel (on disconnect / stop). */
@@ -35,6 +43,18 @@ export const useRealtimeStore = create<RealtimeStore>((set, get) => ({
       // bound gauge keeps its neutral state instead of showing a bogus 0.
       if (value !== null && Number.isFinite(value)) {
         channels[name] = value;
+      }
+    }
+    set({ channels });
+  },
+
+  applyReplayRow: (frame) => {
+    const channels = { ...get().channels };
+    for (const [name, value] of frame.channels) {
+      if (value !== null && Number.isFinite(value)) {
+        channels[name] = value;
+      } else {
+        delete channels[name];
       }
     }
     set({ channels });

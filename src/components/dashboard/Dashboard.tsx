@@ -79,6 +79,9 @@ function DashboardPanel({
   theme: Theme;
   definition: DefinitionDto;
 }) {
+  const isConnected = useConnectionStore(
+    (s) => s.connectionState?.type === "connected",
+  );
   const [slots, setSlots] = useState<SlotLayout[]>([]);
   const [loadedDefinition, setLoadedDefinition] =
     useState<DefinitionDto | null>(null);
@@ -174,7 +177,11 @@ function DashboardPanel({
             type="button"
             onClick={toggleLive}
             aria-pressed={live}
-            disabled={realtimePending}
+            // Starting realtime touches the wire → strict `connected` only
+            // (same gate as TunePanel's wire buttons; a click mid-reconnect
+            // would arm polling against a dead link). Stopping only disarms
+            // and stays available through a glitch.
+            disabled={realtimePending || (!live && !isConnected)}
           >
             {live
               ? t("dashboard.stopLive", locale)
