@@ -54,6 +54,20 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
     loadDefinition(res.data);
   };
 
+  // ponytail: TunerStudio project layout is fixed (projectCfg/mainController.ini
+  // + CurrentTune.msq); open_tune reports a clear error if either is missing.
+  const openProject = async () => {
+    setError(null);
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir !== "string") return;
+    const res = await commands.openTune(
+      `${dir}/projectCfg/mainController.ini`,
+      `${dir}/CurrentTune.msq`,
+    );
+    if (res.status === "error") return setError(res.error);
+    loadDefinition(res.data);
+  };
+
   const saveTune = async () => {
     setError(null);
     const path = await save({
@@ -73,6 +87,9 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
         </button>
         <button type="button" onClick={openTune}>
           {t("offline.open", locale)}
+        </button>
+        <button type="button" onClick={openProject}>
+          {t("offline.openProject", locale)}
         </button>
         <button type="button" onClick={saveTune} disabled={!hasTune}>
           {t("offline.save", locale)}

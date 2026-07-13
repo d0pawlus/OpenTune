@@ -206,8 +206,8 @@ pub(super) fn build_offline_session_from_msq(
     msq_path: &str,
 ) -> Result<Session, String> {
     let mut session = build_offline_session(ini_path)?;
-    let xml =
-        std::fs::read_to_string(msq_path).map_err(|e| format!("cannot read `{msq_path}`: {e}"))?;
+    let xml = crate::connection::read_text(msq_path)
+        .map_err(|e| format!("cannot read `{msq_path}`: {e}"))?;
     let tune = session
         .tune
         .as_mut()

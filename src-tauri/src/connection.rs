@@ -118,12 +118,27 @@ pub enum ConnectSource {
 
 // ── INI helpers ──────────────────────────────────────────────────────────────
 
+/// Decode raw file bytes as UTF-8, falling back to Latin-1 (every byte maps
+/// 1:1 onto the same code point, so the fallback never fails). TunerStudio's
+/// MegaSquirt INI and `.msq` files are CP1252-encoded — unit strings like
+/// `"°C"` carry a raw 0xB0 byte that strict UTF-8 reading rejects outright.
+fn decode_text(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(err) => err.into_bytes().iter().map(|&b| b as char).collect(),
+    }
+}
+
+/// Read a text file as UTF-8 with a Latin-1 fallback (see [`decode_text`]).
+pub(crate) fn read_text(path: &str) -> std::io::Result<String> {
+    std::fs::read(path).map(decode_text)
+}
+
 /// Parse `CommsSettings` from a file path. Expands a leading `~` to the user's
 /// home dir (Rust's `fs` does not do shell tilde expansion).
 pub fn load_comms_from_path(path: &str) -> Result<CommsSettings, String> {
     let expanded = expand_tilde(path);
-    let text = std::fs::read_to_string(&expanded)
-        .map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
+    let text = read_text(&expanded).map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
     parse_comms(&text).map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
 }
 
@@ -150,8 +165,7 @@ pub fn load_comms_from_str(ini: &str) -> Result<CommsSettings, String> {
 /// just the M1 comms slice.
 pub fn load_definition_from_path(path: &str) -> Result<Definition, String> {
     let expanded = expand_tilde(path);
-    let text = std::fs::read_to_string(&expanded)
-        .map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
+    let text = read_text(&expanded).map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
     parse_definition(&text).map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
 }
 
@@ -339,6 +353,17 @@ mod tests {
         // Not a leading `~/` — left untouched.
         assert_eq!(expand_tilde("/abs/path"), "/abs/path");
         assert_eq!(expand_tilde("~user/x"), "~user/x");
+    }
+
+    #[test]
+    fn decode_text_falls_back_to_latin1_for_ms_ini_bytes() {
+        // MegaSquirt INIs are CP1252: `"°C"` is the raw byte 0xB0.
+        assert_eq!(decode_text(b"\"\xB0C\"".to_vec()), "\"\u{B0}C\"");
+        // Valid UTF-8 passes through unchanged (including multi-byte `°`).
+        assert_eq!(
+            decode_text("\"°C\" żółć".as_bytes().to_vec()),
+            "\"°C\" żółć"
+        );
     }
 
     #[test]
