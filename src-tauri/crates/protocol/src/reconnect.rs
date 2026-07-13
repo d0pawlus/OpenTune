@@ -156,22 +156,46 @@ where
         Ok(connected)
     }
 
-    /// Run the reconnect loop. Emits Reconnecting states, ends with Connected
-    /// or Failed. On success, compares new secl with `last_secl`:
+    /// Run the reconnect loop, collecting the emitted states. Thin delegation
+    /// to [`Self::reconnect_streaming`] with no observer and no cancellation.
+    /// On success, compares new secl with `last_secl`:
     /// - secl advanced → glitch (GREEN: test 3).
     /// - secl went backwards → reboot; `last_reconnect_caused_reidentify = true`
     ///   (GREEN: test 4).
     pub fn reconnect_collect_states(&mut self) -> Vec<ConnectionState> {
-        self.reconnect_collect_states_with_retry_hook(|_| {})
+        self.reconnect_streaming(|_| {}, || false, |_| {})
     }
 
     /// Reconnect with a callback after each failed non-terminal attempt.
     ///
-    /// Production uses [`Self::reconnect_collect_states`]. The hook lets the
-    /// simulator demo restore its deliberately dropped link only after proving
-    /// that one real reconnect attempt failed.
+    /// The hook lets the simulator demo restore its deliberately dropped link
+    /// only after proving that one real reconnect attempt failed.
     pub fn reconnect_collect_states_with_retry_hook(
         &mut self,
+        on_failed_attempt: impl FnMut(u32),
+    ) -> Vec<ConnectionState> {
+        self.reconnect_streaming(|_| {}, || false, on_failed_attempt)
+    }
+
+    /// The primary reconnect loop: streaming, cancellable.
+    ///
+    /// `on_state` observes each state the moment it is produced —
+    /// `Reconnecting { attempt }` *before* the attempt's backoff sleep,
+    /// `Connected`/`Failed` when reached — so a caller can forward live
+    /// progress to a UI while the full backoff schedule (worth minutes on
+    /// serial) is still running. The collected states are also returned;
+    /// callers derive the outcome from the terminal state.
+    ///
+    /// `cancelled` is checked at the top of every attempt and between short
+    /// chunks of every backoff sleep, so a cancel interrupts even the capped
+    /// 30 s serial backoff promptly. A cancelled loop returns the states
+    /// emitted so far WITHOUT a terminal `Failed`: the cancel initiator owns
+    /// the UI transition, and a stale `Failed` event landing after a user's
+    /// Disconnect would corrupt the connection state it just displayed.
+    pub fn reconnect_streaming(
+        &mut self,
+        mut on_state: impl FnMut(&ConnectionState),
+        mut cancelled: impl FnMut() -> bool,
         mut on_failed_attempt: impl FnMut(u32),
     ) -> Vec<ConnectionState> {
         let mut emitted = Vec::new();
@@ -179,14 +203,18 @@ where
         self.protocol = None;
 
         for attempt in 1..=self.config.max_attempts {
+            if cancelled() {
+                return emitted;
+            }
             let reconnecting = ConnectionState::Reconnecting { attempt };
             self.state = reconnecting.clone();
+            on_state(&reconnecting);
             emitted.push(reconnecting);
 
-            // Exponential backoff between attempts (zero in tests, real delay in production).
-            let delay = self.backoff_delay(attempt);
-            if !delay.is_zero() {
-                std::thread::sleep(delay);
+            // Exponential backoff between attempts (zero in tests, real delay
+            // in production), slept in cancel-checked chunks.
+            if sleep_backoff_cancellable(self.backoff_delay(attempt), &mut cancelled) {
+                return emitted;
             }
 
             let result: Result<(ConnectionState, MsProtocol<T>, u8)> = (|| {
@@ -214,6 +242,7 @@ where
                     self.last_secl = new_secl;
                     self.protocol = Some(proto);
                     self.state = state.clone();
+                    on_state(&state);
                     emitted.push(state);
                     return emitted;
                 }
@@ -222,6 +251,7 @@ where
                         reason: error.to_string(),
                     };
                     self.state = failed.clone();
+                    on_state(&failed);
                     emitted.push(failed);
                     return emitted;
                 }
@@ -245,6 +275,7 @@ where
             },
         };
         self.state = failed.clone();
+        on_state(&failed);
         emitted.push(failed);
         emitted
     }
@@ -255,4 +286,23 @@ where
         let raw = self.config.base_delay.saturating_mul(factor);
         raw.min(self.config.max_delay)
     }
+}
+
+/// Chunk length for cancel checks during backoff sleeps: long enough to stay
+/// cheap, short enough that a cancel interrupts even the capped 30 s serial
+/// backoff within ~100 ms.
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Sleep `delay` in cancel-checked chunks. Returns `true` when cancelled.
+fn sleep_backoff_cancellable(delay: Duration, cancelled: &mut impl FnMut() -> bool) -> bool {
+    let mut remaining = delay;
+    while !remaining.is_zero() {
+        if cancelled() {
+            return true;
+        }
+        let chunk = remaining.min(CANCEL_CHECK_INTERVAL);
+        std::thread::sleep(chunk);
+        remaining = remaining.saturating_sub(chunk);
+    }
+    false
 }
