@@ -711,6 +711,82 @@ async fn panicked_session_operation_disconnects_and_disarms_realtime() {
     );
 }
 
+// Finding 5 (M2/M3 re-review), hole A: a panic inside the health check's
+// `spawn_blocking` task reached only `self.polling = false` — the session
+// was already lost with the panicked task, but no `Disconnected` was emitted
+// and the poller survived, so the UI sat on "Connected" over a dead seat.
+// The uniform `lose_session_after_panic` cleanup must run here too.
+#[tokio::test]
+async fn panicked_health_check_disconnects_and_disarms_realtime() {
+    let (tx, events) = test_owner();
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("simulator connects");
+
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::DebugPanicNextHealthCheck { reply })
+        .await
+        .expect("arm health-check panic");
+
+    // The idle-link prober fires within 1 s and panics; the owner must
+    // land in a clean disconnected state and tell the UI.
+    await_connection_event(&events, mark, |e| {
+        matches!(e, ConnectionStateEvent::Disconnected)
+    })
+    .await;
+    let state = await_owner_state(&tx, |s| !s.session_present).await;
+    assert!(!state.polling, "polling must be disarmed");
+    assert!(!state.poller_present, "poller must be cleared");
+    assert!(!state.recovering, "no recovery may be tracked");
+}
+
+// Finding 5 (M2/M3 re-review), hole B: a panic inside the recovery's
+// blocking task settles cleanly (`catch_unwind` → `RecoveryOutcome::Failed`),
+// but the reconnect loop died mid-stream — no terminal state was ever
+// emitted, so the UI sat on "Reconnecting {n}" forever. The panic settle
+// path must emit the terminal `Failed` itself.
+#[tokio::test]
+async fn panicked_recovery_emits_terminal_failed_and_settles() {
+    let (tx, events) = test_owner();
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("simulator connects");
+    let sim = simulator(&tx).await;
+
+    send(&tx, |reply| Command::DebugPanicNextRecovery { reply })
+        .await
+        .expect("arm recovery panic");
+
+    // Drop the link: the next health tick fails and starts the recovery,
+    // which immediately panics on the blocking pool.
+    let mark = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    await_connection_event(&events, mark, |e| {
+        matches!(e, ConnectionStateEvent::Failed { reason } if reason.contains("recovery panicked"))
+    })
+    .await;
+
+    // Settles like any terminal failure: seat empty, polling off, no storm.
+    let state = await_owner_state(&tx, |s| !s.recovering).await;
+    assert!(
+        !state.session_present,
+        "a panicked recovery must not resurrect a session"
+    );
+    assert!(!state.polling, "polling must be disarmed");
+
+    let err = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect_err("session is gone after a panicked recovery");
+    assert!(err.contains(NOT_CONNECTED), "got: {err}");
+}
+
 #[tokio::test]
 async fn failed_reboot_reread_invalidates_tune_and_snapshot_but_keeps_link() {
     let (tx, events) = test_owner();
