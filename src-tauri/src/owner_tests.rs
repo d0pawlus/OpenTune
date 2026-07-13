@@ -635,6 +635,42 @@ async fn start_realtime_errors_without_a_session() {
         .expect("stop_realtime remains idempotent");
 }
 
+// Fix C: `StartRealtime` guarded only `self.session.is_some()`, so an
+// offline session (`conn: None`, `tune: Some` — built by `NewTune`/`OpenTune`
+// before any ECU is attached) could still arm polling even though there is
+// no live link to poll. `wants_health_check` already has the correct guard
+// (`matches!(&self.session, Some(Session { conn: Some(_), .. }))`);
+// `StartRealtime` must use the same one.
+#[tokio::test]
+async fn start_realtime_errors_on_an_offline_session_without_a_live_link() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, _events) = test_owner();
+
+    // Build an offline session (conn: None, tune: Some) — `session.is_some()`
+    // is true, but there is no live link to poll.
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+
+    let err = send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect_err("an offline session must not arm realtime");
+    assert!(
+        err.contains("not connected") && err.contains("realtime"),
+        "clear realtime/session diagnostic, got: {err}"
+    );
+
+    let state = owner_state(&tx).await;
+    assert!(!state.polling, "realtime must stay disarmed offline");
+    assert!(!state.poller_present, "poller must stay unset offline");
+}
+
 #[tokio::test]
 async fn panicked_session_operation_disconnects_and_disarms_realtime() {
     let (tx, events) = test_owner();
@@ -673,6 +709,82 @@ async fn panicked_session_operation_disconnects_and_disarms_realtime() {
             .any(|event| matches!(event, OwnerEvent::Realtime(_))),
         "no poll frames may survive panic cleanup"
     );
+}
+
+// Finding 5 (M2/M3 re-review), hole A: a panic inside the health check's
+// `spawn_blocking` task reached only `self.polling = false` — the session
+// was already lost with the panicked task, but no `Disconnected` was emitted
+// and the poller survived, so the UI sat on "Connected" over a dead seat.
+// The uniform `lose_session_after_panic` cleanup must run here too.
+#[tokio::test]
+async fn panicked_health_check_disconnects_and_disarms_realtime() {
+    let (tx, events) = test_owner();
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("simulator connects");
+
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::DebugPanicNextHealthCheck { reply })
+        .await
+        .expect("arm health-check panic");
+
+    // The idle-link prober fires within 1 s and panics; the owner must
+    // land in a clean disconnected state and tell the UI.
+    await_connection_event(&events, mark, |e| {
+        matches!(e, ConnectionStateEvent::Disconnected)
+    })
+    .await;
+    let state = await_owner_state(&tx, |s| !s.session_present).await;
+    assert!(!state.polling, "polling must be disarmed");
+    assert!(!state.poller_present, "poller must be cleared");
+    assert!(!state.recovering, "no recovery may be tracked");
+}
+
+// Finding 5 (M2/M3 re-review), hole B: a panic inside the recovery's
+// blocking task settles cleanly (`catch_unwind` → `RecoveryOutcome::Failed`),
+// but the reconnect loop died mid-stream — no terminal state was ever
+// emitted, so the UI sat on "Reconnecting {n}" forever. The panic settle
+// path must emit the terminal `Failed` itself.
+#[tokio::test]
+async fn panicked_recovery_emits_terminal_failed_and_settles() {
+    let (tx, events) = test_owner();
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("simulator connects");
+    let sim = simulator(&tx).await;
+
+    send(&tx, |reply| Command::DebugPanicNextRecovery { reply })
+        .await
+        .expect("arm recovery panic");
+
+    // Drop the link: the next health tick fails and starts the recovery,
+    // which immediately panics on the blocking pool.
+    let mark = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    await_connection_event(&events, mark, |e| {
+        matches!(e, ConnectionStateEvent::Failed { reason } if reason.contains("recovery panicked"))
+    })
+    .await;
+
+    // Settles like any terminal failure: seat empty, polling off, no storm.
+    let state = await_owner_state(&tx, |s| !s.recovering).await;
+    assert!(
+        !state.session_present,
+        "a panicked recovery must not resurrect a session"
+    );
+    assert!(!state.polling, "polling must be disarmed");
+
+    let err = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect_err("session is gone after a panicked recovery");
+    assert!(err.contains(NOT_CONNECTED), "got: {err}");
 }
 
 #[tokio::test]

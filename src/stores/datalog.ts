@@ -287,7 +287,9 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           number | null,
         ],
     );
-    useRealtimeStore.getState().applyFrame({ channels });
+    // Replay semantics, not live semantics: a null column entry is a real
+    // recorded gap and must clear the channel (see `applyReplayRow`).
+    useRealtimeStore.getState().applyReplayRow({ channels });
     set({ playbackRow: row, replaying: true });
   },
   setPlaying: (playing) => {

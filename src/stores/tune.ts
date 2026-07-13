@@ -99,6 +99,18 @@ const INITIAL: Pick<
   activeCurve: null,
 };
 
+/** Field-wise equality of two resolved bounds (all fields are primitives). */
+const boundsEqual = (
+  a: ResolvedGaugeBoundsDto,
+  b: ResolvedGaugeBoundsDto,
+): boolean =>
+  a.low === b.low &&
+  a.high === b.high &&
+  a.lo_danger === b.lo_danger &&
+  a.lo_warn === b.lo_warn &&
+  a.hi_warn === b.hi_warn &&
+  a.hi_danger === b.hi_danger;
+
 export const useTuneStore = create<TuneStore>((set, get) => ({
   ...INITIAL,
 
@@ -106,11 +118,17 @@ export const useTuneStore = create<TuneStore>((set, get) => ({
   setOfflineDefinition: (definition) => set({ definition, offline: true }),
   setValues: (values) => set({ values }),
   setGaugeBounds: (bounds) =>
-    set({
+    set((s) => ({
       gaugeBounds: Object.fromEntries(
-        bounds.map((bound) => [bound.name, bound]),
+        // Keep the previous entry when nothing changed: gauge draw callbacks
+        // key on this identity, and a fresh-but-equal object would restart
+        // every mounted gauge's rAF paint loop on every edit/undo/burn.
+        bounds.map((bound) => {
+          const prev = s.gaugeBounds[bound.name];
+          return [bound.name, prev && boundsEqual(prev, bound) ? prev : bound];
+        }),
       ),
-    }),
+    })),
   setActiveDialog: (activeDialog) =>
     set({ activeDialog, activeTable: null, activeCurve: null }),
   setActiveTable: (activeTable) =>

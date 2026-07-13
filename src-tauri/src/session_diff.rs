@@ -60,8 +60,14 @@ impl Session {
     /// Merge complete fields or selected array cells from the snapshot.
     ///
     /// Each pick is independently validated and committed to the wire before
-    /// the in-memory tune changes. A cell pick becomes one array `Tune::set`,
-    /// so one UI gesture remains one undo step and one contiguous wire delta.
+    /// the in-memory tune changes. A `Cells` pick becomes one
+    /// `Tune::set_cells` call, so one UI gesture remains one undo step and
+    /// one contiguous wire delta — and, because `set_cells` validates only
+    /// the touched indices, an untouched cell that is legitimately outside
+    /// the constant's current `[low, high]` range (stale tune vs. a newer/
+    /// tighter INI; `Tune::load_page` never range-checks) can never block a
+    /// pick that edits a *different*, in-range cell. Mirrors
+    /// `opentune_model::merge_picks`'s model-level fix for the same reason.
     pub fn merge_picks(&mut self, picks: &[MergePick]) -> Result<TuneDirtyEvent, String> {
         let Session {
             conn,
@@ -75,45 +81,55 @@ impl Session {
 
         for pick in picks {
             let name = pick.name();
-            let value = match pick {
-                MergePick::All(_) => snapshot.get(name),
+            match pick {
+                MergePick::All(_) => {
+                    let Ok(value) = snapshot.get(name) else {
+                        continue; // unresolvable on the snapshot -- nothing to merge
+                    };
+                    let mut probe = tune.clone();
+                    if probe.set(name, value.clone()).is_err() {
+                        continue; // rejected pick -- skip rather than abort the batch
+                    }
+                    // Wire the pick only when connected; offline sessions
+                    // merge into the model alone (same rule as
+                    // `Session::set_value`).
+                    if let Some(conn) = conn.as_ref() {
+                        let deltas = page_deltas(tune, &probe, &def.pages);
+                        write_deltas(conn, &def.comms, &deltas)?;
+                    }
+                    tune.set(name, value).map_err(fmt_model_err)?;
+                }
                 MergePick::Cells { indices, .. } => {
-                    let (Ok(Value::Array(mut current)), Ok(Value::Array(incoming))) =
+                    let (Ok(Value::Array(current)), Ok(Value::Array(incoming))) =
                         (tune.get(name), snapshot.get(name))
                     else {
                         continue;
                     };
-                    let mut changed = false;
-                    for &index in indices {
-                        let (Some(dst), Some(&src)) = (current.get_mut(index), incoming.get(index))
-                        else {
-                            continue;
-                        };
-                        if *dst != src {
-                            *dst = src;
-                            changed = true;
-                        }
+                    let cells: Vec<(u32, f64)> = indices
+                        .iter()
+                        .filter_map(|&index| {
+                            let &src = incoming.get(index)?;
+                            let &dst = current.get(index)?;
+                            if dst == src {
+                                return None;
+                            }
+                            u32::try_from(index).ok().map(|i| (i, src))
+                        })
+                        .collect();
+                    if cells.is_empty() {
+                        continue; // no in-bounds, changed cell -- nothing to merge
                     }
-                    if !changed {
-                        continue;
+                    let mut probe = tune.clone();
+                    if probe.set_cells(name, &cells).is_err() {
+                        continue; // rejected pick -- skip rather than abort the batch
                     }
-                    Ok(Value::Array(current))
+                    if let Some(conn) = conn.as_ref() {
+                        let deltas = page_deltas(tune, &probe, &def.pages);
+                        write_deltas(conn, &def.comms, &deltas)?;
+                    }
+                    tune.set_cells(name, &cells).map_err(fmt_model_err)?;
                 }
-            };
-            let Ok(value) = value else {
-                continue; // unresolvable on the snapshot -- nothing to merge
-            };
-            let mut probe = tune.clone();
-            if probe.set(name, value.clone()).is_err() {
-                continue; // rejected pick -- skip rather than abort the batch
             }
-            // Wire the pick only when connected; offline sessions merge into
-            // the model alone (same rule as `Session::set_value`).
-            if let Some(conn) = conn.as_ref() {
-                let deltas = page_deltas(tune, &probe, &def.pages);
-                write_deltas(conn, &def.comms, &deltas)?;
-            }
-            tune.set(name, value).map_err(fmt_model_err)?;
         }
         Ok(dirty_event(tune))
     }
@@ -254,6 +270,55 @@ mod tests {
             "undo reverts the merge exactly like a manual edit"
         );
         assert!(ev.dirty);
+    }
+
+    /// M2/M3 review fix wave item 2, session layer. `afrTable`'s declared
+    /// range is `[7.0, 25.5]` (`resources/speeduino.sample.ini`) — an
+    /// all-zero page decodes every cell to `0.0`, well outside that range.
+    /// `merge_picks`'s `Cells` arm must not let an untouched out-of-range
+    /// cell block a pick that only touches a different, in-range cell —
+    /// mirrors the model-level `merge_cells_pick_lands_despite_an_untouched
+    /// _out_of_range_cell` test (`crates/model/tests/diff.rs`).
+    #[test]
+    fn merge_cells_pick_lands_despite_an_untouched_out_of_range_snapshot_cell() {
+        let mut s = session();
+        s.load_tune().unwrap();
+
+        // Force every afrTable cell to 0.0 (out of range) directly on the
+        // page bytes — a stale tune vs. a newer/tighter INI is a legitimate
+        // real-world state, since `Tune::load_page` never range-checks.
+        s.tune.as_mut().unwrap().load_page(3, vec![0u8; 288]);
+        s.snapshot_tune().unwrap();
+
+        // The snapshot's cell 7 becomes the one in-range, differing value
+        // to pick. `Tune::set_cells` (already fixed, M4) only validates the
+        // touched cell, so this setup step is unaffected by the rest of the
+        // array being out of range.
+        s.snapshot
+            .as_mut()
+            .unwrap()
+            .set_cells("afrTable", &[(7, 20.0)])
+            .unwrap();
+
+        s.merge_picks(&[MergePick::Cells {
+            name: "afrTable".to_string(),
+            indices: vec![7],
+        }])
+        .expect("merge_picks");
+
+        let Value::Array(after) = s.tune.as_ref().unwrap().get("afrTable").unwrap() else {
+            panic!("expected an array");
+        };
+        assert_eq!(after[7], 20.0, "the picked in-range cell lands");
+        assert_eq!(
+            after[5], 0.0,
+            "an untouched out-of-range cell is unaffected"
+        );
+        assert_eq!(
+            ecu_page(&s, 3)[7],
+            200, // raw = 20.0 / scale(0.1)
+            "the picked cell's delta reached the ECU too"
+        );
     }
 
     #[test]

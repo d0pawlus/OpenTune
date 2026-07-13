@@ -227,6 +227,16 @@ pub enum Command {
     DebugPanicSessionOperation {
         reply: Reply<()>,
     },
+    /// Test-only: panic inside the next health-check `spawn_blocking` task.
+    #[cfg(test)]
+    DebugPanicNextHealthCheck {
+        reply: Reply<()>,
+    },
+    /// Test-only: panic inside the next recovery's blocking task.
+    #[cfg(test)]
+    DebugPanicNextRecovery {
+        reply: Reply<()>,
+    },
     /// Test-only: hold the session operation until `release` is signalled.
     #[cfg(test)]
     DebugHoldSessionOperation {
@@ -391,6 +401,10 @@ struct Owner {
     fail_next_reboot_tune_read: bool,
     #[cfg(test)]
     health_checks_suspended: bool,
+    #[cfg(test)]
+    panic_next_health_check: bool,
+    #[cfg(test)]
+    panic_next_recovery: bool,
 }
 
 /// Owner-side handle on a recovery running on the blocking pool.
@@ -435,6 +449,10 @@ async fn run_owner(
         fail_next_reboot_tune_read: false,
         #[cfg(test)]
         health_checks_suspended: false,
+        #[cfg(test)]
+        panic_next_health_check: false,
+        #[cfg(test)]
+        panic_next_recovery: false,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
@@ -577,7 +595,11 @@ impl Owner {
                 let _ = reply.send(self.with_session(|s| s.resolve_gauge_bounds()).await);
             }
             Command::StartRealtime { reply } => {
-                let r = if self.session.is_some() {
+                // A live link is required, not just a session: an offline
+                // session (`conn: None`) or one whose reconnect just failed
+                // must not arm polling against a dead/absent link. Same guard
+                // as `wants_health_check`.
+                let r = if matches!(&self.session, Some(Session { conn: Some(_), .. })) {
                     self.polling = true;
                     self.poller = Some(RealtimePoller::default());
                     Ok(())
@@ -759,6 +781,16 @@ impl Owner {
                 let _ = reply.send(r);
             }
             #[cfg(test)]
+            Command::DebugPanicNextHealthCheck { reply } => {
+                self.panic_next_health_check = true;
+                let _ = reply.send(Ok(()));
+            }
+            #[cfg(test)]
+            Command::DebugPanicNextRecovery { reply } => {
+                self.panic_next_recovery = true;
+                let _ = reply.send(Ok(()));
+            }
+            #[cfg(test)]
             Command::DebugHoldSessionOperation {
                 started,
                 release,
@@ -832,7 +864,14 @@ impl Owner {
         let Some(mut session) = self.session.take() else {
             return;
         };
+        #[cfg(test)]
+        let force_panic = std::mem::take(&mut self.panic_next_health_check);
+        #[cfg(not(test))]
+        let force_panic = false;
         let result = tokio::task::spawn_blocking(move || {
+            if force_panic {
+                panic!("forced health check panic");
+            }
             let result = session.check_link();
             (session, result)
         })
@@ -843,9 +882,11 @@ impl Owner {
                 self.session = Some(session);
                 self.start_recovery();
             }
-            Err(_) => {
-                self.polling = false;
-            }
+            // Panicked mid-probe: the session moved into the task and is
+            // lost. The uniform cleanup clears the poller and emits
+            // `Disconnected` — `polling = false` alone left the UI stuck
+            // on "Connected" over a dead seat (M2/M3 re-review finding 5).
+            Err(_) => self.lose_session_after_panic(),
         }
     }
 
@@ -974,12 +1015,23 @@ impl Owner {
             // signature guard rejecting a mismatched ECU, or `connect_serial`
             // erroring on a bad port — must leave the user's unsaved offline
             // tune intact, never destroyed. Only a genuine task panic loses it.
-            let (session, r) = tokio::task::spawn_blocking(move || {
+            let (session, r) = match tokio::task::spawn_blocking(move || {
                 let r = ops::attach_connection(&mut session, source, &emit);
                 (session, r)
             })
             .await
-            .map_err(|e| format!("attach panicked: {e}"))?;
+            {
+                Ok(settled) => settled,
+                Err(e) => {
+                    // The offline tune moved into the panicked task and is
+                    // lost; the uniform cleanup also corrects the UI back to
+                    // disconnected in case the attach panicked after already
+                    // emitting `Connected` (M2/M3 re-review finding 5).
+                    let error = format!("attach panicked: {e}");
+                    self.lose_session_after_panic();
+                    return Err(error);
+                }
+            };
             self.session = Some(session);
             // A refused attach may have already emitted `Connected` (serial
             // `connect_serial` connects before the signature guard rejects) —
@@ -1061,22 +1113,30 @@ impl Owner {
         let fail_tune_reread = std::mem::take(&mut self.fail_next_reboot_tune_read);
         #[cfg(not(test))]
         let fail_tune_reread = false;
+        #[cfg(test)]
+        let force_panic = std::mem::take(&mut self.panic_next_recovery);
+        #[cfg(not(test))]
+        let force_panic = false;
         let emit = Arc::clone(&self.emit);
         let self_tx = self.self_tx.clone();
         tokio::task::spawn_blocking(move || {
             // A panicking recovery must still settle — an unanswered
             // `reconnecting` would block Connect/Disconnect forever.
             let settled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if force_panic {
+                    panic!("forced recovery panic");
+                }
                 reconnect_session(session, &emit, &cancel, fail_tune_reread)
             }));
             let (session, outcome) = settled.unwrap_or_else(|panic| {
-                (
-                    None,
-                    RecoveryOutcome::Failed(format!(
-                        "recovery panicked: {}",
-                        panic_text(panic.as_ref())
-                    )),
-                )
+                let reason = format!("recovery panicked: {}", panic_text(panic.as_ref()));
+                // The reconnect loop died mid-stream, so no terminal state
+                // ever reached the UI — without this emit it would sit on
+                // "Reconnecting {n}" forever (M2/M3 re-review finding 5).
+                emit(OwnerEvent::Connection(ConnectionStateEvent::Failed {
+                    reason: reason.clone(),
+                }));
+                (None, RecoveryOutcome::Failed(reason))
             });
             // A failed upgrade means the owner (and app) shut down while the
             // recovery ran — there is no one to settle with; drop everything.

@@ -64,3 +64,30 @@ describe("realtime store (reflect-only)", () => {
     expect(useRealtimeStore.getState().getChannel("rpm")).toBeUndefined();
   });
 });
+
+// M2/M3 re-review finding 7: replaying a recorded log through the live
+// `applyFrame` (skip-on-null) kept the previous gauge reading across a
+// genuine null gap — while the user scrubs to diagnose that very dropout.
+describe("realtime store replay rows", () => {
+  beforeEach(() => {
+    useRealtimeStore.setState({ channels: {} });
+  });
+
+  it("applyReplayRow clears a channel on a recorded null gap", () => {
+    useRealtimeStore.getState().applyFrame(frame([["rpm", 3000]]));
+    useRealtimeStore.getState().applyReplayRow(
+      frame([
+        ["rpm", null],
+        ["clt", 80],
+      ]),
+    );
+    expect(useRealtimeStore.getState().getChannel("rpm")).toBeUndefined();
+    expect(useRealtimeStore.getState().getChannel("clt")).toBe(80);
+  });
+
+  it("applyReplayRow restores the channel when the gap ends", () => {
+    useRealtimeStore.getState().applyReplayRow(frame([["rpm", null]]));
+    useRealtimeStore.getState().applyReplayRow(frame([["rpm", 1500]]));
+    expect(useRealtimeStore.getState().getChannel("rpm")).toBe(1500);
+  });
+});

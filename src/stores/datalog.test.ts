@@ -73,4 +73,38 @@ describe("datalog store", () => {
     useDatalogStore.getState().stopPlayback();
     expect(useRealtimeStore.getState().channels).toEqual({});
   });
+
+  // M2/M3 re-review finding 7: a genuine null gap recorded in the log must
+  // clear the gauge while scrubbing over it, not freeze the last reading.
+  it("scrubbing over a recorded null gap clears the channel", async () => {
+    vi.mocked(ipc.commands.openLog).mockResolvedValue({
+      status: "ok",
+      data: {
+        fields: [{ name: "rpm", units: "RPM" }],
+        record_count: 3,
+        marker_count: 0,
+        duration_ms: 120,
+      },
+    });
+    vi.mocked(ipc.commands.getLogData).mockResolvedValue({
+      status: "ok",
+      data: {
+        offset: 0,
+        total_records: 3,
+        t_ms: [0, 40, 80],
+        columns: [[1000, null, 1200]],
+        markers: [],
+      },
+    });
+    await useDatalogStore.getState().openLog("A", "/tmp/gap.csv", "Csv");
+
+    useDatalogStore.getState().setPlaybackRow(0);
+    expect(useRealtimeStore.getState().getChannel("rpm")).toBe(1000);
+
+    useDatalogStore.getState().setPlaybackRow(1);
+    expect(useRealtimeStore.getState().getChannel("rpm")).toBeUndefined();
+
+    useDatalogStore.getState().setPlaybackRow(2);
+    expect(useRealtimeStore.getState().getChannel("rpm")).toBe(1200);
+  });
 });
