@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { Connect } from "./Connect";
 import { useConnectionStore } from "../stores/connection";
 import * as ipc from "../ipc/bindings";
@@ -57,6 +57,10 @@ describe("Connect component", () => {
       () => screen.getByDisplayValue("COM3 (Arduino Uno)") as HTMLSelectElement,
     );
     expect(select).toBeTruthy();
+    // Mount must call listPorts exactly once. refreshPorts previously wrote
+    // to selectedPort — a dependency of its own useCallback — which churned
+    // its identity and re-fired the mount effect for a second, redundant call.
+    expect(mockListPorts).toHaveBeenCalledTimes(1);
   });
 
   it("disables connect button when no port is selected", async () => {
@@ -133,6 +137,33 @@ describe("Connect component", () => {
 
     await waitFor(() => {
       expect(screen.getByText("No serial ports available")).toBeTruthy();
+    });
+  });
+
+  it("shows the error message when connect rejects with a thrown Error", async () => {
+    const mockListPorts = vi.mocked(ipc.commands.listPorts);
+    mockListPorts.mockResolvedValue({
+      status: "ok",
+      data: [{ name: "COM3", vid: null, pid: null, product: null }],
+    });
+    const mockConnect = vi.mocked(ipc.commands.connect);
+    mockConnect.mockRejectedValue(new Error("port busy"));
+
+    render(<Connect locale="en" />);
+
+    const connectButton = await waitFor(() => {
+      const buttons = screen.getAllByRole("button");
+      const button = buttons.find(
+        (b) => b.textContent === "Connect",
+      ) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+      return button;
+    });
+
+    fireEvent.click(connectButton);
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe("port busy");
     });
   });
 

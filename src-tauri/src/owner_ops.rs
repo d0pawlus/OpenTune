@@ -3,13 +3,14 @@
 //! for file cohesion. Everything here runs on the blocking pool (via the
 //! owner's `spawn_blocking`) because the transport is synchronous.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use opentune_ini::Definition;
 use opentune_model::Tune;
 use opentune_protocol::ConnectionState;
 
-use super::{Emitter, OwnerEvent};
+use super::{Emitter, OwnerEvent, RecoveryOutcome};
 use crate::connection::{
     connect_serial, connect_simulator, load_definition_from_path, load_definition_from_str,
     ActiveConnection, ConnectSource, Session,
@@ -54,28 +55,44 @@ pub(super) fn build_session(source: ConnectSource, emit: &Emitter) -> Result<Ses
 }
 
 /// Blocking recovery body used after a real owner/session link error.
-/// Runs the M1 reconnect loop for either transport and emits every state.
+/// Runs the M1 reconnect loop for either transport, streaming every state to
+/// the UI the moment it is produced — the full serial backoff schedule is
+/// worth ~150 s, so batching would freeze the frontend's attempt counter for
+/// the whole window. `cancel` is the owner's Disconnect flag: the loop
+/// observes it between attempts and backoff chunks and settles promptly,
+/// without a terminal `Failed` (the Disconnect already owns the UI state).
+///
+/// `fail_tune_reread` is the test hook forcing the post-reboot tune re-read
+/// to fail (always `false` in production, same plumbing as [`link_drop`]).
 pub(super) fn reconnect_session(
     mut session: Session,
     emit: &Emitter,
-) -> (Option<Session>, Result<(), String>) {
+    cancel: &AtomicBool,
+    fail_tune_reread: bool,
+) -> (Option<Session>, RecoveryOutcome) {
     let Some(conn) = session.conn.as_mut() else {
         return (
             Some(session),
-            Err("cannot reconnect without an active connection".to_string()),
+            RecoveryOutcome::Failed("cannot reconnect without an active connection".to_string()),
         );
     };
+    let on_state = |s: &ConnectionState| {
+        emit(OwnerEvent::Connection(ConnectionStateEvent::from(
+            s.clone(),
+        )));
+    };
+    let cancelled = || cancel.load(Ordering::Relaxed);
     let (states, rebooted) = match conn {
         ActiveConnection::Sim { manager, .. } => {
-            let states = manager.reconnect_collect_states();
+            let states = manager.reconnect_streaming(on_state, cancelled, |_| {});
             (states, manager.last_reconnect_caused_reidentify())
         }
         ActiveConnection::Serial { manager } => {
-            let states = manager.reconnect_collect_states();
+            let states = manager.reconnect_streaming(on_state, cancelled, |_| {});
             (states, manager.last_reconnect_caused_reidentify())
         }
     };
-    finish_reconnect(session, states, rebooted, false, emit)
+    finish_reconnect(session, states, rebooted, fail_tune_reread, emit)
 }
 
 /// Blocking simulator demo body: keep the link down through the first attempt,
@@ -99,13 +116,25 @@ pub(super) fn link_drop(
 
     simulator.set_link_dropped(true);
     let restore = Arc::clone(simulator);
-    let states = manager.reconnect_collect_states_with_retry_hook(move |attempt| {
-        if attempt == 1 {
-            restore.set_link_dropped(false);
-        }
-    });
+    // Live-streamed states plus the retry hook restoring the deliberately
+    // dropped link; never cancelled — the demo runs to a terminal state
+    // inside the owner's awaited call.
+    let states = manager.reconnect_streaming(
+        |s| {
+            emit(OwnerEvent::Connection(ConnectionStateEvent::from(
+                s.clone(),
+            )))
+        },
+        || false,
+        move |attempt| {
+            if attempt == 1 {
+                restore.set_link_dropped(false);
+            }
+        },
+    );
     let rebooted = manager.last_reconnect_caused_reidentify();
-    finish_reconnect(session, states, rebooted, fail_tune_reread, emit)
+    let (session, outcome) = finish_reconnect(session, states, rebooted, fail_tune_reread, emit);
+    (session, outcome.into_result())
 }
 
 fn finish_reconnect(
@@ -114,45 +143,48 @@ fn finish_reconnect(
     rebooted: bool,
     fail_tune_reread: bool,
     emit: &Emitter,
-) -> (Option<Session>, Result<(), String>) {
-    let result = match states.last() {
-        Some(ConnectionState::Connected { .. }) => Ok(()),
-        Some(ConnectionState::Failed { reason }) => Err(reason.clone()),
-        other => Err(format!(
-            "reconnect ended without a terminal state: {other:?}"
-        )),
+) -> (Option<Session>, RecoveryOutcome) {
+    // The states were already streamed to the UI by the reconnect loop's
+    // observer — only the outcome is derived here. A missing terminal state
+    // means the loop was cancelled: it never pushes `Failed` on cancel.
+    let outcome = match states.last() {
+        Some(ConnectionState::Connected { .. }) => RecoveryOutcome::Connected,
+        Some(ConnectionState::Failed { reason }) => RecoveryOutcome::Failed(reason.clone()),
+        _ => RecoveryOutcome::Cancelled,
     };
-    for s in states {
-        emit(OwnerEvent::Connection(ConnectionStateEvent::from(s)));
+    if !matches!(outcome, RecoveryOutcome::Connected) {
+        return (Some(session), outcome);
     }
 
-    if result.is_ok() && rebooted {
+    if rebooted {
         // A snapshot belongs to the ECU state that existed before the reboot
         // and can never remain a valid merge baseline afterward — clear it
         // even when the tune re-read below succeeds.
         session.snapshot = None;
-    }
-    if result.is_ok() && rebooted && session.tune.is_some() {
-        let reread = if fail_tune_reread {
-            Err("forced tune re-read failure".to_owned())
-        } else {
-            session.load_tune()
-        };
-        match reread {
-            Ok(ev) => emit(OwnerEvent::TuneDirty(ev)),
-            Err(e) => {
-                // Keep the successfully reconnected transport, but never
-                // expose the pre-reboot tune or snapshot as current.
-                session.tune = None;
-                session.snapshot = None;
-                return (
-                    Some(session),
-                    Err(format!("tune re-read after ECU reboot failed: {e}")),
-                );
+        if session.tune.is_some() {
+            let reread = if fail_tune_reread {
+                Err("forced tune re-read failure".to_owned())
+            } else {
+                session.load_tune()
+            };
+            match reread {
+                Ok(ev) => emit(OwnerEvent::TuneDirty(ev)),
+                Err(e) => {
+                    // Keep the successfully reconnected transport, but never
+                    // expose the pre-reboot tune or snapshot as current.
+                    session.tune = None;
+                    session.snapshot = None;
+                    return (
+                        Some(session),
+                        RecoveryOutcome::ConnectedButTuneRereadFailed(format!(
+                            "tune re-read after ECU reboot failed: {e}"
+                        )),
+                    );
+                }
             }
         }
     }
-    (Some(session), result)
+    (Some(session), RecoveryOutcome::Connected)
 }
 
 /// Build an offline session (no ECU link) around a blank tune from `ini_path`.

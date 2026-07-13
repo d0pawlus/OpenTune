@@ -20,6 +20,21 @@ use crate::constants_fields::{parse_constant_line, ConstantLineResult, OffsetCou
 use crate::{ConstantDef, ConstantKind, Diagnostic, Endianness, IniError, PageDef};
 use std::collections::HashMap;
 
+/// Upper bound on a single declared page's byte size. Real MS/Speeduino
+/// pages run from tens of bytes to a few hundred (see
+/// `tests/fixtures/speeduino-real-0832dc1d.ini`, largest page 384 bytes);
+/// 1 MiB is generous headroom while keeping the worst-case zero-fill
+/// (`vec![0u8; size]` in `crates/simulator/src/memory.rs` and
+/// `crates/model/src/tune.rs`) trivial. `pageSize` is the sole gate before
+/// that allocation — see [`parse_page_sizes`].
+const MAX_PAGE_SIZE_BYTES: usize = 1_048_576; // 1 MiB
+
+/// Upper bound on the number of pages a `pageSize = a,b,c,...` list may
+/// declare. Real INIs declare well under 32 pages (the largest known
+/// fixture declares 15); 64 is generous headroom while bounding the
+/// otherwise-unbounded `split(',')` token count.
+const MAX_PAGE_COUNT: usize = 64;
+
 /// The result of parsing the `[Constants]`/`[PcVariables]` sections.
 pub struct ParsedConstants {
     pub pages: Vec<PageDef>,
@@ -87,14 +102,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
             }
             "nPages" => continue, // informational; pages come from pageSize
             "pageSize" => {
-                pages = value
-                    .split(',')
-                    .enumerate()
-                    .map(|(i, tok)| PageDef {
-                        number: (i + 1) as u16,
-                        size: tok.trim().parse::<usize>().unwrap_or(0),
-                    })
-                    .collect();
+                pages = parse_page_sizes(value)?;
                 continue;
             }
             "endianness" => {
@@ -176,6 +184,56 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
         endianness,
         diagnostics,
     })
+}
+
+/// Parse the `pageSize = a,b,c,...` list into [`PageDef`]s.
+///
+/// This is the sole trust boundary for page sizes: every downstream
+/// consumer allocates `vec![0u8; size]` straight from `PageDef.size` with
+/// no further bound checking. A token that fails to parse, a size beyond
+/// [`MAX_PAGE_SIZE_BYTES`], or a list beyond [`MAX_PAGE_COUNT`] entries
+/// must never reach that allocation — hard-fail here instead, matching the
+/// existing `offset + size exceeds page size` hard-error precedent
+/// (`validate_offset_within_page`) rather than the diagnostic-and-skip path
+/// used for a single malformed constant (dropping one `pageSize` entry
+/// would desync every subsequent page's `number`, unlike skipping a
+/// constant).
+fn parse_page_sizes(value: &str) -> crate::Result<Vec<PageDef>> {
+    let tokens: Vec<&str> = value.split(',').collect();
+    if tokens.len() > MAX_PAGE_COUNT {
+        return Err(IniError::InvalidValue {
+            key: "pageSize".to_string(),
+            detail: format!(
+                "declares {} pages, exceeding the maximum of {MAX_PAGE_COUNT}",
+                tokens.len()
+            ),
+        });
+    }
+
+    tokens
+        .into_iter()
+        .enumerate()
+        .map(|(i, tok)| {
+            let tok = tok.trim();
+            let size = tok.parse::<usize>().map_err(|_| IniError::InvalidValue {
+                key: "pageSize".to_string(),
+                detail: format!("page {}: `{tok}` is not a valid page size", i + 1),
+            })?;
+            if size > MAX_PAGE_SIZE_BYTES {
+                return Err(IniError::InvalidValue {
+                    key: "pageSize".to_string(),
+                    detail: format!(
+                        "page {}: size {size} exceeds the maximum of {MAX_PAGE_SIZE_BYTES} bytes",
+                        i + 1
+                    ),
+                });
+            }
+            Ok(PageDef {
+                number: (i + 1) as u16,
+                size,
+            })
+        })
+        .collect()
 }
 
 fn unrecognised(section: &str, name: &str) -> Diagnostic {

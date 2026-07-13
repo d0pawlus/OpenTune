@@ -10,7 +10,14 @@
 //! rewritten: blocking wire I/O (`serialport` is synchronous) runs via
 //! `spawn_blocking`, moving the session in and back out, so the async loop
 //! itself never blocks.
+//!
+//! Link recovery is the one blocking operation the loop does NOT await: the
+//! serial retry budget is worth ~150 s of backoff, so [`Owner::start_recovery`]
+//! fires the reconnect on the blocking pool and keeps serving commands; the
+//! task settles by sending [`Command::RecoverySettled`] back through a weak
+//! self-sender.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +42,10 @@ use crate::session::PollFrameError;
 use ops::{build_session, link_drop, reconnect_session};
 
 const NOT_CONNECTED: &str = "not connected";
+/// Session-needing commands report this — instead of the generic
+/// [`NOT_CONNECTED`] — while the session is checked out for link recovery,
+/// so callers can tell a transient recovery window from a real disconnect.
+const RECOVERY_IN_PROGRESS: &str = "link recovery in progress";
 /// M4 final-review fix wave item 4: `StartCapture` rejects with this exact
 /// message when realtime polling isn't running — the capture ring is only
 /// ever fed from `poll_tick`, which only fires while `polling` is true (see
@@ -57,6 +68,15 @@ pub enum Command {
     },
     SimulateLinkDrop {
         reply: Reply<()>,
+    },
+    /// Owner-internal: an in-flight link recovery settled. Carries no reply —
+    /// nobody awaits it. Never constructed by the IPC layer (commands.rs);
+    /// only [`Owner::start_recovery`]'s blocking task sends it, through the
+    /// weak self-sender. Boxed so this rare variant doesn't inflate every
+    /// queued command by `Session`'s size.
+    RecoverySettled {
+        session: Option<Box<Session>>,
+        outcome: RecoveryOutcome,
     },
     GetDefinition {
         reply: Reply<DefinitionDto>,
@@ -219,6 +239,16 @@ pub enum Command {
     DebugFailNextRebootTuneRead {
         reply: Reply<()>,
     },
+    /// Test-only: disable the idle-link health prober. The reboot
+    /// choreographies (`sim.reboot()` → `SimulateLinkDrop`) race it: a 1 s
+    /// tick landing in that window reads the rebooted secl first and starts
+    /// its own (now fire-and-forget) recovery, so the test's drop command
+    /// answers `RECOVERY_IN_PROGRESS` instead of driving the reconnect. The
+    /// health path keeps its own dedicated tests.
+    #[cfg(test)]
+    DebugSuspendHealthChecks {
+        reply: Reply<()>,
+    },
     /// Test-only: inspect owner-private safety state.
     #[cfg(test)]
     DebugState {
@@ -234,6 +264,38 @@ pub struct DebugOwnerState {
     pub snapshot_present: bool,
     pub polling: bool,
     pub poller_present: bool,
+    pub recovering: bool,
+}
+
+/// How a link recovery settled. Richer than a `Result` because
+/// [`Owner::finish_recovery`] must tell apart four distinct session
+/// dispositions: a live link to restore, a live link whose tune was
+/// invalidated, a dead link whose retry budget is exhausted, and a
+/// user-cancelled recovery.
+#[derive(Debug)]
+pub enum RecoveryOutcome {
+    /// Reconnected; the session's link is live again.
+    Connected,
+    /// The link IS live, but the post-reboot tune re-read failed: the session
+    /// keeps its transport with tune/snapshot cleared, and polling stops.
+    ConnectedButTuneRereadFailed(String),
+    /// Attempts exhausted or signature mismatch — the session's manager holds
+    /// no live protocol.
+    Failed(String),
+    /// The cancel flag stopped the loop; no terminal state was emitted.
+    Cancelled,
+}
+
+impl RecoveryOutcome {
+    /// Project onto the command-reply shape (the simulator demo path, whose
+    /// reconnect is never cancelled).
+    fn into_result(self) -> Result<(), String> {
+        match self {
+            Self::Connected => Ok(()),
+            Self::ConnectedButTuneRereadFailed(e) | Self::Failed(e) => Err(e),
+            Self::Cancelled => Err("reconnect cancelled".to_string()),
+        }
+    }
 }
 
 /// An event the owner wants delivered to the frontend. Decouples the loop
@@ -289,7 +351,10 @@ pub fn spawn_owner(app: tauri::AppHandle) -> OwnerHandle {
 /// Spawn the owner task with an injected event sink (testable core).
 pub fn spawn_owner_with_emitter(emit: Emitter) -> OwnerHandle {
     let (tx, rx) = mpsc::channel(32);
-    tauri::async_runtime::spawn(run_owner(rx, emit));
+    // The owner gets a WEAK self-sender (for `RecoverySettled`): an in-flight
+    // recovery task must never keep the command channel — and therefore the
+    // owner task — alive past app shutdown.
+    tauri::async_runtime::spawn(run_owner(rx, tx.downgrade(), emit));
     tx
 }
 
@@ -314,9 +379,32 @@ struct Owner {
     capturing: bool,
     active_log: Option<ActiveLog>,
     opened_log: Option<Log>,
+    /// Set while a link recovery runs on the blocking pool. The session is
+    /// checked out for the whole window (`self.session` is `None`, which also
+    /// keeps `wants_poll`/`wants_health_check` quiet), and it comes back via
+    /// [`Command::RecoverySettled`] → [`Owner::finish_recovery`].
+    reconnecting: Option<RecoveryInFlight>,
+    /// Weak self-sender for `RecoverySettled` (see [`spawn_owner_with_emitter`]).
+    self_tx: mpsc::WeakSender<Command>,
     emit: Emitter,
     #[cfg(test)]
     fail_next_reboot_tune_read: bool,
+    #[cfg(test)]
+    health_checks_suspended: bool,
+}
+
+/// Owner-side handle on a recovery running on the blocking pool.
+struct RecoveryInFlight {
+    /// Cooperative cancel flag; the reconnect loop checks it between attempts
+    /// and backoff chunks (~100 ms granularity), so a user's Disconnect
+    /// interrupts even the capped 30 s serial backoff promptly.
+    cancel: Arc<AtomicBool>,
+    /// Set when the user disconnected while the recovery was in flight: the
+    /// settled session is then subject to the Disconnect retention rule
+    /// (offline-origin tune survives without a link) instead of being
+    /// restored, and no further event is emitted — Disconnect already
+    /// emitted `Disconnected`.
+    discard: bool,
 }
 
 struct ActiveLog {
@@ -327,7 +415,11 @@ struct ActiveLog {
     counter: u8,
 }
 
-async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
+async fn run_owner(
+    mut rx: mpsc::Receiver<Command>,
+    self_tx: mpsc::WeakSender<Command>,
+    emit: Emitter,
+) {
     let mut owner = Owner {
         session: None,
         polling: false,
@@ -336,9 +428,13 @@ async fn run_owner(mut rx: mpsc::Receiver<Command>, emit: Emitter) {
         capturing: false,
         active_log: None,
         opened_log: None,
+        reconnecting: None,
+        self_tx,
         emit,
         #[cfg(test)]
         fail_next_reboot_tune_read: false,
+        #[cfg(test)]
+        health_checks_suspended: false,
     };
     let mut tick = tokio::time::interval(POLL_INTERVAL);
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
@@ -377,6 +473,16 @@ impl Owner {
                 let _ = reply.send(self.connect(source).await);
             }
             Command::Disconnect { reply } => {
+                // Cancel an in-flight recovery first: the blocking reconnect
+                // loop observes the flag within ~100 ms and settles without a
+                // terminal `Failed` (the `Disconnected` emitted below owns
+                // the UI state). The session itself is still out on the
+                // blocking pool — `finish_recovery` applies the retention
+                // rule below when it comes back.
+                if let Some(inflight) = self.reconnecting.as_mut() {
+                    inflight.cancel.store(true, Ordering::Relaxed);
+                    inflight.discard = true;
+                }
                 let log_result = if self.active_log.is_some() {
                     self.stop_log().await.map(|_| ())
                 } else {
@@ -407,6 +513,9 @@ impl Owner {
             }
             Command::SimulateLinkDrop { reply } => {
                 let _ = reply.send(self.simulate_link_drop().await);
+            }
+            Command::RecoverySettled { session, outcome } => {
+                self.finish_recovery(session.map(|boxed| *boxed), outcome);
             }
             Command::GetDefinition { reply } => {
                 let _ = reply.send(self.with_session(|s| Ok(s.definition())).await);
@@ -475,7 +584,10 @@ impl Owner {
                 } else {
                     self.polling = false;
                     self.poller = None;
-                    Err(format!("{NOT_CONNECTED} — cannot start realtime"))
+                    Err(format!(
+                        "{} — cannot start realtime",
+                        self.not_connected_error()
+                    ))
                 };
                 let _ = reply.send(r);
             }
@@ -502,7 +614,7 @@ impl Owner {
                         Ok(())
                     }
                     Some(_) => Err(POLLING_NOT_RUNNING.to_owned()),
-                    None => Err(NOT_CONNECTED.to_owned()),
+                    None => Err(self.not_connected_error()),
                 };
                 let _ = reply.send(r);
             }
@@ -540,7 +652,7 @@ impl Owner {
                                 crate::analysis_bridge::run_ve_analyze(&s.def, t, &samples, &table)
                             })
                     }
-                    (None, _) => Err(NOT_CONNECTED.to_owned()),
+                    (None, _) => Err(self.not_connected_error()),
                     (_, None) => Err("no capture — start a capture first".to_string()),
                 };
                 let _ = reply.send(r);
@@ -604,7 +716,7 @@ impl Owner {
                         ..
                     }) => Ok(Arc::clone(simulator)),
                     Some(_) => Err("not a simulator connection".to_owned()),
-                    None => Err(NOT_CONNECTED.to_owned()),
+                    None => Err(self.not_connected_error()),
                 };
                 let _ = reply.send(r);
             }
@@ -668,6 +780,11 @@ impl Owner {
                 let _ = reply.send(Ok(()));
             }
             #[cfg(test)]
+            Command::DebugSuspendHealthChecks { reply } => {
+                self.health_checks_suspended = true;
+                let _ = reply.send(Ok(()));
+            }
+            #[cfg(test)]
             Command::DebugState { reply } => {
                 let state = DebugOwnerState {
                     session_present: self.session.is_some(),
@@ -681,6 +798,7 @@ impl Owner {
                         .is_some_and(|session| session.snapshot.is_some()),
                     polling: self.polling,
                     poller_present: self.poller.is_some(),
+                    recovering: self.reconnecting.is_some(),
                 };
                 let _ = reply.send(Ok(state));
             }
@@ -703,6 +821,10 @@ impl Owner {
     /// Probe an idle live link. During realtime, `poll_tick` is already the
     /// probe, so this avoids sending an extra output-channel request.
     fn wants_health_check(&self) -> bool {
+        #[cfg(test)]
+        if self.health_checks_suspended {
+            return false;
+        }
         !self.polling && matches!(&self.session, Some(Session { conn: Some(_), .. }))
     }
 
@@ -719,7 +841,7 @@ impl Owner {
             Ok((session, Ok(()))) => self.session = Some(session),
             Ok((session, Err(_))) => {
                 self.session = Some(session);
-                let _ = self.recover_link().await;
+                self.start_recovery();
             }
             Err(_) => {
                 self.polling = false;
@@ -771,7 +893,7 @@ impl Owner {
                     }
                 }
                 if link_failed {
-                    let _ = self.recover_link().await;
+                    self.start_recovery();
                 }
             }
             // Panicked mid-poll: the session is lost (poisoned-equivalent,
@@ -790,7 +912,7 @@ impl Owner {
         f: impl FnOnce(&mut Session) -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
         let Some(mut session) = self.session.take() else {
-            return Err(NOT_CONNECTED.to_owned());
+            return Err(self.not_connected_error());
         };
         match tokio::task::spawn_blocking(move || {
             let r = f(&mut session);
@@ -832,6 +954,13 @@ impl Owner {
     /// `Connecting`/`Connected` are emitted from inside the handshake so a
     /// slow serial connect still shows live progress either way.
     async fn connect(&mut self, source: ConnectSource) -> Result<(), String> {
+        // Safety net against resurrection races: while a recovery is in
+        // flight its (possibly stale) session will settle back soon — a
+        // fresh connect now could be silently clobbered or clobber it. The
+        // UI disables Connect during reconnecting anyway.
+        if self.reconnecting.is_some() {
+            return Err(format!("{RECOVERY_IN_PROGRESS} — disconnect first"));
+        }
         if self.active_log.is_some() {
             self.stop_log().await?;
         }
@@ -883,7 +1012,7 @@ impl Owner {
     /// preserved) is put back when the reconnect settles.
     async fn simulate_link_drop(&mut self) -> Result<(), String> {
         let Some(session) = self.session.take() else {
-            return Err(NOT_CONNECTED.to_owned());
+            return Err(self.not_connected_error());
         };
         let emit = Arc::clone(&self.emit);
         #[cfg(test)]
@@ -905,23 +1034,127 @@ impl Owner {
         r
     }
 
-    /// Recover after a real health/poll failure. A successful reconnect keeps
-    /// realtime armed so frames resume automatically; terminal failure stops
-    /// polling to avoid a reconnect storm.
-    async fn recover_link(&mut self) -> Result<(), String> {
-        let Some(session) = self.session.take() else {
-            return Err(NOT_CONNECTED.to_owned());
-        };
-        let emit = Arc::clone(&self.emit);
-        let (session, result) =
-            tokio::task::spawn_blocking(move || reconnect_session(session, &emit))
-                .await
-                .map_err(|e| format!("reconnect panicked: {e}"))?;
-        self.session = session;
-        if result.is_err() {
-            self.polling = false;
+    /// Begin recovery after a real health/poll failure — WITHOUT blocking the
+    /// command loop. The serial retry budget is worth ~150 s of backoff, so
+    /// the reconnect runs fire-and-forget on the blocking pool while the
+    /// owner keeps serving commands (a user's Disconnect must not wait out
+    /// the whole schedule). While in flight, `self.session` is `None` and
+    /// `self.reconnecting` is `Some`, so the poll/health gates stay quiet and
+    /// session commands answer [`RECOVERY_IN_PROGRESS`]. The task settles by
+    /// sending [`Command::RecoverySettled`]; a successful reconnect keeps
+    /// realtime armed so frames resume automatically.
+    fn start_recovery(&mut self) {
+        // One recovery at a time. The gates cannot fire while the session is
+        // out, so this is purely defensive.
+        if self.reconnecting.is_some() {
+            return;
         }
-        result
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.reconnecting = Some(RecoveryInFlight {
+            cancel: Arc::clone(&cancel),
+            discard: false,
+        });
+        #[cfg(test)]
+        let fail_tune_reread = std::mem::take(&mut self.fail_next_reboot_tune_read);
+        #[cfg(not(test))]
+        let fail_tune_reread = false;
+        let emit = Arc::clone(&self.emit);
+        let self_tx = self.self_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            // A panicking recovery must still settle — an unanswered
+            // `reconnecting` would block Connect/Disconnect forever.
+            let settled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reconnect_session(session, &emit, &cancel, fail_tune_reread)
+            }));
+            let (session, outcome) = settled.unwrap_or_else(|panic| {
+                (
+                    None,
+                    RecoveryOutcome::Failed(format!(
+                        "recovery panicked: {}",
+                        panic_text(panic.as_ref())
+                    )),
+                )
+            });
+            // A failed upgrade means the owner (and app) shut down while the
+            // recovery ran — there is no one to settle with; drop everything.
+            if let Some(tx) = self_tx.upgrade() {
+                let _ = tx.blocking_send(Command::RecoverySettled {
+                    session: session.map(Box::new),
+                    outcome,
+                });
+            }
+        });
+    }
+
+    /// Apply a settled recovery ([`Command::RecoverySettled`]).
+    ///
+    /// No event is emitted from here: every connection state — including the
+    /// terminal `Failed` — was already streamed live by the reconnect loop,
+    /// and the discard path's `Disconnected` was emitted by Disconnect itself.
+    fn finish_recovery(&mut self, session: Option<Session>, outcome: RecoveryOutcome) {
+        let Some(inflight) = self.reconnecting.take() else {
+            // Stale settle (no recovery is tracked): never resurrect the
+            // session it carries.
+            return;
+        };
+        // The seat was re-occupied while the recovery was in flight
+        // (`new_tune`/`open_tune` replaced the session): the user's fresh
+        // session wins; the settled one is stale and dropped.
+        if self.session.is_some() {
+            return;
+        }
+        if inflight.discard {
+            self.retain_offline_tune_only(session);
+            return;
+        }
+        match outcome {
+            RecoveryOutcome::Connected => self.session = session,
+            RecoveryOutcome::ConnectedButTuneRereadFailed(_) => {
+                // The link IS live — keep the session (transport intact,
+                // tune/snapshot already cleared) but stop polling: there is
+                // no current tune for frames to be meaningful against.
+                self.session = session;
+                self.polling = false;
+            }
+            // Give-up terminates the M1 retry storm: with no live conn left
+            // in the seat, `wants_health_check` stays quiet instead of
+            // launching the next ~150 s cycle one second later. `Cancelled`
+            // without `discard` cannot normally happen; treat it as the same
+            // give-up (no events either way).
+            RecoveryOutcome::Failed(_) | RecoveryOutcome::Cancelled => {
+                self.polling = false;
+                self.retain_offline_tune_only(session);
+            }
+        }
+    }
+
+    /// The Disconnect retention rule (design spec §"Disconnect while
+    /// editing") applied to a session returning from a dead-link recovery:
+    /// an offline-origin tune survives, editable/saveable, with the link
+    /// dropped; any other session is destroyed so a later connect
+    /// FRESH-reads instead of ATTACHing a stale online tune.
+    fn retain_offline_tune_only(&mut self, session: Option<Session>) {
+        match session {
+            Some(mut s) if s.offline_origin && s.tune.is_some() => {
+                s.conn = None;
+                self.session = Some(s);
+            }
+            _ => {}
+        }
+    }
+
+    /// The `NOT_CONNECTED`-class error for the current owner state: a
+    /// distinct diagnostic while the session is merely checked out for link
+    /// recovery.
+    fn not_connected_error(&self) -> String {
+        if self.reconnecting.is_some() {
+            RECOVERY_IN_PROGRESS.to_owned()
+        } else {
+            NOT_CONNECTED.to_owned()
+        }
     }
 
     fn start_log(&mut self, path: String, format: LogFormatDto) -> Result<LogStatusDto, String> {
@@ -934,7 +1167,7 @@ impl Owner {
         let session = self
             .session
             .as_ref()
-            .ok_or_else(|| NOT_CONNECTED.to_owned())?;
+            .ok_or_else(|| self.not_connected_error())?;
         let fields = session
             .def
             .output_channels
@@ -1123,7 +1356,15 @@ impl Owner {
     /// UI doesn't keep showing a false "connected" after e.g. creating a new
     /// offline tune while connected.
     fn reset_session(&mut self) {
-        let had_link = matches!(&self.session, Some(s) if s.conn.is_some());
+        // A recovery in flight means the (checked-out) session had a live
+        // link. Cancel it — its settled session is stale next to the
+        // replacement built here, and `finish_recovery`'s occupied-seat
+        // guard drops it on arrival.
+        let recovering = self.reconnecting.is_some();
+        if let Some(inflight) = self.reconnecting.as_mut() {
+            inflight.cancel.store(true, Ordering::Relaxed);
+        }
+        let had_link = recovering || matches!(&self.session, Some(s) if s.conn.is_some());
         self.session = None;
         self.polling = false;
         self.poller = None;
@@ -1195,6 +1436,16 @@ impl ActiveLog {
         }));
         self.counter = next_counter(self.counter);
     }
+}
+
+/// Best-effort text of a caught panic payload (the standard `&str`/`String`
+/// shapes; anything else degrades to a fixed marker).
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
 }
 
 fn next_counter(counter: u8) -> u8 {

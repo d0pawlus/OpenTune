@@ -464,6 +464,152 @@ impl Transport for IdentityTransport {
     }
 }
 
+// ── Streaming reconnect: states observed live, cancellation ────────────────
+//
+// M1 rereview CRITICAL: `reconnect_streaming` is the primary loop. States
+// must reach the observer the moment they are produced (the frontend renders
+// a live attempt counter), and a cancel must stop the loop between attempts
+// and mid-backoff without ever emitting a stale terminal `Failed`.
+
+#[test]
+fn streaming_observer_sees_each_state_before_the_attempt_resolves() {
+    use std::sync::{Arc, Mutex};
+
+    let sim = Arc::new(EcuSimulator::new());
+    let sim_factory = Arc::clone(&sim);
+
+    let observed: Arc<Mutex<Vec<ConnectionState>>> = Arc::new(Mutex::new(Vec::new()));
+    // Snapshot of how many states the observer had seen when each factory
+    // call (= each attempt's transport build) ran.
+    let observed_at_factory: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let obs_in_factory = Arc::clone(&observed);
+    let counts = Arc::clone(&observed_at_factory);
+    let mut call_count = 0u32;
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        call_count += 1;
+        counts
+            .lock()
+            .unwrap()
+            .push(obs_in_factory.lock().unwrap().len());
+        // Keep the link down through attempt 1; restore it for attempt 2.
+        if call_count > 2 {
+            sim_factory.set_link_dropped(false);
+        }
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+    sim.set_link_dropped(true);
+
+    let obs_sink = Arc::clone(&observed);
+    let states = mgr.reconnect_streaming(
+        move |s| obs_sink.lock().unwrap().push(s.clone()),
+        || false,
+        |_| {},
+    );
+
+    assert!(matches!(
+        states.as_slice(),
+        [
+            ConnectionState::Reconnecting { attempt: 1 },
+            ConnectionState::Reconnecting { attempt: 2 },
+            ConnectionState::Connected { .. }
+        ]
+    ));
+    // The observer received exactly the returned sequence, in order.
+    assert_eq!(*observed.lock().unwrap(), states);
+    // Factory calls: initial connect (observer not yet wired → 0), attempt 1
+    // (Reconnecting{1} already observed → 1), attempt 2 (both → 2). This is
+    // the incremental-emission proof: each Reconnecting{n} reaches the
+    // observer BEFORE attempt n resolves, not as a batch afterwards.
+    assert_eq!(*observed_at_factory.lock().unwrap(), vec![0, 1, 2]);
+}
+
+#[test]
+fn cancel_after_first_failed_attempt_stops_without_a_terminal_failed() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let sim = Arc::new(EcuSimulator::new());
+    let sim_factory = Arc::clone(&sim);
+    let mut mgr = ConnectionManager::new(speeduino_comms(), fast_config(), move || {
+        Ok(sim_factory.client_transport())
+    });
+    mgr.connect().unwrap();
+    // Drop the link permanently so every attempt fails.
+    sim.set_link_dropped(true);
+
+    let cancel = AtomicBool::new(false);
+    let states = mgr.reconnect_streaming(
+        |_| {},
+        || cancel.load(Ordering::Relaxed),
+        |attempt| {
+            if attempt == 1 {
+                cancel.store(true, Ordering::Relaxed);
+            }
+        },
+    );
+
+    assert!(
+        matches!(
+            states.as_slice(),
+            [ConnectionState::Reconnecting { attempt: 1 }]
+        ),
+        "cancel after attempt 1 must stop the loop without a terminal state, got: {states:?}"
+    );
+    // A cancelled reconnect leaves no live protocol behind.
+    assert!(matches!(
+        mgr.check_link(),
+        Err(opentune_protocol::ProtocolError::Transport(
+            TransportError::Disconnected
+        ))
+    ));
+}
+
+#[test]
+fn cancel_interrupts_a_long_backoff_promptly() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    let sim = Arc::new(EcuSimulator::new());
+    sim.set_link_dropped(true);
+    let sim_factory = Arc::clone(&sim);
+    let slow = ReconnectConfig {
+        max_attempts: 3,
+        base_delay: Duration::from_secs(10),
+        max_delay: Duration::from_secs(10),
+    };
+    let mut mgr = ConnectionManager::new(speeduino_comms(), slow, move || {
+        Ok(sim_factory.client_transport())
+    });
+
+    // Cancel the moment Reconnecting{1} is observed — i.e. right before the
+    // 10 s backoff would start. The chunked sleep must notice immediately.
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_in_observer = Arc::clone(&cancel);
+    let started = Instant::now();
+    let states = mgr.reconnect_streaming(
+        move |s| {
+            if matches!(s, ConnectionState::Reconnecting { attempt: 1 }) {
+                cancel_in_observer.store(true, Ordering::Relaxed);
+            }
+        },
+        || cancel.load(Ordering::Relaxed),
+        |_| {},
+    );
+
+    assert!(matches!(
+        states.as_slice(),
+        [ConnectionState::Reconnecting { attempt: 1 }]
+    ));
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "cancel must interrupt a 10 s backoff promptly, took {:?}",
+        started.elapsed()
+    );
+}
+
 #[test]
 fn reconnect_signature_mismatch_fails_without_retrying() {
     let expected = speeduino_comms().signature.clone();

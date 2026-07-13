@@ -49,6 +49,52 @@ async fn owner_state(tx: &OwnerHandle) -> DebugOwnerState {
         .expect("owner state")
 }
 
+/// Disable the idle-link health prober for tests that stage a reboot (or a
+/// backwards-secl window) and then drive the recovery EXPLICITLY through
+/// `SimulateLinkDrop`: a 1 s health tick landing inside that window would
+/// otherwise read the staged secl first and start its own recovery, racing
+/// the test's drop command. The health path has its own dedicated tests.
+async fn suspend_health_checks(tx: &OwnerHandle) {
+    send(tx, |reply| Command::DebugSuspendHealthChecks { reply })
+        .await
+        .expect("suspend health checks");
+}
+
+/// Deterministic wait (5 s cap) until the owner's debug state satisfies
+/// `pred` — the oracle for an in-flight recovery settling.
+async fn await_owner_state(
+    tx: &OwnerHandle,
+    pred: impl Fn(&DebugOwnerState) -> bool,
+) -> DebugOwnerState {
+    for _ in 0..500 {
+        let state = owner_state(tx).await;
+        if pred(&state) {
+            return state;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("owner state never satisfied the predicate within 5 s");
+}
+
+/// Deterministic wait (5 s cap) for the first connection event past `since`
+/// satisfying `pred`; returns its absolute index into the collected events.
+async fn await_connection_event(
+    events: &Collected,
+    since: usize,
+    pred: impl Fn(&ConnectionStateEvent) -> bool,
+) -> usize {
+    for _ in 0..500 {
+        let found = events.lock().unwrap()[since..]
+            .iter()
+            .position(|ev| matches!(ev, OwnerEvent::Connection(e) if pred(e)));
+        if let Some(i) = found {
+            return since + i;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("no matching connection event within 5 s");
+}
+
 /// The `reqFuel` value currently reported by the owner's tune.
 async fn req_fuel(tx: &OwnerHandle) -> Value {
     let values = send(tx, |reply| Command::GetValues {
@@ -204,6 +250,7 @@ async fn owner_serves_commands_sequentially() {
 async fn reboot_on_reconnect_invalidates_and_rereads_tune() {
     let (tx, events) = test_owner();
     connect_and_load(&tx).await;
+    suspend_health_checks(&tx).await;
 
     // Burn 12.5 to flash, then leave an unburned 15.0 on top: a stale tune
     // would read 15.0/dirty, a re-read reads the flash 12.5/clean.
@@ -632,6 +679,7 @@ async fn panicked_session_operation_disconnects_and_disarms_realtime() {
 async fn failed_reboot_reread_invalidates_tune_and_snapshot_but_keeps_link() {
     let (tx, events) = test_owner();
     connect_and_load(&tx).await;
+    suspend_health_checks(&tx).await;
 
     send(&tx, |reply| Command::SetValue {
         name: "reqFuel".into(),
@@ -870,6 +918,7 @@ async fn realtime_polls_decode_and_emit_frames() {
 async fn polling_glitch_reconnect_preserves_unburned_tune_after_secl_wrap() {
     let (tx, events) = test_owner();
     connect_realtime_and_load(&tx).await;
+    suspend_health_checks(&tx).await;
 
     // The unburned edit a false-reboot re-read would destroy.
     send(&tx, |reply| Command::SetValue {
@@ -924,6 +973,7 @@ async fn polling_glitch_reconnect_preserves_unburned_tune_after_secl_wrap() {
 async fn real_reboot_after_polling_still_detected_and_rereads_tune() {
     let (tx, events) = test_owner();
     connect_realtime_and_load(&tx).await;
+    suspend_health_checks(&tx).await;
 
     // Burn 12.5 to flash, then an unburned 15.0 on top: a re-read lands on
     // 12.5/clean, a stale tune would keep 15.0.
@@ -1138,6 +1188,333 @@ async fn realtime_transport_failure_automatically_reconnects_and_resumes() {
     send(&tx, |reply| Command::StopRealtime { reply })
         .await
         .expect("stop");
+}
+
+// ── M1 rereview CRITICAL: recovery must not block the owner or retry forever ─
+//
+// `recover_link` used to run the WHOLE reconnect schedule (serial: ~150 s of
+// backoff) inside one awaited spawn_blocking — no command, not even the
+// user's Disconnect, was served meanwhile — and a terminal `Failed` left
+// `session.conn` populated, so the next 1 s health tick started the next
+// full cycle: an infinite retry storm. Recovery now runs fire-and-forget
+// (`start_recovery` → `RecoverySettled`), streams every state live, and a
+// terminal failure applies the Disconnect retention rule to whatever
+// session settles back.
+
+#[tokio::test]
+async fn terminal_recovery_failure_drops_online_session_and_stops_retrying() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    // Permanent drop: every reconnect attempt fails and the retry budget
+    // (10 attempts, ≤100 ms backoff each in the sim config) exhausts.
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    // The terminal Failed is streamed live by the recovery task.
+    let failed_at = await_connection_event(&events, before_drop, |e| {
+        matches!(e, ConnectionStateEvent::Failed { .. })
+    })
+    .await;
+
+    // Once settled: the FRESH online session is dropped (retention rule —
+    // nothing offline to keep) and polling is disarmed.
+    let state = await_owner_state(&tx, |s| !s.recovering).await;
+    assert!(
+        !state.session_present,
+        "a FRESH online session must be dropped after terminal recovery failure"
+    );
+    assert!(!state.polling, "polling must be disarmed");
+
+    // THE storm regression: with no live conn left in the seat, the health
+    // tick must NOT start another cycle. A full health interval (1 s) plus
+    // margin passes with no further connection events of any kind.
+    let quiet_mark = events.lock().unwrap().len();
+    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    assert!(
+        !events.lock().unwrap()[quiet_mark..]
+            .iter()
+            .any(|ev| matches!(ev, OwnerEvent::Connection(_))),
+        "no reconnect cycle may start after a terminal recovery failure"
+    );
+    assert!(
+        !events.lock().unwrap()[failed_at + 1..].iter().any(|ev| {
+            matches!(
+                ev,
+                OwnerEvent::Connection(ConnectionStateEvent::Reconnecting { .. })
+            )
+        }),
+        "no Reconnecting may follow the terminal Failed"
+    );
+
+    let err = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect_err("session is gone after terminal failure");
+    assert!(err.contains(NOT_CONNECTED), "got: {err}");
+}
+
+#[tokio::test]
+async fn terminal_recovery_failure_keeps_offline_origin_tune_editable() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, events) = test_owner();
+
+    // Offline-origin session, ATTACHed to the simulator, with an edit.
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune");
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("attach");
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("edit");
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    let _ = await_connection_event(&events, before_drop, |e| {
+        matches!(e, ConnectionStateEvent::Failed { .. })
+    })
+    .await;
+    let state = await_owner_state(&tx, |s| !s.recovering).await;
+    assert!(
+        state.session_present,
+        "an offline-origin session must survive terminal failure as offline"
+    );
+    assert!(state.tune_loaded, "the offline tune must survive");
+    assert!(!state.polling);
+
+    // Still editable offline (the surviving session's link is gone), and
+    // the pre-drop edit is intact — mirrors §"Disconnect while editing".
+    assert_eq!(req_fuel(&tx).await, Value::Scalar(12.5));
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(13.0),
+        reply,
+    })
+    .await
+    .expect("offline edit after terminal recovery failure");
+    assert_eq!(req_fuel(&tx).await, Value::Scalar(13.0));
+}
+
+#[tokio::test]
+async fn disconnect_during_recovery_cancels_and_keeps_offline_tune() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, events) = test_owner();
+
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune");
+    send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect("attach");
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(12.5),
+        reply,
+    })
+    .await
+    .expect("edit");
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    // Recovery is in flight once the first live Reconnecting arrives.
+    let _ = await_connection_event(&events, before_drop, |e| {
+        matches!(e, ConnectionStateEvent::Reconnecting { .. })
+    })
+    .await;
+
+    // Disconnect answers promptly — it does NOT wait out the retry budget —
+    // and cancels the in-flight recovery.
+    send(&tx, |reply| Command::Disconnect { reply })
+        .await
+        .expect("disconnect during recovery");
+
+    // The cancelled recovery settles; the offline-origin tune survives per
+    // the Disconnect retention rule.
+    let state = await_owner_state(&tx, |s| !s.recovering).await;
+    assert!(
+        state.session_present,
+        "offline tune survives the disconnect"
+    );
+    assert!(state.tune_loaded);
+
+    // Exactly one Disconnected (Disconnect's own emit), and NO Failed — a
+    // stale terminal Failed landing after the user's Disconnect would
+    // corrupt the UI state it just displayed.
+    {
+        let events = events.lock().unwrap();
+        let disconnects = events[before_drop..]
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev,
+                    OwnerEvent::Connection(ConnectionStateEvent::Disconnected)
+                )
+            })
+            .count();
+        assert_eq!(disconnects, 1, "exactly one Disconnected");
+        assert!(
+            !events[before_drop..].iter().any(|ev| {
+                matches!(
+                    ev,
+                    OwnerEvent::Connection(ConnectionStateEvent::Failed { .. })
+                )
+            }),
+            "a cancelled recovery must not emit a terminal Failed"
+        );
+    }
+
+    // Offline editing continues on the surviving session.
+    send(&tx, |reply| Command::SetValue {
+        name: "reqFuel".into(),
+        value: Value::Scalar(13.0),
+        reply,
+    })
+    .await
+    .expect("offline edit after cancelled recovery");
+    assert_eq!(req_fuel(&tx).await, Value::Scalar(13.0));
+}
+
+#[tokio::test]
+async fn recovery_streams_reconnecting_live_and_commands_fail_fast() {
+    let (tx, events) = test_owner();
+    connect_realtime_and_load(&tx).await;
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_since(&events, mark).await;
+
+    let sim = simulator(&tx).await;
+    let before_drop = events.lock().unwrap().len();
+    sim.set_link_dropped(true);
+
+    // Reconnecting{1} is observable WHILE the recovery still runs — under
+    // the old batched emission nothing reached the UI until the terminal
+    // state, a full backoff schedule later.
+    let _ = await_connection_event(&events, before_drop, |e| {
+        matches!(e, ConnectionStateEvent::Reconnecting { attempt: 1 })
+    })
+    .await;
+
+    // A session command sent mid-recovery answers immediately with the
+    // distinct diagnostic instead of queueing behind the retry schedule.
+    let err = send(&tx, |reply| Command::GetDefinition { reply })
+        .await
+        .expect_err("session is checked out for recovery");
+    assert!(err.contains(RECOVERY_IN_PROGRESS), "got: {err}");
+
+    // Connect is refused as a safety net while recovery is in flight (a
+    // stale session must never resurrect over a fresh one).
+    let err = send(&tx, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .expect_err("connect during recovery is refused");
+    assert!(err.contains(RECOVERY_IN_PROGRESS), "got: {err}");
+
+    // Let the recovery settle so teardown is clean.
+    let _ = await_owner_state(&tx, |s| !s.recovering).await;
+}
+
+// The health-path twin of `failed_reboot_reread_invalidates_tune_and_snapshot_
+// but_keeps_link`: a REAL (non-demo) recovery that reconnects to a rebooted
+// ECU whose tune re-read fails must keep the live link (session restored,
+// tune/snapshot invalidated) with polling stopped — the
+// `ConnectedButTuneRereadFailed` settle arm.
+
+#[tokio::test]
+async fn recovery_reboot_reread_failure_keeps_live_link_and_stops_polling() {
+    let (tx, events) = test_owner();
+    connect_and_load(&tx).await;
+
+    // Seed a >0 reboot baseline: 50 s of engine time, noted by ≥1 poll.
+    let sim = simulator(&tx).await;
+    sim.tick_engine(std::time::Duration::from_secs(50));
+    let mark = events.lock().unwrap().len();
+    send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect("start");
+    let _ = await_frame_where(&events, mark, |f| {
+        channel_value(f, "secl").is_some_and(|v| v >= 50.0)
+    })
+    .await;
+
+    send(&tx, |reply| Command::DebugFailNextRebootTuneRead { reply })
+        .await
+        .expect("arm reread failure");
+
+    // Drop FIRST (so no poll can consume the rebooted secl and destroy the
+    // baseline), then reboot; restore the link once recovery is under way so
+    // the reconnect succeeds and detects the reboot (read_secl 0 < 50).
+    sim.set_link_dropped(true);
+    sim.reboot();
+    let restore = Arc::clone(&sim);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        restore.set_link_dropped(false);
+    });
+
+    let state = await_owner_state(&tx, |s| {
+        !s.recovering && s.session_present && !s.tune_loaded
+    })
+    .await;
+    assert!(!state.polling, "a tune-less session must not keep polling");
+    assert!(!state.snapshot_present);
+
+    // The live link survived: the simulator is still reachable through the
+    // session's connection, but the stale pre-reboot tune is not readable.
+    let _ = simulator(&tx).await;
+    let err = send(&tx, |reply| Command::GetValues {
+        names: vec!["reqFuel".into()],
+        reply,
+    })
+    .await
+    .expect_err("invalidated tune must not remain readable");
+    assert!(err.contains("no tune loaded"), "got: {err}");
 }
 
 // ── 8.2 M3 demo: link-drop recovery — reconnect, reboot re-read, frames resume

@@ -22,6 +22,8 @@ export const pl: Record<keyof typeof en, string> = {
   "connect.connectSimulator": "Połącz z symulatorem",
   "connect.simulateDrop": "Symuluj zerwanie połączenia",
   "connect.iniPlaceholder": "Ścieżka do pliku INI (opcjonalnie dla symulatora)",
+  "theme.default": "Motyw domyślny",
+  "theme.highContrast": "Motyw o wysokim kontraście",
   "tune.title": "Strojenie",
   "tune.menu": "Menu",
   "tune.badge.modified": "Zmodyfikowano — niezapisane",

@@ -14,12 +14,19 @@ import { t, type Locale } from "./i18n";
 
 function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
+  const [infoFailed, setInfoFailed] = useState(false);
   const lastSeq = useConnectionStore((s) => s.lastSeq);
   const [locale, setLocale] = useState<Locale>("en");
   const [theme, setTheme] = useState<Theme>("default");
 
   useEffect(() => {
-    commands.appInfo().then(setInfo);
+    commands
+      .appInfo()
+      .then(setInfo)
+      .catch((e: unknown) => {
+        console.error("Failed to load app info", e);
+        setInfoFailed(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -74,7 +81,7 @@ function App() {
   return (
     <main>
       <h1>{t("app.title", locale)}</h1>
-      {info ? `${info.name} v${info.version}` : "…"}
+      {info ? `${info.name} v${info.version}` : infoFailed ? "—" : "…"}
       <p>heartbeat: {lastSeq ?? "—"}</p>
 
       <Connect locale={locale} />
@@ -92,7 +99,9 @@ function App() {
           {locale === "en" ? "Switch to Polish" : "Przełącz na angielski"}
         </button>
         <button onClick={toggleTheme}>
-          {theme === "high-contrast" ? "Default theme" : "High-contrast theme"}
+          {theme === "high-contrast"
+            ? t("theme.default", locale)
+            : t("theme.highContrast", locale)}
         </button>
       </div>
     </main>
