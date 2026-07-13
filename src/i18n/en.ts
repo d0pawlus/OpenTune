@@ -34,6 +34,7 @@ export const en = {
   "offline.title": "Offline tune",
   "offline.new": "New tune",
   "offline.open": "Open tune",
+  "offline.openProject": "Open project",
   "offline.save": "Save tune",
   "table.navLabel": "Tables",
   "curve.navLabel": "Curves",

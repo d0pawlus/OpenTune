@@ -35,6 +35,7 @@ export const pl: Record<keyof typeof en, string> = {
   "offline.title": "Strojenie offline",
   "offline.new": "Nowe strojenie",
   "offline.open": "Otwórz strojenie",
+  "offline.openProject": "Otwórz projekt",
   "offline.save": "Zapisz strojenie",
   "table.navLabel": "Tabele",
   "curve.navLabel": "Krzywe",

@@ -84,6 +84,21 @@ describe("OfflinePanel", () => {
     await vi.waitFor(() => expect(useTuneStore.getState().offline).toBe(true));
   });
 
+  it("open project picks a folder and loads its INI + CurrentTune.msq", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValueOnce("/tmp/MyProject");
+    const { commands } = await import("../../ipc/bindings");
+    render(<OfflinePanel locale="en" />);
+    fireEvent.click(screen.getByText(/open project/i));
+    await vi.waitFor(() =>
+      expect(commands.openTune).toHaveBeenCalledWith(
+        "/tmp/MyProject/projectCfg/mainController.ini",
+        "/tmp/MyProject/CurrentTune.msq",
+      ),
+    );
+    await vi.waitFor(() => expect(useTuneStore.getState().offline).toBe(true));
+  });
+
   it("save is disabled until a tune is loaded, then writes via commands.saveTune", async () => {
     const { commands } = await import("../../ipc/bindings");
     render(<OfflinePanel locale="en" />);
