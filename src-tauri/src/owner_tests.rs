@@ -635,6 +635,42 @@ async fn start_realtime_errors_without_a_session() {
         .expect("stop_realtime remains idempotent");
 }
 
+// Fix C: `StartRealtime` guarded only `self.session.is_some()`, so an
+// offline session (`conn: None`, `tune: Some` — built by `NewTune`/`OpenTune`
+// before any ECU is attached) could still arm polling even though there is
+// no live link to poll. `wants_health_check` already has the correct guard
+// (`matches!(&self.session, Some(Session { conn: Some(_), .. }))`);
+// `StartRealtime` must use the same one.
+#[tokio::test]
+async fn start_realtime_errors_on_an_offline_session_without_a_live_link() {
+    const INI: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/resources/speeduino.sample.ini"
+    );
+    let (tx, _events) = test_owner();
+
+    // Build an offline session (conn: None, tune: Some) — `session.is_some()`
+    // is true, but there is no live link to poll.
+    send(&tx, |reply| Command::NewTune {
+        ini_path: INI.to_owned(),
+        reply,
+    })
+    .await
+    .expect("new_tune builds an offline session");
+
+    let err = send(&tx, |reply| Command::StartRealtime { reply })
+        .await
+        .expect_err("an offline session must not arm realtime");
+    assert!(
+        err.contains("not connected") && err.contains("realtime"),
+        "clear realtime/session diagnostic, got: {err}"
+    );
+
+    let state = owner_state(&tx).await;
+    assert!(!state.polling, "realtime must stay disarmed offline");
+    assert!(!state.poller_present, "poller must stay unset offline");
+}
+
 #[tokio::test]
 async fn panicked_session_operation_disconnects_and_disarms_realtime() {
     let (tx, events) = test_owner();

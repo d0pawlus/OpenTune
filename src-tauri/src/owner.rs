@@ -577,7 +577,11 @@ impl Owner {
                 let _ = reply.send(self.with_session(|s| s.resolve_gauge_bounds()).await);
             }
             Command::StartRealtime { reply } => {
-                let r = if self.session.is_some() {
+                // A live link is required, not just a session: an offline
+                // session (`conn: None`) or one whose reconnect just failed
+                // must not arm polling against a dead/absent link. Same guard
+                // as `wants_health_check`.
+                let r = if matches!(&self.session, Some(Session { conn: Some(_), .. })) {
                     self.polling = true;
                     self.poller = Some(RealtimePoller::default());
                     Ok(())
