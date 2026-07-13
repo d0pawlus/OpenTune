@@ -532,6 +532,134 @@ a = array, U32, 0, [4294967295x4294967295], \"u\", 1, 0, 0, 255, 0
 }
 
 #[test]
+fn page_size_value_exceeding_the_max_is_a_hard_error() {
+    // Security finding: `pageSize` fed `vec![0u8; size]` in
+    // crates/simulator/src/memory.rs and crates/model/src/tune.rs with no
+    // upper bound — `pageSize = 99999999999` (the exact adversarial line
+    // from the finding) triggers an allocation abort (`handle_alloc_error`,
+    // uncatchable, kills the app) before any ECU handshake. Must be a hard
+    // parse error instead, same style as `offset_beyond_declared_page_size_
+    // is_a_hard_error`.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = 99999999999
+";
+    let err = parse_definition(ini).expect_err("oversized pageSize must be a hard error");
+    assert!(matches!(err, IniError::InvalidValue { .. }));
+}
+
+#[test]
+fn page_size_list_longer_than_the_max_count_is_a_hard_error() {
+    // Companion to the oversized-value case: `pageSize = a,b,c,...` splits
+    // on `,` with no bound on the number of entries either. A page count
+    // far beyond any real INI must also hard-error, not silently allocate
+    // one `PageDef` per token.
+    let too_many = (0..65).map(|_| "4").collect::<Vec<_>>().join(",");
+    let ini = format!(
+        "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 65
+    pageSize = {too_many}
+"
+    );
+    let err =
+        parse_definition(&ini).expect_err("a pageSize list of 65 entries must be a hard error");
+    assert!(matches!(err, IniError::InvalidValue { .. }));
+}
+
+#[test]
+fn page_size_non_numeric_token_is_a_hard_error() {
+    // Pins the chosen behavior for a garbage token: hard error, not the
+    // previous silent `unwrap_or(0)` zero-size page.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 1
+    pageSize = not_a_number
+";
+    let err = parse_definition(ini).expect_err("a non-numeric pageSize token must be a hard error");
+    assert!(matches!(err, IniError::InvalidValue { .. }));
+}
+
+#[test]
+fn page_size_multi_page_list_still_parses_with_correct_sizes() {
+    // Regression guard: a sane multi-page declaration, well within both
+    // bounds, must still parse to the correct per-page sizes.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[Constants]
+    nPages   = 3
+    pageSize = 288,64,288
+";
+    let def = parse_definition(ini).expect("a sane pageSize list must parse");
+    assert_eq!(def.pages.len(), 3);
+    assert_eq!(
+        def.pages[0],
+        opentune_ini::PageDef {
+            number: 1,
+            size: 288
+        }
+    );
+    assert_eq!(
+        def.pages[1],
+        opentune_ini::PageDef {
+            number: 2,
+            size: 64
+        }
+    );
+    assert_eq!(
+        def.pages[2],
+        opentune_ini::PageDef {
+            number: 3,
+            size: 288
+        }
+    );
+}
+
+#[test]
 fn endianness_big_in_constants_section_overrides_comms_default() {
     // [MegaTune] omits `endianness` entirely (so `parse_comms` falls back to
     // its own default, `Little`); only [Constants] declares `big`. This
@@ -571,4 +699,12 @@ page = 1
 // (`constants_parser.rs`), not a hard error — which is the shipped, real-INI-
 // tuned philosophy. Re-introducing strict rejection here would fight that and
 // risk real speeduino.ini ingestion. Follow-up if strict validation is wanted:
-// undeclared-page/bad-pageSize/empty-numeric (`Number::Expr("")`) handling.
+// undeclared-page/empty-numeric (`Number::Expr("")`) handling.
+//
+// UPDATE (CRITICAL security finding, 2026-07-13): the "bad-pageSize" item
+// above shipped after all — `page_size_*` tests earlier in this file —
+// scoped narrowly to the allocation trust boundary (unparseable token,
+// oversized single page, oversized page count all hard-error in
+// `parse_page_sizes`), not full strict pageSize parsing in general. The
+// bounds (1 MiB / 64 pages) sit far above every real fixture in this repo,
+// so this does not reopen the real-INI-ingestion risk noted above.
