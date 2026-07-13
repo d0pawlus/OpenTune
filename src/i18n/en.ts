@@ -21,6 +21,8 @@ export const en = {
   "connect.connectSimulator": "Connect to simulator",
   "connect.simulateDrop": "Simulate connection drop",
   "connect.iniPlaceholder": "Path to INI file (optional for simulator)",
+  "theme.default": "Default theme",
+  "theme.highContrast": "High-contrast theme",
   "tune.title": "Tune",
   "tune.menu": "Menu",
   "tune.badge.modified": "Modified — not burned",

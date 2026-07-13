@@ -56,14 +56,16 @@ export function Connect({ locale }: ConnectProps) {
       const result = await commands.listPorts();
       if (result.status === "ok") {
         setPorts(result.data);
-        if (result.data.length > 0 && !selectedPort) {
-          setSelectedPort(result.data[0].name);
+        if (result.data.length > 0) {
+          setSelectedPort((prev) => prev || result.data[0].name);
         }
       }
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
     } finally {
       setLoadingPorts(false);
     }
-  }, [selectedPort]);
+  }, []);
 
   useEffect(() => {
     const loadPorts = async () => {
@@ -82,25 +84,37 @@ export function Connect({ locale }: ConnectProps) {
           ini_path: iniPath,
         } as const);
 
-    const result = await commands.connect(source);
-    if (result.status === "error") {
-      setError(result.error);
+    try {
+      const result = await commands.connect(source);
+      if (result.status === "error") {
+        setError(result.error);
+      }
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
     }
   };
 
   const handleDisconnect = async () => {
     setError(null);
-    const result = await commands.disconnect();
-    if (result.status === "error") {
-      setError(result.error);
+    try {
+      const result = await commands.disconnect();
+      if (result.status === "error") {
+        setError(result.error);
+      }
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
     }
   };
 
   const handleSimulateLinkDrop = async () => {
     setError(null);
-    const result = await commands.simulateLinkDrop();
-    if (result.status === "error") {
-      setError(result.error);
+    try {
+      const result = await commands.simulateLinkDrop();
+      if (result.status === "error") {
+        setError(result.error);
+      }
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
     }
   };
 
@@ -199,7 +213,7 @@ export function Connect({ locale }: ConnectProps) {
       )}
 
       <div>
-        <p>
+        <p role="status">
           <strong>{t("connect.connectionState", locale)}:</strong> {stateText}
         </p>
         <p>
