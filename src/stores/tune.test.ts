@@ -184,6 +184,47 @@ const DEF = {
   frontpage: { gaugeSlots: [], indicators: [] },
 } as unknown as DefinitionDto;
 
+// M2/M3 re-review finding 4: every refresh() re-resolved gauge bounds and
+// rebuilt each entry's object identity even when the values were unchanged.
+// Gauge draw callbacks key on that identity, so every mounted gauge's rAF
+// paint loop tore down and restarted on every edit/undo/burn.
+describe("tune store gauge bounds identity", () => {
+  const bound = {
+    name: "rpmGauge",
+    low: 0,
+    high: 8000,
+    lo_danger: 300,
+    lo_warn: 600,
+    hi_warn: 6500,
+    hi_danger: 7200,
+  };
+
+  beforeEach(() => {
+    useTuneStore.getState().reset();
+  });
+
+  it("setGaugeBounds preserves entry identity when values are unchanged", () => {
+    useTuneStore.getState().setGaugeBounds([bound]);
+    const first = useTuneStore.getState().gaugeBounds["rpmGauge"];
+
+    // A fresh DTO with identical values — the refresh() case.
+    useTuneStore.getState().setGaugeBounds([{ ...bound }]);
+
+    expect(useTuneStore.getState().gaugeBounds["rpmGauge"]).toBe(first);
+  });
+
+  it("setGaugeBounds swaps the entry when a value actually changed", () => {
+    useTuneStore.getState().setGaugeBounds([bound]);
+    const first = useTuneStore.getState().gaugeBounds["rpmGauge"];
+
+    useTuneStore.getState().setGaugeBounds([{ ...bound, high: 9000 }]);
+
+    const next = useTuneStore.getState().gaugeBounds["rpmGauge"];
+    expect(next).not.toBe(first);
+    expect(next.high).toBe(9000);
+  });
+});
+
 describe("tune store offline flag", () => {
   beforeEach(() => useTuneStore.getState().reset());
 
