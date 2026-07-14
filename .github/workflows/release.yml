@@ -5,10 +5,58 @@ on:
     tags:
       - 'v*'
 
+# One run per tag; a re-pushed tag queues behind (never cancels) a run that
+# may be mid-upload.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
 jobs:
-  build-release:
+  # Create the draft release ONCE, before the matrix. Letting each leg
+  # find-or-create it was a race: drafts are invisible to
+  # GET /releases/tags/:tag, so near-simultaneous legs (the two macos ones
+  # especially) could both see "no release yet" and create duplicate drafts
+  # with the assets split between them. Legs now only upload. This job also
+  # fails fast — before any build minutes are spent — when the tag does not
+  # match the app version.
+  prepare:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - name: Guard tag against app version
+        run: |
+          app_version="$(jq -r .version src-tauri/tauri.conf.json)"
+          if [ "${GITHUB_REF_NAME#v}" != "$app_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match tauri.conf.json version $app_version — bump package.json, src-tauri/Cargo.toml and src-tauri/tauri.conf.json together, then re-tag"
+            exit 1
+          fi
+      - name: Create the draft release (re-runs reuse the existing one)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME) | .id')"
+          if [ -n "$existing" ]; then
+            echo "release for $GITHUB_REF_NAME already exists — legs will upload into it"
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft --prerelease \
+            --title "OpenTune $GITHUB_REF_NAME" \
+            --notes 'Unsigned pre-release for testing. See the README "Download (pre-release)" section for per-OS install notes (Gatekeeper / SmartScreen warnings are expected).'
+
+  build-release:
+    needs: prepare
+    permissions:
+      contents: write # consumed ONLY by the upload step below, never the build
     strategy:
       fail-fast: false
       matrix:
@@ -41,15 +89,46 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
       - run: npm ci
+      # Build-only (no tagName/releaseId) and — deliberately — no GITHUB_TOKEN
+      # in env: npm ci / build.rs / proc-macros run untrusted third-party code,
+      # and handing them a contents:write token would defeat
+      # persist-credentials:false above. The gh step below is the only token
+      # holder, and it runs no third-party code.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: tauri
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'OpenTune ${{ github.ref_name }}'
-          releaseBody: |
-            Unsigned pre-release for testing. See the README "Download (pre-release)"
-            section for per-OS install notes (Gatekeeper / SmartScreen warnings are expected).
-          releaseDraft: true
-          prerelease: true
           args: ${{ matrix.args }}
+      - name: Upload installers to the draft release
+        shell: bash # windows too — keep one upload script for all legs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # artifactPaths is a JSON array (macOS .app bundles arrive pre-tarred
+          # by tauri-action). gh resolves draft releases by tag via the release
+          # list, and --clobber keeps re-runs idempotent.
+          version="$(jq -r .version src-tauri/tauri.conf.json)"
+          assets=()
+          while IFS= read -r p; do
+            p="${p//\\//}"
+            [ -f "$p" ] || { echo "::warning::skipping missing artifact: $p"; continue; }
+            # The updater archive is named OpenTune.app.tar.gz on disk for BOTH
+            # mac targets — qualify it (tauri-action's own upload naming) or the
+            # two legs would clobber each other's asset.
+            if [ "$(basename "$p")" = "OpenTune.app.tar.gz" ]; then
+              case "$p" in
+                *aarch64-apple-darwin*) arch=aarch64 ;;
+                *) arch=x64 ;;
+              esac
+              dest="$(dirname "$p")/OpenTune_${version}_${arch}.app.tar.gz"
+              mv "$p" "$dest"
+              p="$dest"
+            fi
+            assets+=("$p")
+          done < <(node -e 'for (const p of JSON.parse(process.env.ARTIFACT_PATHS)) console.log(p)')
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::tauri-action reported no artifacts"
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
