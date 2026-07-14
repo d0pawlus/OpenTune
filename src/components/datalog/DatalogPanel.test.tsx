@@ -72,4 +72,62 @@ describe("DatalogPanel", () => {
       expect(ipc.commands.startLog).toHaveBeenCalledWith("/tmp/run.csv", "Csv"),
     );
   });
+
+  // M5 review CRITICAL (C2): while a log load is in flight, re-clicking
+  // Open must not be possible — that race is exactly what let a second
+  // open splice its rows into the first load's still-paging dataset.
+  it("disables the Open button for both slots while a log load is in flight", async () => {
+    let resolveOpen: (value: {
+      status: "ok";
+      data: {
+        log_id: number;
+        fields: never[];
+        record_count: number;
+        marker_count: number;
+        duration_ms: number;
+      };
+    }) => void = () => {};
+    vi.mocked(ipc.commands.openLog).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOpen = resolve;
+        }),
+    );
+
+    render(<DatalogPanel locale="en" />);
+    const logA = screen.getByRole("group", { name: "Log A" });
+    const logB = screen.getByRole("group", { name: "Log B" });
+    fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+      target: { value: "/tmp/a.csv" },
+    });
+    // Slot B also has a non-empty path, so its later `disabled` can only be
+    // explained by the in-flight load, not by its own empty-path guard.
+    fireEvent.change(within(logB).getByPlaceholderText("/path/to/log.csv"), {
+      target: { value: "/tmp/b.csv" },
+    });
+    const openA = within(logA).getByRole("button", {
+      name: "Open log",
+    }) as HTMLButtonElement;
+    const openB = within(logB).getByRole("button", {
+      name: "Open log",
+    }) as HTMLButtonElement;
+    expect(openA.disabled).toBe(false);
+    expect(openB.disabled).toBe(false);
+
+    fireEvent.click(openA);
+    await waitFor(() => expect(openA.disabled).toBe(true));
+    expect(openB.disabled).toBe(true);
+
+    resolveOpen({
+      status: "ok",
+      data: {
+        log_id: 1,
+        fields: [],
+        record_count: 0,
+        marker_count: 0,
+        duration_ms: 0,
+      },
+    });
+    await waitFor(() => expect(openA.disabled).toBe(false));
+  });
 });

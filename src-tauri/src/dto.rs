@@ -562,6 +562,12 @@ impl From<LogFormatDto> for opentune_datalog::LogFormat {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct LogSummaryDto {
+    /// The generation token for this `opened_log` assignment (M5 review
+    /// CRITICAL — C2): every later command reading `opened_log`
+    /// (`get_log_data`, `save_log`, `log_stats`, `detect_anomaly`,
+    /// `virtual_dyno`) must echo this id back, and is rejected once a later
+    /// `open_log`/`stop_log` has superseded it.
+    pub log_id: u32,
     pub fields: Vec<LogFieldDto>,
     pub record_count: u32,
     pub marker_count: u32,

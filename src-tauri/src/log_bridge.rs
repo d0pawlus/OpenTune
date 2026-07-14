@@ -10,9 +10,10 @@ use crate::dto::*;
 
 pub const MAX_LOG_SLICE: u32 = 100_000;
 
-pub fn summary(log: &Log) -> LogSummaryDto {
+pub fn summary(log: &Log, log_id: u32) -> LogSummaryDto {
     let records = log.records().count();
     LogSummaryDto {
+        log_id,
         fields: log
             .fields
             .iter()

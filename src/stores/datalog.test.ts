@@ -23,37 +23,90 @@ describe("datalog store", () => {
     vi.mocked(ipc.commands.openLog).mockResolvedValue({
       status: "ok",
       data: {
+        log_id: 1,
         fields: [{ name: "rpm", units: "RPM" }],
         record_count: 20_001,
         marker_count: 1,
         duration_ms: 800_000,
       },
     });
-    vi.mocked(ipc.commands.getLogData).mockImplementation(async (offset) => {
-      const count = offset === 0 ? 20_000 : 1;
-      return {
-        status: "ok" as const,
-        data: {
-          offset,
-          total_records: 20_001,
-          t_ms: Array.from({ length: count }, (_, index) => offset + index),
-          columns: [
-            Array.from({ length: count }, (_, index) => 1000 + offset + index),
-          ],
-          markers:
-            offset === 0 ? [{ record_index: 10, t_ms: 10, text: "pull" }] : [],
-        },
-      };
-    });
+    vi.mocked(ipc.commands.getLogData).mockImplementation(
+      async (_logId, offset) => {
+        const count = offset === 0 ? 20_000 : 1;
+        return {
+          status: "ok" as const,
+          data: {
+            offset,
+            total_records: 20_001,
+            t_ms: Array.from({ length: count }, (_, index) => offset + index),
+            columns: [
+              Array.from(
+                { length: count },
+                (_, index) => 1000 + offset + index,
+              ),
+            ],
+            markers:
+              offset === 0
+                ? [{ record_index: 10, t_ms: 10, text: "pull" }]
+                : [],
+          },
+        };
+      },
+    );
   });
 
   it("loads bounded pages into stable column arrays", async () => {
     await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
     const log = useDatalogStore.getState().logs.A;
     expect(ipc.commands.getLogData).toHaveBeenCalledTimes(2);
+    // Every page call must carry the log_id the open response minted (M5
+    // review CRITICAL — C2), not just the offset/limit.
+    expect(ipc.commands.getLogData).toHaveBeenNthCalledWith(1, 1, 0, 20_000);
+    expect(ipc.commands.getLogData).toHaveBeenNthCalledWith(
+      2,
+      1,
+      20_000,
+      20_000,
+    );
+    expect(log?.logId).toBe(1);
     expect(log?.columns.rpm).toHaveLength(20_001);
     expect(log?.markers).toHaveLength(1);
     expect(useDatalogStore.getState().activeSlot).toBe("A");
+  });
+
+  // M5 review CRITICAL (C2): opening a different log while a page loop is
+  // still in flight must never splice the new log's rows into the stale
+  // dataset — the backend rejects the superseded id, and the loop must
+  // abort and surface the store's normal error state with no partial data.
+  it("aborts the paging loop and keeps no partial dataset on a stale log_id", async () => {
+    vi.mocked(ipc.commands.getLogData).mockImplementation(
+      async (_logId, offset) => {
+        if (offset > 0) {
+          return {
+            status: "error" as const,
+            error: "log changed since it was opened",
+          };
+        }
+        return {
+          status: "ok" as const,
+          data: {
+            offset: 0,
+            total_records: 20_001,
+            t_ms: Array.from({ length: 20_000 }, (_, index) => index),
+            columns: [Array.from({ length: 20_000 }, (_, index) => index)],
+            markers: [],
+          },
+        };
+      },
+    );
+
+    await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+
+    expect(useDatalogStore.getState().logs.A).toBeUndefined();
+    expect(useDatalogStore.getState().error).toBe(
+      "log changed since it was opened",
+    );
+    expect(useDatalogStore.getState().loading).toBe(false);
   });
 
   it("adds a local derived column and replays it into realtime", async () => {
@@ -80,6 +133,7 @@ describe("datalog store", () => {
     vi.mocked(ipc.commands.openLog).mockResolvedValue({
       status: "ok",
       data: {
+        log_id: 1,
         fields: [{ name: "rpm", units: "RPM" }],
         record_count: 3,
         marker_count: 0,

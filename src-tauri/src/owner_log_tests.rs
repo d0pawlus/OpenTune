@@ -111,6 +111,7 @@ async fn owner_records_opens_and_serves_columnar_log() {
     assert_eq!(summary.marker_count, 1);
 
     let data = send(&owner, |reply| Command::GetLogData {
+        log_id: summary.log_id,
         offset: 0,
         limit: 100,
         reply,
@@ -129,6 +130,22 @@ async fn owner_records_opens_and_serves_columnar_log() {
     .await
     .unwrap();
     assert_eq!(reopened.record_count, summary.record_count);
+    // C2: `stop_log`'s auto-open and `open_log` each mint a fresh generation
+    // — the id `stop_log` handed back must no longer be valid once `open_log`
+    // has re-assigned `opened_log` (covers both assignment sites).
+    assert_ne!(
+        reopened.log_id, summary.log_id,
+        "open_log must mint a new generation distinct from stop_log's auto-open"
+    );
+    let stale = send(&owner, |reply| Command::GetLogData {
+        log_id: summary.log_id,
+        offset: 0,
+        limit: 100,
+        reply,
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(stale, "log changed since it was opened");
     let _ = std::fs::remove_file(path);
 }
 
@@ -145,6 +162,7 @@ async fn start_log_requires_connection_and_slice_is_bounded() {
     assert_eq!(error, NOT_CONNECTED);
 
     let error = send(&owner, |reply| Command::GetLogData {
+        log_id: 0,
         offset: 0,
         limit: crate::log_bridge::MAX_LOG_SLICE + 1,
         reply,
@@ -353,4 +371,147 @@ fn write_log_path_removes_temp_file_and_preserves_destination_on_error() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── C2: log identity token guards every command reading `opened_log` ───────
+//
+// M5 review CRITICAL: the backend held a single `opened_log` slot with no
+// way for a caller to tell "my" log apart from whatever now occupies it.
+// Every command that reads `opened_log` must take the `log_id` handed back
+// by the open/stop that produced it, and reject a stale id instead of
+// silently answering with a different log's data.
+
+/// Write a minimal one-field CSV log to `path` via the same `write_log_path`
+/// helper the owner itself uses, so `Command::OpenLog` has a real file to
+/// read back.
+fn write_sample_log(path: &str) {
+    let log = Log::new(vec![Field::float("rpm", "RPM")]);
+    write_log_path(path, LogFormatDto::Csv, &log).expect("write sample log");
+}
+
+#[tokio::test]
+async fn get_log_data_rejects_a_stale_log_id() {
+    let owner = test_owner();
+    let path = temp_path("csv");
+    write_sample_log(&path);
+    let opened = send(&owner, |reply| Command::OpenLog {
+        path: path.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    let error = send(&owner, |reply| Command::GetLogData {
+        log_id: opened.log_id + 1,
+        offset: 0,
+        limit: 10,
+        reply,
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, "log changed since it was opened");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn save_log_rejects_a_stale_log_id() {
+    let owner = test_owner();
+    let path = temp_path("csv");
+    write_sample_log(&path);
+    let opened = send(&owner, |reply| Command::OpenLog {
+        path: path.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    let out_path = temp_path("csv");
+    let error = send(&owner, |reply| Command::SaveLog {
+        log_id: opened.log_id + 1,
+        path: out_path.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, "log changed since it was opened");
+    assert!(
+        !std::path::Path::new(&out_path).exists(),
+        "a rejected save must never touch the destination"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn log_stats_rejects_a_stale_log_id() {
+    let owner = test_owner();
+    let path = temp_path("csv");
+    write_sample_log(&path);
+    let opened = send(&owner, |reply| Command::OpenLog {
+        path: path.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    let error = send(&owner, |reply| Command::LogStats {
+        log_id: opened.log_id + 1,
+        params: LogStatsParamsDto {
+            channels: vec!["rpm".to_string()],
+            reject_when: vec![],
+        },
+        reply,
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, "log changed since it was opened");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn opening_a_new_log_bumps_the_generation_past_the_previous_one() {
+    let owner = test_owner();
+    let path_a = temp_path("csv");
+    write_sample_log(&path_a);
+    let opened_a = send(&owner, |reply| Command::OpenLog {
+        path: path_a.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    let path_b = temp_path("csv");
+    write_sample_log(&path_b);
+    let opened_b = send(&owner, |reply| Command::OpenLog {
+        path: path_b.clone(),
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    assert_ne!(
+        opened_a.log_id, opened_b.log_id,
+        "each open_log call must mint a fresh generation"
+    );
+    // The first open's id must now read as stale, not silently serve log B.
+    let error = send(&owner, |reply| Command::GetLogData {
+        log_id: opened_a.log_id,
+        offset: 0,
+        limit: 10,
+        reply,
+    })
+    .await
+    .unwrap_err();
+    assert_eq!(error, "log changed since it was opened");
+
+    let _ = std::fs::remove_file(path_a);
+    let _ = std::fs::remove_file(path_b);
 }

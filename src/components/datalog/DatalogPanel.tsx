@@ -81,6 +81,7 @@ const ChannelSelect = ({
 function LogPathForm({ slot, locale }: { slot: LogSlot; locale: Locale }) {
   const openLog = useDatalogStore((state) => state.openLog);
   const dataset = useDatalogStore((state) => state.logs[slot]);
+  const loading = useDatalogStore((state) => state.loading);
   const [path, setPath] = useState("");
   const [format, setFormat] = useState<LogFormatDto>("Csv");
   return (
@@ -113,7 +114,7 @@ function LogPathForm({ slot, locale }: { slot: LogSlot; locale: Locale }) {
       <button
         type="button"
         onClick={() => void openLog(slot, path, format)}
-        disabled={!path.trim()}
+        disabled={!path.trim() || loading}
       >
         {t("datalog.open", locale)}
       </button>
@@ -509,17 +510,28 @@ function Analysis({ locale }: { locale: Locale }) {
     knockChannel || channels.find((name) => /knock/i.test(name)) || fallback;
   const selectedSensor = sensorChannel || fallback;
 
-  const activate = async (): Promise<boolean> => {
-    if (!dataset) return false;
+  // Re-open the dataset's log into the backend for analysis if it isn't
+  // already the current `opened_log`, then hand back the log_id the
+  // analysis commands must send — the freshly re-opened id when a reopen
+  // happened, or the slot's already-current id otherwise. Returns null when
+  // there is no dataset, or the reopen didn't make this slot active.
+  const activate = async (): Promise<number | null> => {
+    if (!dataset) return null;
     if (activeSlot !== slot) await openLog(slot, dataset.path, dataset.format);
-    return useDatalogStore.getState().activeSlot === slot;
+    const state = useDatalogStore.getState();
+    if (state.activeSlot !== slot) return null;
+    return state.logs[slot]?.logId ?? null;
   };
   const runStats = async () => {
     setBusy(true);
     setAnalysisError(null);
     try {
-      if (await activate()) {
-        const result = await commands.logStats({ channels, reject_when: [] });
+      const logId = await activate();
+      if (logId !== null) {
+        const result = await commands.logStats(logId, {
+          channels,
+          reject_when: [],
+        });
         if (result.status === "ok") setStats(result.data);
         else setAnalysisError(result.error);
       }
@@ -533,8 +545,9 @@ function Analysis({ locale }: { locale: Locale }) {
     setBusy(true);
     setAnalysisError(null);
     try {
-      if (await activate()) {
-        const result = await commands.detectAnomaly({
+      const logId = await activate();
+      if (logId !== null) {
+        const result = await commands.detectAnomaly(logId, {
           sensors: selectedSensor
             ? [{ channel: selectedSensor, min: sensorMin, max: sensorMax }]
             : [],
@@ -561,8 +574,9 @@ function Analysis({ locale }: { locale: Locale }) {
     setBusy(true);
     setAnalysisError(null);
     try {
-      if (await activate()) {
-        const result = await commands.virtualDyno({
+      const logId = await activate();
+      if (logId !== null) {
+        const result = await commands.virtualDyno(logId, {
           speed_channel: selectedSpeed,
           rpm_channel: selectedRpm,
           mass_kg: mass,

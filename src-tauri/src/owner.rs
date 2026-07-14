@@ -57,6 +57,11 @@ const POLLING_NOT_RUNNING: &str = "realtime polling is not running";
 /// whole file (both the CSV and MLG readers `read_to_string`/`read_to_end`),
 /// so an unbounded read of a huge or corrupt file could exhaust memory.
 const MAX_LOG_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// M5 review CRITICAL (C2): a command targeting `opened_log` with a
+/// `log_id` that no longer matches [`Owner::log_generation`] gets this
+/// instead of silently reading whatever log now occupies the slot — see
+/// [`Owner::check_log_id`].
+const LOG_CHANGED: &str = "log changed since it was opened";
 
 /// A oneshot reply channel carrying an operation's result back to the
 /// awaiting IPC command.
@@ -177,24 +182,29 @@ pub enum Command {
         reply: Reply<LogSummaryDto>,
     },
     GetLogData {
+        log_id: u32,
         offset: u32,
         limit: u32,
         reply: Reply<LogDataDto>,
     },
     SaveLog {
+        log_id: u32,
         path: String,
         format: LogFormatDto,
         reply: Reply<()>,
     },
     LogStats {
+        log_id: u32,
         params: LogStatsParamsDto,
         reply: Reply<LogStatsReportDto>,
     },
     DetectAnomaly {
+        log_id: u32,
         thresholds: AnomalyThresholdsDto,
         reply: Reply<AnomalyReportDto>,
     },
     VirtualDyno {
+        log_id: u32,
         params: VirtualDynoParamsDto,
         reply: Reply<VirtualDynoReportDto>,
     },
@@ -395,6 +405,13 @@ struct Owner {
     capturing: bool,
     active_log: Option<ActiveLog>,
     opened_log: Option<Log>,
+    /// Generation token for the current `opened_log` (M5 review CRITICAL —
+    /// C2). Starts at `0`, a value no `open_log`/`stop_log` ever hands out
+    /// (see [`Owner::assign_opened_log`]), so a `log_id` of `0` never
+    /// matches an actual opened log. Bumped every time `opened_log` is
+    /// assigned; every command reading `opened_log` must echo the id it was
+    /// given back, checked by [`Owner::check_log_id`].
+    log_generation: u32,
     /// Set while a link recovery runs on the blocking pool. The session is
     /// checked out for the whole window (`self.session` is `None`, which also
     /// keeps `wants_poll`/`wants_health_check` quiet), and it comes back via
@@ -448,6 +465,7 @@ async fn run_owner(
         capturing: false,
         active_log: None,
         opened_log: None,
+        log_generation: 0,
         reconnecting: None,
         self_tx,
         emit,
@@ -726,32 +744,49 @@ impl Owner {
                 let _ = reply.send(self.open_log(path, format).await);
             }
             Command::GetLogData {
+                log_id,
                 offset,
                 limit,
                 reply,
             } => {
                 let r = self
-                    .opened_log
-                    .as_ref()
-                    .ok_or_else(|| "no log opened".to_string())
+                    .check_log_id(log_id)
+                    .and_then(|()| {
+                        self.opened_log
+                            .as_ref()
+                            .ok_or_else(|| "no log opened".to_string())
+                    })
                     .and_then(|log| crate::log_bridge::slice(log, offset, limit));
                 let _ = reply.send(r);
             }
             Command::SaveLog {
+                log_id,
                 path,
                 format,
                 reply,
             } => {
-                let _ = reply.send(self.save_log(path, format).await);
+                let _ = reply.send(self.save_log(log_id, path, format).await);
             }
-            Command::LogStats { params, reply } => {
-                let _ = reply.send(self.run_log_stats(params).await);
+            Command::LogStats {
+                log_id,
+                params,
+                reply,
+            } => {
+                let _ = reply.send(self.run_log_stats(log_id, params).await);
             }
-            Command::DetectAnomaly { thresholds, reply } => {
-                let _ = reply.send(self.run_detect_anomaly(thresholds).await);
+            Command::DetectAnomaly {
+                log_id,
+                thresholds,
+                reply,
+            } => {
+                let _ = reply.send(self.run_detect_anomaly(log_id, thresholds).await);
             }
-            Command::VirtualDyno { params, reply } => {
-                let _ = reply.send(self.run_virtual_dyno(params).await);
+            Command::VirtualDyno {
+                log_id,
+                params,
+                reply,
+            } => {
+                let _ = reply.send(self.run_virtual_dyno(log_id, params).await);
             }
             #[cfg(test)]
             Command::DebugSimulator { reply } => {
@@ -1296,8 +1331,13 @@ impl Owner {
         .await
         .map_err(|error| format!("log write panicked: {error}"))?;
         let (log, write_result) = result;
-        let summary = crate::log_bridge::summary(&log);
-        self.opened_log = Some(log);
+        let log_id = self.assign_opened_log(log);
+        let summary = crate::log_bridge::summary(
+            self.opened_log
+                .as_ref()
+                .expect("assign_opened_log just set this"),
+            log_id,
+        );
         if !self.polling {
             self.poller = None;
         }
@@ -1348,12 +1388,22 @@ impl Owner {
         let log = tokio::task::spawn_blocking(move || read_log_path(&path, format))
             .await
             .map_err(|error| format!("log read panicked: {error}"))??;
-        let summary = crate::log_bridge::summary(&log);
-        self.opened_log = Some(log);
-        Ok(summary)
+        let log_id = self.assign_opened_log(log);
+        Ok(crate::log_bridge::summary(
+            self.opened_log
+                .as_ref()
+                .expect("assign_opened_log just set this"),
+            log_id,
+        ))
     }
 
-    async fn save_log(&mut self, path: String, format: LogFormatDto) -> Result<(), String> {
+    async fn save_log(
+        &mut self,
+        log_id: u32,
+        path: String,
+        format: LogFormatDto,
+    ) -> Result<(), String> {
+        self.check_log_id(log_id)?;
         let log = self
             .opened_log
             .clone()
@@ -1365,9 +1415,10 @@ impl Owner {
 
     async fn run_log_stats(
         &mut self,
+        log_id: u32,
         params: LogStatsParamsDto,
     ) -> Result<LogStatsReportDto, String> {
-        let samples = self.opened_samples()?;
+        let samples = self.opened_samples(log_id)?;
         tokio::task::spawn_blocking(move || {
             let params = crate::log_bridge::stats_params(params);
             opentune_analysis::log_stats(&samples, &params)
@@ -1380,9 +1431,10 @@ impl Owner {
 
     async fn run_detect_anomaly(
         &mut self,
+        log_id: u32,
         thresholds: AnomalyThresholdsDto,
     ) -> Result<AnomalyReportDto, String> {
-        let samples = self.opened_samples()?;
+        let samples = self.opened_samples(log_id)?;
         tokio::task::spawn_blocking(move || {
             let thresholds = crate::log_bridge::anomaly_params(thresholds);
             opentune_analysis::detect_anomaly(&samples, &thresholds)
@@ -1395,9 +1447,10 @@ impl Owner {
 
     async fn run_virtual_dyno(
         &mut self,
+        log_id: u32,
         params: VirtualDynoParamsDto,
     ) -> Result<VirtualDynoReportDto, String> {
-        let samples = self.opened_samples()?;
+        let samples = self.opened_samples(log_id)?;
         tokio::task::spawn_blocking(move || {
             let params = crate::log_bridge::dyno_params(params);
             opentune_analysis::virtual_dyno(&samples, &params)
@@ -1408,11 +1461,36 @@ impl Owner {
         .map_err(|error| format!("virtual dyno panicked: {error}"))?
     }
 
-    fn opened_samples(&self) -> Result<opentune_analysis::SampleSet, String> {
+    fn opened_samples(&self, log_id: u32) -> Result<opentune_analysis::SampleSet, String> {
+        self.check_log_id(log_id)?;
         self.opened_log
             .as_ref()
             .map(crate::log_bridge::to_samples)
             .ok_or_else(|| "no log opened".to_string())
+    }
+
+    /// The `log_id` guard shared by every command reading `opened_log` (M5
+    /// review CRITICAL — C2): rejects a caller holding an id from a
+    /// superseded `open_log`/`stop_log` instead of silently answering with
+    /// whatever log now occupies the slot.
+    fn check_log_id(&self, log_id: u32) -> Result<(), String> {
+        if log_id == self.log_generation {
+            Ok(())
+        } else {
+            Err(LOG_CHANGED.to_owned())
+        }
+    }
+
+    /// Assign a freshly read (`open_log`) or just-recorded (`stop_log`) log
+    /// as the current `opened_log`, minting a new generation token — the
+    /// `log_id` every later `opened_log`-reading command must echo back.
+    /// `log_generation` starts at `0`, which this always increments past
+    /// first, so `0` never matches a real assignment (see
+    /// [`Owner::log_generation`]'s doc).
+    fn assign_opened_log(&mut self, log: Log) -> u32 {
+        self.log_generation = self.log_generation.wrapping_add(1);
+        self.opened_log = Some(log);
+        self.log_generation
     }
 
     /// Merge picks, then emit the tune's *actual* dirty state — read after

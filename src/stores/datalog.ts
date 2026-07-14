@@ -20,6 +20,11 @@ export interface LogDataset {
   path: string;
   format: LogFormatDto;
   summary: LogSummaryDto;
+  /** The generation token this dataset's data was fetched under (M5 review
+   * CRITICAL — C2): every later page/save/analysis call for this slot must
+   * send it back, so a stale in-flight request can never splice a
+   * different log's rows into this dataset. */
+  logId: number;
   fields: LogFieldDto[];
   tMs: (number | null)[];
   columns: Record<string, (number | null)[]>;
@@ -103,12 +108,17 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
       const opened = await commands.openLog(path.trim(), format);
       if (opened.status === "error") throw new Error(opened.error);
       const summary = opened.data;
+      const logId = summary.log_id;
       const tMs: (number | null)[] = [];
       const rawColumns = summary.fields.map(() => [] as (number | null)[]);
       const markers = new Map<string, MarkerDto>();
       let offset = 0;
       while (offset < summary.record_count) {
-        const page = await commands.getLogData(offset, PAGE_SIZE);
+        // A stale `logId` (another open/stop superseded this one while this
+        // loop was still paging) comes back as a typed error here — thrown
+        // like any other page error, so the loop aborts and no partial
+        // dataset is ever committed to the store (see the `catch` below).
+        const page = await commands.getLogData(logId, offset, PAGE_SIZE);
         if (page.status === "error") throw new Error(page.error);
         if (page.data.offset !== offset) {
           throw new Error(`Unexpected log page offset ${page.data.offset}.`);
@@ -138,6 +148,7 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           path: path.trim(),
           format,
           summary,
+          logId,
           fields: summary.fields,
           tMs,
           columns,
@@ -215,16 +226,29 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
     if (!source || !path.trim()) return;
     set({ loading: true, error: null });
     try {
+      // Re-open the source into the backend to guarantee it is the current
+      // `opened_log` before saving — this mints a FRESH log_id, which is
+      // what `saveLog` must send (the slot's previously stored id is stale
+      // the instant this reopen assigns a new generation).
       const opened = await commands.openLog(source.path, source.format);
       if (opened.status === "error") {
         set({ loading: false, error: opened.error });
         return;
       }
-      const saved = await commands.saveLog(path.trim(), format);
-      set({
-        loading: false,
-        activeSlot: slot,
-        error: saved.status === "error" ? saved.error : null,
+      const logId = opened.data.log_id;
+      const saved = await commands.saveLog(logId, path.trim(), format);
+      set((state) => {
+        const current = state.logs[slot];
+        return {
+          loading: false,
+          activeSlot: slot,
+          error: saved.status === "error" ? saved.error : null,
+          // Keep the slot's stored id in sync with the backend generation
+          // this reopen just assigned (same rule as `activate()`'s reopen).
+          logs: current
+            ? { ...state.logs, [slot]: { ...current, logId } }
+            : state.logs,
+        };
       });
     } catch (error) {
       set({ loading: false, error: message(error) });
