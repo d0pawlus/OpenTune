@@ -5,35 +5,60 @@ on:
     - cron: '17 3 * * *' # 03:17 UTC daily — off-peak, avoids :00 fleet pileup
   workflow_dispatch: {}
 
+# Cron and manual dispatch can overlap; a second prepare re-pointing the tag
+# while an earlier run is still uploading would mix commits in one public
+# release. Queue instead (never cancel a run that may be mid-upload).
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # Reset the rolling nightly release + tag to the current commit, once, before
-  # the matrix. We PRE-CREATE the (empty) release rather than let each matrix leg
-  # find-or-create it: with the old release deleted, the two near-simultaneous
-  # macos legs would otherwise both see "no release" and race to create it
-  # (duplicate/split releases). Pre-creating means every leg only UPLOADS. This
-  # also keeps the tag — and GitHub's auto-generated "Source code" archives — on
-  # the current commit instead of frozen at the first-ever nightly while the
-  # binaries refresh (GPL source/binary drift). Runs once; the matrix waits on it.
+  # Point the rolling `nightly` tag + release at the current commit WITHOUT
+  # deleting the release first. The previous delete-then-recreate reset had two
+  # failure modes this design removes:
+  #   * `|| true` swallowed a half-failed delete, after which `gh release
+  #     create --target` silently attached to the surviving STALE tag (the API
+  #     ignores the target when the tag already exists) — published binaries
+  #     drifting from the auto-generated source archives (GPL provenance).
+  #   * deleting up front left a live but EMPTY nightly whenever the builds
+  #     then failed — and a red cron job is near-silent (see notify-failure).
+  # Moving the ref keeps yesterday's installers downloadable until each is
+  # clobbered, and the source archives always follow the moved tag.
   prepare:
+    # workflow_dispatch on forks would otherwise mint fake "OpenTune Nightly"
+    # releases (skipping this job skips every dependent job too).
+    if: github.repository == 'd0pawlus/OpenTune'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      started_at: ${{ steps.reset.outputs.started_at }}
     steps:
-      - name: Reset nightly release + tag to the current commit
+      - name: Point the nightly tag and release at the current commit
+        id: reset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete nightly --yes --cleanup-tag --repo "$GITHUB_REPOSITORY" || true
-          gh release create nightly \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title 'OpenTune Nightly' \
-            --notes 'Automated nightly build of the default branch. Unsigned, for testing only. Not a stable release — install at your own risk (Gatekeeper / SmartScreen warnings expected).' \
-            --prerelease
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          # Move (or create) the tag ref — the "Source code" archives follow it.
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" \
+            -f sha="$GITHUB_SHA" -F force=true \
+            || gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/nightly" -f sha="$GITHUB_SHA"
+          notes="Automated nightly build of the default branch (commit ${GITHUB_SHA}). Unsigned, for testing only. Not a stable release — install at your own risk (Gatekeeper / SmartScreen warnings expected)."
+          # edit-or-create: a failure that is NOT "release doesn't exist yet"
+          # resurfaces on the create attempt — nothing is swallowed.
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --notes "$notes" \
+            || gh release create nightly --repo "$GITHUB_REPOSITORY" \
+              --title 'OpenTune Nightly' --prerelease --notes "$notes"
 
   build-nightly:
     needs: prepare
+    permissions:
+      contents: write # consumed ONLY by the upload step below, never the build
     strategy:
       fail-fast: false
       matrix:
@@ -65,18 +90,89 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
       - run: npm ci
+      # Build-only (no tagName/releaseId) and — deliberately — no GITHUB_TOKEN
+      # in env: npm ci / build.rs / proc-macros run untrusted third-party code,
+      # and handing them a contents:write token would defeat
+      # persist-credentials:false above. The gh step below is the only token
+      # holder, and it runs no third-party code.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        id: tauri
         with:
-          # Rolling nightly: the prepare job already created the release+tag at
-          # this commit, so every matrix leg only uploads its installer to the
-          # existing release (no per-leg create race).
-          tagName: nightly
-          releaseName: 'OpenTune Nightly'
-          releaseBody: |
-            Automated nightly build of the default branch. Unsigned, for testing only.
-            Not a stable release — install at your own risk (Gatekeeper / SmartScreen warnings expected).
-          releaseDraft: false
-          prerelease: true
           args: ${{ matrix.args }}
+      - name: Upload installers to the nightly release
+        shell: bash # windows too — keep one upload script for all legs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          RELEASE_TAG: nightly
+        run: |
+          # artifactPaths is a JSON array (macOS .app bundles arrive pre-tarred
+          # by tauri-action). --clobber replaces yesterday's same-named asset.
+          version="$(jq -r .version src-tauri/tauri.conf.json)"
+          assets=()
+          while IFS= read -r p; do
+            p="${p//\\//}"
+            [ -f "$p" ] || { echo "::warning::skipping missing artifact: $p"; continue; }
+            # The updater archive is named OpenTune.app.tar.gz on disk for BOTH
+            # mac targets — qualify it (tauri-action's own upload naming) or the
+            # two legs would clobber each other's asset.
+            if [ "$(basename "$p")" = "OpenTune.app.tar.gz" ]; then
+              case "$p" in
+                *aarch64-apple-darwin*) arch=aarch64 ;;
+                *) arch=x64 ;;
+              esac
+              dest="$(dirname "$p")/OpenTune_${version}_${arch}.app.tar.gz"
+              mv "$p" "$dest"
+              p="$dest"
+            fi
+            assets+=("$p")
+          done < <(node -e 'for (const p of JSON.parse(process.env.ARTIFACT_PATHS)) console.log(p)')
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::tauri-action reported no artifacts"
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+
+  # Runs only when every leg succeeded (default `needs` behavior): prunes
+  # assets this run did not refresh, i.e. stale-named leftovers after a
+  # version bump. On partial failure it is skipped on purpose — the last good
+  # installer for the failed platform stays downloadable.
+  cleanup:
+    needs: [prepare, build-nightly]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Prune assets not refreshed by this run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STARTED_AT: ${{ needs.prepare.outputs.started_at }}
+        run: |
+          # ISO-8601 UTC timestamps compare lexicographically; --clobber
+          # re-creates an asset, so anything older than the run predates it.
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/nightly" \
+            --jq '.assets[] | select(.created_at < env.STARTED_AT) | .id' \
+            | while read -r asset_id; do
+                gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+              done
+
+  # A red cron run notifies nobody by itself; file (at most) one open issue
+  # pointing at the failed run.
+  notify-failure:
+    needs: [prepare, build-nightly, cleanup]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open a nightly-failure issue unless one is already open
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          open_count="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search 'Nightly build failed in:title' --json number --jq length)"
+          if [ "$open_count" -eq 0 ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title 'Nightly build failed' \
+              --body "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          fi

@@ -8,7 +8,12 @@
 // SurfaceView itself. Without this, both failure modes render as a silent
 // blank panel — the S2 investigation's failure class (no Error Boundary
 // existed anywhere in src).
-import { Component, type ErrorInfo, type ReactNode } from "react";
+//
+// The fallback's CSS must ride the eager bundle for the same reason: Vite
+// ships a chunk's CSS with the chunk, so if only SurfaceView imported
+// surface.css, the fallback for a failed chunk load would render unstyled.
+import "./surface.css";
+import { Component, createRef, type ReactNode } from "react";
 
 interface Props {
   /** Pre-translated message shown when the wrapped view throws (locale-free
@@ -20,38 +25,53 @@ interface Props {
 }
 
 interface State {
-  error: Error | null;
-  // Bumped on retry → the wrapper div's `key` changes → React unmounts and
-  // remounts the subtree, giving a render/lifecycle throw from SurfaceView a
-  // fresh attempt (a transient WebGL-init throw can recover this way). It does
+  // Cleared on retry. While set, the fallback branch has UNMOUNTED the
+  // children, so clearing it alone mounts a fresh subtree — a transient
+  // render/lifecycle throw (e.g. WebGL init) can recover that way. It does
   // NOT re-fetch a failed lazy chunk: the module-scoped `lazy()` object
   // memoizes its rejected payload, so on remount React.lazy re-throws the
   // cached rejection without re-importing. Retry therefore recovers render
   // throws, not chunk-load failures — the fallback still beats a blank panel.
-  retryKey: number;
+  error: Error | null;
 }
 
+// (No componentDidCatch — React 19's default onCaughtError already logs
+// boundary-caught errors with their component stack; an empty override would
+// only discard that hook point.)
 export class SurfaceErrorBoundary extends Component<Props, State> {
-  state: State = { error: null, retryKey: 0 };
+  state: State = { error: null };
 
-  static getDerivedStateFromError(error: Error): Partial<State> {
+  static getDerivedStateFromError(error: Error): State {
     return { error };
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  componentDidCatch(_error: Error, _info: ErrorInfo): void {
-    // React already logs the error; no console output here (coding-style:
-    // no console.log in prod). A real logger can be wired later.
-  }
+  private readonly fallbackRef = createRef<HTMLParagraphElement>();
+  private justRetried = false;
 
   private readonly retry = (): void => {
-    this.setState((s) => ({ error: null, retryKey: s.retryKey + 1 }));
+    this.justRetried = true;
+    this.setState({ error: null });
   };
+
+  componentDidUpdate(): void {
+    if (!this.justRetried) return;
+    this.justRetried = false;
+    // Retry unmounts the focused button; if the re-attempt failed again, move
+    // keyboard focus onto the fresh fallback instead of dropping it on <body>.
+    if (this.state.error) {
+      this.fallbackRef.current?.focus();
+    }
+  }
 
   render(): ReactNode {
     if (this.state.error) {
       return (
-        <p className="surface-unavailable" role="alert">
+        <p
+          ref={this.fallbackRef}
+          tabIndex={-1}
+          className="surface-unavailable"
+          role="alert"
+        >
           {this.props.fallbackLabel}{" "}
           <button type="button" className="surface-retry" onClick={this.retry}>
             {this.props.retryLabel}
@@ -59,10 +79,6 @@ export class SurfaceErrorBoundary extends Component<Props, State> {
         </p>
       );
     }
-    return (
-      <div className="surface-error-boundary" key={this.state.retryKey}>
-        {this.props.children}
-      </div>
-    );
+    return <div className="surface-error-boundary">{this.props.children}</div>;
   }
 }

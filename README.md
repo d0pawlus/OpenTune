@@ -9,22 +9,27 @@
 
 ## Download (pre-release)
 
-Unsigned test builds will be published on the
-[Releases page](https://github.com/d0pawlus/OpenTune/releases) once the first
-`v*` release tag is cut (planned as part of M6 — see
-[ROADMAP — M6](docs/ROADMAP.md)). Until then, build from source with
-`npm run tauri build` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+Unsigned pre-release builds are available now on the
+[Releases page](https://github.com/d0pawlus/OpenTune/releases) — grab the
+installer for your OS (macOS `.dmg` for Apple Silicon or Intel, Windows
+`setup.exe`/`.msi`, Linux `.AppImage`/`.deb`/`.rpm`). A rolling `nightly`
+pre-release built from the latest commits is also published there. Prefer to
+build it yourself instead? See [CONTRIBUTING.md](CONTRIBUTING.md) —
+`npm run tauri build`.
 
-When pre-release builds are available, expect OS warnings:
+These are unsigned pre-release builds, so expect OS warnings:
 
-- **macOS** — the app is not notarized yet. Right-click the app → _Open_
-  (once), or clear the quarantine flag: `xattr -cr /Applications/OpenTune.app`.
+- **macOS** — the app is not notarized yet. Open it once (macOS will block
+  it), then go to _System Settings → Privacy & Security_ and click
+  _Open Anyway_ — the old right-click → _Open_ bypass no longer works on
+  macOS 15 (Sequoia) and later. Alternatively, clear the quarantine flag:
+  `xattr -cr /Applications/OpenTune.app`.
 - **Windows** — SmartScreen will warn about an unknown publisher.
   _More info_ → _Run anyway_.
 - **Linux** — download the `.AppImage`, then `chmod +x OpenTune_*.AppImage`
-  and run it. A `.deb` is also provided for Debian/Ubuntu. Serial-port access
-  may require adding your user to the `dialout` group
-  (`sudo usermod -aG dialout $USER`, then re-login).
+  and run it. `.deb` (Debian/Ubuntu) and `.rpm` (Fedora/openSUSE) packages
+  are also provided. Serial-port access may require adding your user to the
+  `dialout` group (`sudo usermod -aG dialout $USER`, then re-login).
 
 Signed and notarized builds are planned before 1.0 (see
 [ROADMAP — M6](docs/ROADMAP.md)).
