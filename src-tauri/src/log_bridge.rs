@@ -60,10 +60,20 @@ pub fn slice(log: &Log, offset: u32, limit: u32) -> Result<LogDataDto, String> {
         .collect();
     let mut record_index = 0usize;
     let mut markers = Vec::new();
+    // M5 review LOW-marker: a marker sitting exactly at a page's upper
+    // bound (`record_index == end`) must belong to exactly one page. Every
+    // page's range is `[start, end)` (half-open) EXCEPT the real last page
+    // (a non-empty page reaching the end of the log), which also claims
+    // markers trailing the very last record — there is no "next page" to
+    // hand them to. `start < end` excludes an empty overflow request (e.g.
+    // `offset == total_records`) from wrongly claiming that role too.
+    let is_last_page = start < end && end >= records.len();
     for entry in &log.entries {
         match entry {
             LogEntry::Record(_) => record_index += 1,
-            LogEntry::Marker(marker) if record_index >= start && record_index <= end => {
+            LogEntry::Marker(marker)
+                if record_index >= start && (record_index < end || is_last_page) =>
+            {
                 markers.push(MarkerDto {
                     record_index: saturating_u32(record_index),
                     t_ms: marker.timestamp_10us as f64 / 100.0,
@@ -245,7 +255,7 @@ fn saturating_u32(value: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentune_datalog::{Field, LogEntry, Record};
+    use opentune_datalog::{Field, LogEntry, Marker, Record};
 
     #[test]
     fn slice_is_columnar_and_maps_nan_to_null() {
@@ -264,5 +274,78 @@ mod tests {
     fn transfer_limit_is_enforced() {
         let log = Log::new(Vec::new());
         assert!(slice(&log, 0, MAX_LOG_SLICE + 1).is_err());
+    }
+
+    fn push_record(log: &mut Log, timestamp_10us: u64) {
+        log.entries.push(LogEntry::Record(Record {
+            counter: 0,
+            timestamp_10us,
+            values: vec![],
+        }));
+    }
+
+    fn push_marker(log: &mut Log, timestamp_10us: u64, text: &str) {
+        log.entries.push(LogEntry::Marker(Marker {
+            counter: 0,
+            timestamp_10us,
+            text: text.to_string(),
+        }));
+    }
+
+    /// M5 review LOW-marker: a marker sitting exactly on the boundary
+    /// between two adjacent pages (5 records in, out of 10 total) must be
+    /// emitted on exactly one of the two `slice` calls a paginating
+    /// frontend would make — not both.
+    #[test]
+    fn marker_on_a_mid_log_page_boundary_is_emitted_exactly_once() {
+        let mut log = Log::new(Vec::new());
+        for i in 0..5u64 {
+            push_record(&mut log, i);
+        }
+        push_marker(&mut log, 5, "boundary");
+        for i in 5..10u64 {
+            push_record(&mut log, i);
+        }
+
+        let first_page = slice(&log, 0, 5).unwrap();
+        let second_page = slice(&log, 5, 5).unwrap();
+
+        let total_markers = first_page.markers.len() + second_page.markers.len();
+        assert_eq!(
+            total_markers, 1,
+            "boundary marker must appear on exactly one page: first={:?} second={:?}",
+            first_page.markers, second_page.markers
+        );
+        assert!(
+            second_page.markers.iter().any(|m| m.text == "boundary"),
+            "the boundary marker belongs to the page that starts where it sits"
+        );
+    }
+
+    /// A marker trailing the very last record (`record_index == total`) must
+    /// land on the real last page, and must NOT be re-emitted by a
+    /// subsequent empty "next page" request at `offset == total` — the same
+    /// "exactly one page" contract at the tail of the log.
+    #[test]
+    fn trailing_marker_is_not_duplicated_onto_an_empty_next_page() {
+        let mut log = Log::new(Vec::new());
+        for i in 0..5u64 {
+            push_record(&mut log, i);
+        }
+        push_marker(&mut log, 5, "trailing");
+
+        let last_page = slice(&log, 0, 5).unwrap();
+        let empty_next_page = slice(&log, 5, 5).unwrap();
+
+        assert_eq!(
+            last_page.markers.len(),
+            1,
+            "trailing marker on the last page"
+        );
+        assert!(
+            empty_next_page.markers.is_empty(),
+            "an empty overflow page must not repeat the trailing marker: {:?}",
+            empty_next_page.markers
+        );
     }
 }
