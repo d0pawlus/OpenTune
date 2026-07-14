@@ -51,6 +51,7 @@ export const pl: Record<keyof typeof en, string> = {
   "table.noValues": "Wartości tabeli jeszcze nie wczytane",
   "surface.loading": "Wczytywanie widoku 3D…",
   "surface.unavailable": "Widok 3D niedostępny (brak obsługi WebGL)",
+  "surface.error": "Nie udało się wczytać widoku 3D",
   "surface.retry": "Spróbuj ponownie",
   "curve.preview": "Podgląd krzywej",
   "diff.title": "Różnice",

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* Transparent remount wrapper (SurfaceErrorBoundary bumps its key on retry).
+/* Transparent wrapper rendered by SurfaceErrorBoundary around its children.
    Must pass .te-3d's definite height through, or .surface-view's height:100%
    has no definite parent and the canvas collapses to its intrinsic ~150px. */
 .surface-error-boundary {
@@ -23,5 +23,22 @@
   margin: 0;
   padding: var(--space-md, 1rem);
   font-size: 0.85rem;
-  opacity: 0.7;
+  /* Muted via color, not opacity — opacity would also dim the retry button
+     (child opacity multiplies and cannot be raised back above the parent's). */
+  color: color-mix(in oklch, var(--color-text) 70%, transparent);
+}
+
+.surface-retry {
+  min-height: 2rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid color-mix(in oklch, var(--color-text) 30%, transparent);
+  border-radius: 0.35rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.surface-retry:focus-visible {
+  outline: 3px solid color-mix(in oklch, var(--color-accent) 55%, transparent);
+  outline-offset: 2px;
 }

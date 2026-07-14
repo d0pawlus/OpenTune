@@ -50,6 +50,7 @@ export const en = {
   "table.noValues": "Table values not loaded yet",
   "surface.loading": "Loading 3D view…",
   "surface.unavailable": "3D view unavailable (WebGL not supported here)",
+  "surface.error": "3D view failed to load",
   "surface.retry": "Retry",
   "curve.preview": "Curve preview",
   "diff.title": "Diff",

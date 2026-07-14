@@ -186,32 +186,40 @@ export default function SurfaceView(props: SurfaceViewProps) {
     // (`position.set` mutates the dot's one reused Vector3 in place).
     let frame = 0;
     const paint = () => {
-      const { xBins, yBins, values, xChannel, yChannel } = propsRef.current;
-      const store = useRealtimeStore.getState();
-      const xv = xChannel ? store.getChannel(xChannel) : undefined;
-      const yv = yChannel ? store.getChannel(yChannel) : undefined;
-      if (xv !== undefined && yv !== undefined) {
-        const h = bilinearHeight(xBins, yBins, values, xv, yv);
-        if (h === null) {
-          dot.visible = false;
+      // The whole frame is guarded: rAF runs outside React, so a throw here
+      // (GPU reset, driver bug mid-render) reaches no error boundary — it
+      // would just kill the loop before the next requestAnimationFrame and
+      // freeze the canvas silently. Fail open to the same fallback as init.
+      try {
+        const { xBins, yBins, values, xChannel, yChannel } = propsRef.current;
+        const store = useRealtimeStore.getState();
+        const xv = xChannel ? store.getChannel(xChannel) : undefined;
+        const yv = yChannel ? store.getChannel(yChannel) : undefined;
+        if (xv !== undefined && yv !== undefined) {
+          const h = bilinearHeight(xBins, yBins, values, xv, yv);
+          if (h === null) {
+            dot.visible = false;
+          } else {
+            dot.visible = true;
+            // Ranges read from `rangesRef` (precomputed on mount/data-change
+            // above), never re-derived here — the steady-state visible-dot
+            // path allocates nothing (review finding I-1).
+            const { xr, yr, vr } = rangesRef.current;
+            dot.position.set(
+              axisFractionIn(xr, xv),
+              heightOfIn(vr, h, HEIGHT_SCALE) + DOT_LIFT,
+              axisFractionIn(yr, yv),
+            );
+          }
         } else {
-          dot.visible = true;
-          // Ranges read from `rangesRef` (precomputed on mount/data-change
-          // above), never re-derived here — the steady-state visible-dot
-          // path allocates nothing (review finding I-1).
-          const { xr, yr, vr } = rangesRef.current;
-          dot.position.set(
-            axisFractionIn(xr, xv),
-            heightOfIn(vr, h, HEIGHT_SCALE) + DOT_LIFT,
-            axisFractionIn(yr, yv),
-          );
+          dot.visible = false;
         }
-      } else {
-        dot.visible = false;
+        controls.update();
+        renderer.render(scene, camera);
+        frame = requestAnimationFrame(paint);
+      } catch {
+        setUnavailable(true);
       }
-      controls.update();
-      renderer.render(scene, camera);
-      frame = requestAnimationFrame(paint);
     };
 
     const onContextLost = (e: Event) => {
@@ -260,7 +268,11 @@ export default function SurfaceView(props: SurfaceViewProps) {
   }, [props.xBins, props.yBins, props.values, props.heatLo, props.heatHi]);
 
   if (unavailable) {
-    return <p className="surface-unavailable">{props.unavailableLabel}</p>;
+    return (
+      <p className="surface-unavailable" role="alert">
+        {props.unavailableLabel}
+      </p>
+    );
   }
   return (
     <div className="surface-view">

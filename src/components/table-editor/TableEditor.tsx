@@ -385,7 +385,10 @@ function Editor({ table, constants, locale }: EditorProps) {
       {view === "3d" ? (
         <div className="te-3d">
           <SurfaceErrorBoundary
-            fallbackLabel={t("surface.unavailable", locale)}
+            // Not surface.unavailable: the boundary fires on chunk-load and
+            // render failures, not on missing WebGL — a wrong "WebGL not
+            // supported" diagnosis would send users chasing their GPU.
+            fallbackLabel={t("surface.error", locale)}
             retryLabel={t("surface.retry", locale)}
           >
             <Suspense
