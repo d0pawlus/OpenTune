@@ -103,6 +103,18 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
       set({ error: "A log path is required." });
       return;
     }
+    // H2: `logs.A` always wins dataset-selector priority over `logs.B` (see
+    // the Playback component), so this slot only backs an active replay
+    // when its current dataset *is* that prioritized one. Unloading it here
+    // — reopening the slot that is being replayed — must not leave the
+    // dashboard frozen behind a stale `replaying: true` with no dataset left
+    // to drive it. Loading into the *other*, inactive slot (A/B exist for
+    // side-by-side comparison) must not disturb the active replay.
+    const priorState = get();
+    const unloadsActiveReplay =
+      priorState.replaying &&
+      (priorState.logs.A ?? priorState.logs.B) === priorState.logs[slot];
+    if (unloadsActiveReplay) priorState.stopPlayback();
     set({ loading: true, error: null, playing: false });
     try {
       const opened = await commands.openLog(path.trim(), format);

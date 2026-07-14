@@ -102,6 +102,8 @@ export const pl: Record<keyof typeof en, string> = {
   "datalog.playback": "Odtwarzanie",
   "datalog.play": "Odtwarzaj",
   "datalog.pause": "Pauza",
+  "datalog.stopPlayback": "Zatrzymaj odtwarzanie",
+  "datalog.replaying": "Odtwarzanie — wskaźniki na żywo wstrzymane",
   "datalog.position": "Pozycja wiersza",
   "datalog.speed": "Prędkość",
   "datalog.math": "Biblioteka kanałów matematycznych",

@@ -26,6 +26,21 @@ vi.mock("../../ipc/bindings", () => ({
   },
 }));
 
+// jsdom has no `matchMedia` implementation; the lazily-loaded uPlot chart
+// (mounted once a log is loaded) queries it for device-pixel-ratio changes.
+if (!window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
 describe("DatalogPanel", () => {
   beforeEach(() => {
     useDatalogStore.getState().reset();
@@ -129,5 +144,77 @@ describe("DatalogPanel", () => {
       },
     });
     await waitFor(() => expect(openA.disabled).toBe(false));
+  });
+
+  // H2: once a user scrubs a datalog, `replaying: true` gates every live
+  // frame off the dashboard. A Stop control and a visible indicator must
+  // always be present so that frozen state is never silent.
+  describe("playback escape hatch", () => {
+    beforeEach(() => {
+      vi.mocked(ipc.commands.openLog).mockResolvedValue({
+        status: "ok",
+        data: {
+          log_id: 1,
+          fields: [{ name: "rpm", units: "RPM" }],
+          record_count: 3,
+          marker_count: 0,
+          duration_ms: 80,
+        },
+      });
+      vi.mocked(ipc.commands.getLogData).mockResolvedValue({
+        status: "ok",
+        data: {
+          offset: 0,
+          total_records: 3,
+          t_ms: [0, 40, 80],
+          columns: [[1000, 1100, 1200]],
+          markers: [],
+        },
+      });
+    });
+
+    const openLogA = async () => {
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+        target: { value: "/tmp/a.csv" },
+      });
+      fireEvent.click(within(logA).getByRole("button", { name: "Open log" }));
+      await waitFor(() => expect(ipc.commands.getLogData).toHaveBeenCalled());
+    };
+
+    it("hides the replay indicator and disables Stop before any playback starts", async () => {
+      await openLogA();
+      const playback = screen.getByRole("group", { name: "Playback" });
+
+      expect(screen.queryByText("Replay — live gauges paused")).toBeNull();
+      const stop = within(playback).getByRole("button", {
+        name: "Stop replay",
+      }) as HTMLButtonElement;
+      expect(stop.disabled).toBe(true);
+    });
+
+    it("shows the replay indicator and an enabled Stop button once scrubbing starts, and Stop returns to live", async () => {
+      await openLogA();
+      const playback = screen.getByRole("group", { name: "Playback" });
+
+      fireEvent.change(within(playback).getByLabelText("Row position"), {
+        target: { value: "1" },
+      });
+
+      expect(useDatalogStore.getState().replaying).toBe(true);
+      expect(screen.getByText("Replay — live gauges paused")).toBeTruthy();
+      const stop = within(playback).getByRole("button", {
+        name: "Stop replay",
+      }) as HTMLButtonElement;
+      expect(stop.disabled).toBe(false);
+
+      fireEvent.click(stop);
+
+      expect(useDatalogStore.getState().replaying).toBe(false);
+      expect(useDatalogStore.getState().playing).toBe(false);
+      expect(screen.queryByText("Replay — live gauges paused")).toBeNull();
+      expect(stop.disabled).toBe(true);
+    });
   });
 });

@@ -101,6 +101,8 @@ export const en = {
   "datalog.playback": "Playback",
   "datalog.play": "Play",
   "datalog.pause": "Pause",
+  "datalog.stopPlayback": "Stop replay",
+  "datalog.replaying": "Replay — live gauges paused",
   "datalog.position": "Row position",
   "datalog.speed": "Speed",
   "datalog.math": "Math-channel library",

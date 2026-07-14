@@ -161,4 +161,62 @@ describe("datalog store", () => {
     useDatalogStore.getState().setPlaybackRow(2);
     expect(useRealtimeStore.getState().getChannel("rpm")).toBe(1200);
   });
+
+  // H2: once a user plays or scrubs, `replaying: true` gates every live frame
+  // off the dashboard (App.tsx). Something in the UI must always be able to
+  // reset both flags, or the dashboard is frozen forever.
+  describe("playback escape hatch (H2)", () => {
+    it("stopPlayback resets both playing and replaying", async () => {
+      await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+      useDatalogStore.getState().setPlaying(true);
+      expect(useDatalogStore.getState().playing).toBe(true);
+      expect(useDatalogStore.getState().replaying).toBe(true);
+
+      useDatalogStore.getState().stopPlayback();
+
+      expect(useDatalogStore.getState().playing).toBe(false);
+      expect(useDatalogStore.getState().replaying).toBe(false);
+      expect(useRealtimeStore.getState().channels).toEqual({});
+    });
+
+    it("pausing keeps replaying true — only the explicit Stop clears it", async () => {
+      await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+      useDatalogStore.getState().setPlaying(true);
+
+      useDatalogStore.getState().setPlaying(false);
+
+      expect(useDatalogStore.getState().playing).toBe(false);
+      expect(useDatalogStore.getState().replaying).toBe(true);
+    });
+
+    it("unloading the actively replayed dataset resets playback before the reopen resolves", async () => {
+      await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+      useDatalogStore.getState().setPlaybackRow(1);
+      expect(useDatalogStore.getState().replaying).toBe(true);
+
+      const reopened = useDatalogStore
+        .getState()
+        .openLog("A", "/tmp/a2.csv", "Csv");
+      // The unload is synchronous with the call, before the new data even
+      // starts loading — the stale replay must never survive it.
+      expect(useDatalogStore.getState().replaying).toBe(false);
+      expect(useDatalogStore.getState().playing).toBe(false);
+      expect(useRealtimeStore.getState().channels).toEqual({});
+
+      await reopened;
+      expect(useDatalogStore.getState().logs.A?.path).toBe("/tmp/a2.csv");
+    });
+
+    it("opening a different, inactive slot does not disturb an active replay", async () => {
+      await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+      useDatalogStore.getState().setPlaybackRow(1);
+      expect(useDatalogStore.getState().replaying).toBe(true);
+
+      // A/B slots exist for side-by-side comparison — loading B must not
+      // kill A's replay, since A still takes selector priority.
+      await useDatalogStore.getState().openLog("B", "/tmp/b.csv", "Csv");
+
+      expect(useDatalogStore.getState().replaying).toBe(true);
+    });
+  });
 });

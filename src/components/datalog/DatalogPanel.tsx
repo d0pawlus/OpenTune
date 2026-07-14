@@ -10,7 +10,7 @@ import type {
 import { t, type Locale } from "../../i18n";
 import { useDatalogStore, type LogSlot } from "../../stores/datalog";
 import type { MathOperation } from "./mathChannels";
-import { playbackTarget, rowAtTime } from "./playback";
+import { lastValidTime, playbackTarget, rowAtTime } from "./playback";
 import "./datalog.css";
 
 const LazyCharts = lazy(() =>
@@ -217,19 +217,30 @@ function Playback({ locale }: { locale: Locale }) {
   const dataset = useDatalogStore((state) => state.logs.A ?? state.logs.B);
   const row = useDatalogStore((state) => state.playbackRow);
   const playing = useDatalogStore((state) => state.playing);
+  const replaying = useDatalogStore((state) => state.replaying);
   const speed = useDatalogStore((state) => state.speed);
   const setRow = useDatalogStore((state) => state.setPlaybackRow);
   const setPlaying = useDatalogStore((state) => state.setPlaying);
   const setSpeed = useDatalogStore((state) => state.setSpeed);
   const stopPlayback = useDatalogStore((state) => state.stopPlayback);
   const animation = useRef<number | null>(null);
+  // H4: the tick loop reads the *current* row from this ref rather than from
+  // a `row` effect-dependency, so scrubbing/advancing playback never tears
+  // down and restarts the rAF loop (which used to reset the wall-clock time
+  // base every single frame and drift the reported log time).
+  const rowRef = useRef(row);
+  useEffect(() => {
+    rowRef.current = row;
+  }, [row]);
+
+  // H4: scanned backwards with no array copy, and memoized so it is
+  // recomputed only when the dataset itself changes, not every frame.
+  const finalTime = useMemo(() => lastValidTime(dataset?.tMs ?? []), [dataset]);
 
   useEffect(() => {
     if (!playing || !dataset || dataset.tMs.length === 0) return;
     const startedAt = performance.now();
-    const startLog = dataset.tMs[row] ?? 0;
-    const finalTime =
-      [...dataset.tMs].reverse().find((value) => value !== null) ?? 0;
+    const startLog = dataset.tMs[rowRef.current] ?? 0;
     const tick = (now: number) => {
       const target = playbackTarget(startLog, now - startedAt, speed);
       if (target >= finalTime) {
@@ -243,7 +254,7 @@ function Playback({ locale }: { locale: Locale }) {
     return () => {
       if (animation.current !== null) cancelAnimationFrame(animation.current);
     };
-  }, [dataset, playing, row, setRow, speed, stopPlayback]);
+  }, [dataset, playing, speed, finalTime, setRow, stopPlayback]);
 
   useEffect(
     () => () => {
@@ -263,6 +274,9 @@ function Playback({ locale }: { locale: Locale }) {
         onClick={() => setPlaying(!playing)}
       >
         {playing ? t("datalog.pause", locale) : t("datalog.play", locale)}
+      </button>
+      <button type="button" disabled={!replaying} onClick={stopPlayback}>
+        {t("datalog.stopPlayback", locale)}
       </button>
       <label>
         {t("datalog.position", locale)}
@@ -295,6 +309,11 @@ function Playback({ locale }: { locale: Locale }) {
           ))}
         </select>
       </label>
+      {replaying && (
+        <p role="status" className="dl-replay-indicator">
+          {t("datalog.replaying", locale)}
+        </p>
+      )}
     </fieldset>
   );
 }
