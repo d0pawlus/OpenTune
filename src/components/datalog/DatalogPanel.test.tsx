@@ -26,6 +26,11 @@ vi.mock("../../ipc/bindings", () => ({
   },
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(async () => null),
+  save: vi.fn(async () => null),
+}));
+
 // jsdom has no `matchMedia` implementation; the lazily-loaded uPlot chart
 // (mounted once a log is loaded) queries it for device-pixel-ratio changes.
 if (!window.matchMedia) {
@@ -299,6 +304,122 @@ describe("DatalogPanel", () => {
           reject_when: [],
         }),
       );
+    });
+  });
+
+  // Task 7b: native file dialogs alongside the free-text path inputs. Open
+  // fields use `open()`, record/export destination fields use `save()`, and
+  // a cancelled dialog (null) must leave the text input untouched.
+  describe("Browse buttons (native file dialogs)", () => {
+    it("Log A Browse opens a native open dialog filtered to csv/mlg and fills the path", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce("/tmp/picked-a.csv");
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+
+      fireEvent.click(within(logA).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() =>
+        expect(
+          (
+            within(logA).getByPlaceholderText(
+              "/path/to/log.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-a.csv"),
+      );
+      expect(open).toHaveBeenCalledWith({
+        multiple: false,
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("Log B Browse fills only Log B's path input", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce("/tmp/picked-b.csv");
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      const logB = screen.getByRole("group", { name: "Log B" });
+
+      fireEvent.click(within(logB).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() =>
+        expect(
+          (
+            within(logB).getByPlaceholderText(
+              "/path/to/log.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-b.csv"),
+      );
+      expect(
+        (
+          within(logA).getByPlaceholderText(
+            "/path/to/log.csv",
+          ) as HTMLInputElement
+        ).value,
+      ).toBe("");
+    });
+
+    it("Recording Browse uses save() and fills the recording destination path", async () => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(save).mockResolvedValueOnce("/tmp/picked-recording.csv");
+      render(<DatalogPanel locale="en" />);
+      const recording = screen.getByRole("group", { name: "Recording" });
+
+      fireEvent.click(
+        within(recording).getByRole("button", { name: "Browse…" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          (
+            within(recording).getByPlaceholderText(
+              "/path/to/recording.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-recording.csv"),
+      );
+      expect(save).toHaveBeenCalledWith({
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("Export Browse uses save() and fills the export destination path", async () => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(save).mockResolvedValueOnce("/tmp/picked-export.csv");
+      render(<DatalogPanel locale="en" />);
+      const exportGroup = screen.getByRole("group", { name: "Export" });
+
+      fireEvent.click(
+        within(exportGroup).getByRole("button", { name: "Browse…" }),
+      );
+
+      await waitFor(() => {
+        const input = within(exportGroup).getByLabelText(
+          "Explicit file path",
+        ) as HTMLInputElement;
+        expect(input.value).toBe("/tmp/picked-export.csv");
+      });
+      expect(save).toHaveBeenCalledWith({
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("leaves the path input untouched when the dialog is cancelled", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce(null);
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      const input = within(logA).getByPlaceholderText(
+        "/path/to/log.csv",
+      ) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "/tmp/manual.csv" } });
+
+      fireEvent.click(within(logA).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() => expect(open).toHaveBeenCalled());
+      expect(input.value).toBe("/tmp/manual.csv");
     });
   });
 });

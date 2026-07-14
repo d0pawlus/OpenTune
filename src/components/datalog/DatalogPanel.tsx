@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { commands } from "../../ipc/bindings";
 import type {
   AnomalyReportDto,
@@ -28,6 +29,18 @@ const formats: { value: LogFormatDto; label: string }[] = [
   { value: "Csv", label: "CSV" },
   { value: "MlgV1", label: "MLG v1" },
 ];
+
+const LOG_DIALOG_FILTERS = [{ name: "Log", extensions: ["csv", "mlg"] }];
+
+async function pickOpenLogPath(): Promise<string | null> {
+  const picked = await open({ multiple: false, filters: LOG_DIALOG_FILTERS });
+  return typeof picked === "string" ? picked : null;
+}
+
+async function pickSaveLogPath(): Promise<string | null> {
+  const picked = await save({ filters: LOG_DIALOG_FILTERS });
+  return typeof picked === "string" ? picked : null;
+}
 
 const NumberField = ({
   label,
@@ -98,6 +111,17 @@ function LogPathForm({ slot, locale }: { slot: LogSlot; locale: Locale }) {
           placeholder="/path/to/log.csv"
         />
       </label>
+      <button
+        type="button"
+        disabled={loading}
+        onClick={() => {
+          void pickOpenLogPath().then((picked) => {
+            if (picked) setPath(picked);
+          });
+        }}
+      >
+        {t("datalog.browse", locale)}
+      </button>
       <label>
         {t("datalog.format", locale)}
         <select
@@ -159,6 +183,17 @@ function RecordingControls({ locale }: { locale: Locale }) {
           placeholder="/path/to/recording.csv"
         />
       </label>
+      <button
+        type="button"
+        disabled={recording?.active}
+        onClick={() => {
+          void pickSaveLogPath().then((picked) => {
+            if (picked) setPath(picked);
+          });
+        }}
+      >
+        {t("datalog.browse", locale)}
+      </button>
       <label>
         {t("datalog.format", locale)}
         <select
@@ -461,6 +496,16 @@ function ExportControls({ locale }: { locale: Locale }) {
         {t("datalog.path", locale)}
         <input value={path} onChange={(event) => setPath(event.target.value)} />
       </label>
+      <button
+        type="button"
+        onClick={() => {
+          void pickSaveLogPath().then((picked) => {
+            if (picked) setPath(picked);
+          });
+        }}
+      >
+        {t("datalog.browse", locale)}
+      </button>
       <label>
         {t("datalog.format", locale)}
         <select
@@ -660,10 +705,10 @@ function Analysis({ locale }: { locale: Locale }) {
             <thead>
               <tr>
                 <th>{t("datalog.channel", locale)}</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>Mean</th>
-                <th>σ</th>
+                <th>{t("datalog.statMin", locale)}</th>
+                <th>{t("datalog.statMax", locale)}</th>
+                <th>{t("datalog.statMean", locale)}</th>
+                <th>{t("datalog.statStdDev", locale)}</th>
               </tr>
             </thead>
             <tbody>
@@ -682,25 +727,25 @@ function Analysis({ locale }: { locale: Locale }) {
       )}
       <div className="dl-form-grid">
         <ChannelSelect
-          label="AFR"
+          label={t("datalog.afr", locale)}
           value={selectedAfr}
           channels={channels}
           setValue={setAfrChannel}
         />
         <ChannelSelect
-          label="RPM"
+          label={t("datalog.rpm", locale)}
           value={selectedRpm}
           channels={channels}
           setValue={setRpmChannel}
         />
         <ChannelSelect
-          label="Load"
+          label={t("datalog.load", locale)}
           value={selectedLoad}
           channels={channels}
           setValue={setLoadChannel}
         />
         <ChannelSelect
-          label="Knock"
+          label={t("datalog.knock", locale)}
           value={selectedKnock}
           channels={channels}
           setValue={setKnockChannel}
@@ -757,7 +802,7 @@ function Analysis({ locale }: { locale: Locale }) {
             setValue={setSpeedChannel}
           />
           <ChannelSelect
-            label="RPM"
+            label={t("datalog.rpm", locale)}
             value={selectedRpm}
             channels={channels}
             setValue={setRpmChannel}
@@ -768,7 +813,12 @@ function Analysis({ locale }: { locale: Locale }) {
             min={1}
             onChange={setMass}
           />
-          <NumberField label="Cd" value={drag} min={0} onChange={setDrag} />
+          <NumberField
+            label={t("datalog.dragCoefficient", locale)}
+            value={drag}
+            min={0}
+            onChange={setDrag}
+          />
           <NumberField
             label={t("datalog.frontalArea", locale)}
             value={area}
@@ -813,7 +863,7 @@ function Analysis({ locale }: { locale: Locale }) {
       {dyno && (
         <div>
           <Suspense fallback={<p>{t("datalog.loadingCharts", locale)}</p>}>
-            <LazyDynoChart report={dyno} />
+            <LazyDynoChart report={dyno} locale={locale} />
           </Suspense>
           <h4>{t("datalog.assumptions", locale)}</h4>
           <ul>
@@ -939,7 +989,7 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
         </label>
         <div className="dl-axis-grid">
           <label>
-            X min
+            {t("datalog.xMin", locale)}
             <input
               type="number"
               value={xMin}
@@ -947,7 +997,7 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
             />
           </label>
           <label>
-            X max
+            {t("datalog.xMax", locale)}
             <input
               type="number"
               value={xMax}
@@ -955,7 +1005,7 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
             />
           </label>
           <label>
-            Y min
+            {t("datalog.yMin", locale)}
             <input
               type="number"
               value={yMin}
@@ -963,7 +1013,7 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
             />
           </label>
           <label>
-            Y max
+            {t("datalog.yMax", locale)}
             <input
               type="number"
               value={yMax}
@@ -982,6 +1032,7 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
             scatterY={selectedScatterY}
             xBounds={{ min: bound(xMin), max: bound(xMax) }}
             yBounds={{ min: bound(yMin), max: bound(yMax) }}
+            locale={locale}
           />
         </Suspense>
       )}

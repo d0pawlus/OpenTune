@@ -38,6 +38,8 @@ export function buildFacetedPlot(
   yBounds: AxisBounds,
   scatter: boolean,
   width: number,
+  xLabel = "X",
+  yLabel = "Y",
 ): FacetedPlotConfig {
   const realSeries: uPlot.Series[] = series.map((item) => ({
     label: item.label,
@@ -72,7 +74,7 @@ export function buildFacetedPlot(
         ],
       },
     },
-    axes: [{ label: "X" }, { label: "Y" }],
+    axes: [{ label: xLabel }, { label: yLabel }],
     legend: { show: true },
     cursor: { drag: { x: true, y: true, setScale: true } },
   };
