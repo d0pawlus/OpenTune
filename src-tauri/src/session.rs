@@ -31,7 +31,7 @@ use crate::events::TuneDirtyEvent;
 
 pub(crate) const NO_TUNE: &str = "no tune loaded — call load_tune first";
 pub(crate) const NO_CONNECTION: &str = "no ECU connection — this operation needs a live link";
-const NO_OCH_BLOCK: &str =
+pub(crate) const NO_OCH_BLOCK: &str =
     "the loaded INI declares no ochBlockSize — realtime polling is unavailable";
 const SERIAL_UNSUPPORTED: &str = "live page operations are not yet wired for serial \
     connections (M3: persist MsProtocol in ConnectionManager); use the simulator for M2";

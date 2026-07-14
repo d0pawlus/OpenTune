@@ -38,7 +38,8 @@ use crate::dto::{
     VirtualDynoReportDto,
 };
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent, TuneDirtyEvent};
-use crate::session::PollFrameError;
+use crate::log_paths::{validate_log_read_path, validate_log_write_path};
+use crate::session::{PollFrameError, NO_OCH_BLOCK};
 use ops::{build_session, link_drop, reconnect_session};
 
 const NOT_CONNECTED: &str = "not connected";
@@ -51,6 +52,11 @@ const RECOVERY_IN_PROGRESS: &str = "link recovery in progress";
 /// ever fed from `poll_tick`, which only fires while `polling` is true (see
 /// `wants_poll`), so arming a capture without it would silently never fill.
 const POLLING_NOT_RUNNING: &str = "realtime polling is not running";
+/// M5 review H1/M1: reject an `open_log` source larger than this before
+/// reading it into memory — `opentune_datalog::read_log` materializes the
+/// whole file (both the CSV and MLG readers `read_to_string`/`read_to_end`),
+/// so an unbounded read of a huge or corrupt file could exhaust memory.
+const MAX_LOG_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A oneshot reply channel carrying an operation's result back to the
 /// awaiting IPC command.
@@ -1221,13 +1227,18 @@ impl Owner {
         if self.active_log.is_some() {
             return Err("a log is already active".into());
         }
-        if path.is_empty() {
-            return Err("log path must not be empty".into());
-        }
+        validate_log_write_path(&path)?;
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| self.not_connected_error())?;
+        // M5 review M2: an och block size of zero means no realtime frame
+        // will ever feed this log (see `Session::poll_frame_full`'s own
+        // gate) — starting anyway would silently record zero-column rows
+        // for the whole session instead of failing up front.
+        if session.def.comms.och_block_size == 0 {
+            return Err(format!("cannot start log: {NO_OCH_BLOCK}"));
+        }
         let fields = session
             .def
             .output_channels
@@ -1517,18 +1528,58 @@ fn next_counter(counter: u8) -> u8 {
 }
 
 fn read_log_path(path: &str, format: LogFormatDto) -> Result<Log, String> {
-    let file = std::fs::File::open(path).map_err(|error| format!("{path}: {error}"))?;
+    let validated = validate_log_read_path(path)?;
+    let metadata = std::fs::metadata(&validated)
+        .map_err(|error| format!("{}: {error}", validated.display()))?;
+    if metadata.len() > MAX_LOG_FILE_BYTES {
+        return Err(format!(
+            "log file `{}` is {} bytes, over the {MAX_LOG_FILE_BYTES}-byte limit",
+            validated.display(),
+            metadata.len()
+        ));
+    }
+    let file = std::fs::File::open(&validated)
+        .map_err(|error| format!("{}: {error}", validated.display()))?;
     opentune_datalog::read_log(std::io::BufReader::new(file), format.into())
         .map_err(|error| error.to_string())
 }
 
+/// Write `log` atomically: the whole encode + write happens on a temp file
+/// in the same directory as `path`, which is then renamed over the
+/// destination — a crash or error mid-write can never leave a truncated
+/// destination file (M5 review M5). The temp file is removed on any error.
 fn write_log_path(path: &str, format: LogFormatDto, log: &Log) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|error| format!("{path}: {error}"))?;
-    let mut writer = std::io::BufWriter::new(file);
-    opentune_datalog::write_log(log, &mut writer, format.into())
-        .map_err(|error| error.to_string())?;
-    use std::io::Write as _;
-    writer.flush().map_err(|error| error.to_string())
+    let target = validate_log_write_path(path)?;
+    let temp_path = temp_write_path(&target);
+
+    let result = (|| -> Result<(), String> {
+        let file = std::fs::File::create(&temp_path)
+            .map_err(|error| format!("{}: {error}", temp_path.display()))?;
+        let mut writer = std::io::BufWriter::new(file);
+        opentune_datalog::write_log(log, &mut writer, format.into())
+            .map_err(|error| error.to_string())?;
+        use std::io::Write as _;
+        writer.flush().map_err(|error| error.to_string())?;
+        drop(writer);
+        std::fs::rename(&temp_path, &target)
+            .map_err(|error| format!("{}: {error}", target.display()))
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
+}
+
+/// `<name>.<ext>.tmp-<pid>` in the same directory as `target`, so the final
+/// `rename` stays on one filesystem (atomic) rather than becoming a
+/// cross-device copy.
+fn temp_write_path(target: &std::path::Path) -> std::path::PathBuf {
+    let mut temp_name = target
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("log"), ToOwned::to_owned);
+    temp_name.push(format!(".tmp-{}", std::process::id()));
+    target.with_file_name(temp_name)
 }
 
 fn saturating_u32(value: usize) -> u32 {

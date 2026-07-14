@@ -143,7 +143,7 @@ pub fn load_comms_from_path(path: &str) -> Result<CommsSettings, String> {
 }
 
 /// Expand a leading `~` / `~/` to `$HOME`. Other `~user` forms are left as-is.
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     match path.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => match std::env::var("HOME") {
             Ok(home) => format!("{home}{rest}"),
@@ -274,6 +274,15 @@ fn serial_config_from_comms(comms: &CommsSettings) -> SerialConfig {
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
 
+/// Serializes every test (in this module and elsewhere, e.g.
+/// `log_paths::tests`) that reads or mutates the process-wide `HOME`
+/// env var — `cargo test` runs `#[test]` fns on multiple threads by
+/// default, and `std::env::set_var`/`var` are unsynchronized process
+/// globals, so two such tests running concurrently could otherwise observe
+/// each other's transient value.
+#[cfg(test)]
+pub(crate) static HOME_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,12 +356,18 @@ mod tests {
 
     #[test]
     fn expand_tilde_expands_leading_home_only() {
+        let _guard = HOME_ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", "/home/x");
         assert_eq!(expand_tilde("~/a/b.ini"), "/home/x/a/b.ini");
         assert_eq!(expand_tilde("~"), "/home/x");
         // Not a leading `~/` — left untouched.
         assert_eq!(expand_tilde("/abs/path"), "/abs/path");
         assert_eq!(expand_tilde("~user/x"), "~user/x");
+        match original_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

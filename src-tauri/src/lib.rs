@@ -9,6 +9,7 @@ pub mod events;
 mod layout;
 mod log_bridge;
 mod log_commands;
+mod log_paths;
 mod offline_commands;
 pub mod owner;
 mod realtime_commands;
