@@ -8,7 +8,8 @@ the project is organized and how to get involved.
 > (Tauri v2 app, full Rust workspace with typed IPC, INI parser, serial + simulator
 > transports, realtime dashboard, table/curve/3D editors, deterministic auto-tune,
 > and datalog capture with analysis). M6 — interop hardening, packaging, and the
-> first signed/notarized public release — is in progress. See
+> first public release (unsigned pre-release builds; signing/notarization
+> planned before 1.0) — is in progress. See
 > [docs/ROADMAP.md](docs/ROADMAP.md) for what's next.
 
 ## Start here
@@ -68,8 +69,8 @@ listed here was confirmed to succeed before this guide was published.
 ### Get started
 
 ```sh
-git clone https://github.com/d0pawlus/TuningSoftware.git
-cd TuningSoftware
+git clone https://github.com/d0pawlus/OpenTune.git
+cd OpenTune
 npm ci
 ```
 

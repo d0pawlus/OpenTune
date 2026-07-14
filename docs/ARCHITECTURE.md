@@ -334,8 +334,10 @@ Two interaction styles:
   `start_realtime`/`stop_realtime`, `run_ve_analyze`, `start_capture`/
   `stop_capture`, `start_log`/`stop_log`, `log_stats`/`detect_anomaly`/
   `virtual_dyno`, …
-- **Events** (backend → frontend push): `realtime_frame` (throttled),
-  `connection_state`, `progress` (long reads/writes), `log_status`, `error`.
+- **Events** (backend → frontend push), the four registered in
+  `collect_events!`: `heartbeat` (1 Hz liveness signal),
+  `connection-state-event` (link/identify status), `tune-dirty-event`
+  (unburned-edits flag), and `realtime-frame-event` (throttled realtime data).
 
 Design rules:
 
