@@ -6,7 +6,8 @@ use crate::{DatalogError, Field, Log, LogEntry, Record, Result};
 
 /// Write conventional deterministic CSV: `Time` (seconds), then one column per
 /// field. Markers have no standard CSV representation and are intentionally
-/// omitted. NaN/missing values are emitted as empty cells.
+/// omitted. CSV has no representation for "missing" other than an empty
+/// cell, so every non-finite data value (NaN, +inf, -inf) is emitted as one.
 pub fn write_csv<W: Write>(log: &Log, mut writer: W) -> Result<()> {
     write_cell(&mut writer, "Time")?;
     for field in &log.fields {
@@ -20,7 +21,11 @@ pub fn write_csv<W: Write>(log: &Log, mut writer: W) -> Result<()> {
         for index in 0..log.fields.len() {
             writer.write_all(b",")?;
             let value = record.values.get(index).copied().unwrap_or(f64::NAN);
-            if !value.is_nan() {
+            // CSV has one representation for "missing": an empty cell. NaN
+            // and ±inf all collapse to it — the reader parses an empty cell
+            // back to NaN, the same "missing" representation the MLG path
+            // uses (M5 review LOW-csv).
+            if value.is_finite() {
                 write!(writer, "{value}")?;
             }
         }
@@ -196,5 +201,45 @@ mod tests {
     fn malformed_quote_is_typed_error() {
         let error = read_csv("Time,rpm\n0,12\"3\n".as_bytes()).unwrap_err();
         assert!(matches!(error, DatalogError::InvalidCsv { line: 2, .. }));
+    }
+
+    /// M5 review LOW-csv: non-finite data cells (NaN, +inf, -inf) all
+    /// collapse to the CSV format's one "missing" representation — an empty
+    /// cell, the same value `write_csv` already used for NaN — round-tripping
+    /// back to NaN on read (the MLG path's own "missing" representation, per
+    /// `Record::values`'s doc comment).
+    #[test]
+    fn non_finite_data_cells_round_trip_as_missing() {
+        let mut log = Log::new(vec![Field::float("a", ""), Field::float("b", "")]);
+        log.entries.push(LogEntry::Record(Record {
+            counter: 0,
+            timestamp_10us: 0,
+            values: vec![f64::NAN, f64::INFINITY],
+        }));
+        log.entries.push(LogEntry::Record(Record {
+            counter: 1,
+            timestamp_10us: 1,
+            values: vec![f64::NEG_INFINITY, 1.5],
+        }));
+
+        let mut encoded = Vec::new();
+        write_csv(&log, &mut encoded).unwrap();
+        let text = String::from_utf8(encoded.clone()).unwrap();
+        // Every non-finite cell serializes as empty — no literal "inf"/"NaN"
+        // token reaches the file.
+        assert!(!text.to_ascii_lowercase().contains("inf"));
+
+        let decoded = read_csv(encoded.as_slice()).unwrap();
+        let rows: Vec<_> = decoded.records().collect();
+        assert!(rows[0].values[0].is_nan(), "NaN must round-trip as NaN");
+        assert!(
+            rows[0].values[1].is_nan(),
+            "+inf must round-trip as the missing representation (NaN)"
+        );
+        assert!(
+            rows[1].values[0].is_nan(),
+            "-inf must round-trip as the missing representation (NaN)"
+        );
+        assert_eq!(rows[1].values[1], 1.5, "finite values are unaffected");
     }
 }
