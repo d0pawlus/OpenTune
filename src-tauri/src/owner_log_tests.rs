@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use std::sync::Mutex;
+
 use super::*;
 
 /// Owner-task fixture with real comms + page-1 constants, shaped like
@@ -13,6 +15,16 @@ const NO_OCH_INI: &str = concat!(
 
 fn test_owner() -> OwnerHandle {
     spawn_owner_with_emitter(Arc::new(|_| {}))
+}
+
+/// Like [`test_owner`], but events land in a shared Vec so a test can assert
+/// on what was emitted (M5 review M3: disconnect must still emit
+/// `Disconnected` even when the log flush failed).
+fn test_owner_with_events() -> (OwnerHandle, Arc<Mutex<Vec<OwnerEvent>>>) {
+    let events: Arc<Mutex<Vec<OwnerEvent>>> = Arc::default();
+    let sink = Arc::clone(&events);
+    let emit: Emitter = Arc::new(move |ev| sink.lock().unwrap().push(ev));
+    (spawn_owner_with_emitter(emit), events)
 }
 
 async fn send<T>(owner: &OwnerHandle, make: impl FnOnce(Reply<T>) -> Command) -> Result<T, String> {
@@ -203,6 +215,60 @@ async fn start_log_fails_without_och_block() {
         !status.active,
         "start_log must not create an active log without a realtime source"
     );
+}
+
+// ── 1d: disconnect must not mask a log flush failure ────────────────────────
+
+#[tokio::test]
+async fn disconnect_reports_flush_failure_distinctly_but_still_disconnects() {
+    let (owner, events) = test_owner_with_events();
+    send(&owner, |reply| Command::Connect {
+        source: ConnectSource::Simulator { ini_path: None },
+        reply,
+    })
+    .await
+    .unwrap();
+
+    let dir = std::env::temp_dir().join(format!(
+        "opentune-m5-disconnect-flush-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("log.csv").to_string_lossy().into_owned();
+    send(&owner, |reply| Command::StartLog {
+        path,
+        format: LogFormatDto::Csv,
+        reply,
+    })
+    .await
+    .unwrap();
+
+    // Force the flush at Disconnect time to fail: the parent directory the
+    // log was pointed at no longer exists (nothing has been written to disk
+    // yet — `start_log` only registers the in-memory `ActiveLog`).
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let error = send(&owner, |reply| Command::Disconnect { reply })
+        .await
+        .unwrap_err();
+    assert!(
+        error.contains("disconnected") && error.contains("flush"),
+        "error should say the device disconnected but the log flush failed: {error}"
+    );
+
+    assert!(
+        emitted_disconnected(&events),
+        "the device must still be reported disconnected even though the log flush failed"
+    );
+}
+
+fn emitted_disconnected(events: &Arc<Mutex<Vec<OwnerEvent>>>) -> bool {
+    events.lock().unwrap().iter().any(|ev| {
+        matches!(
+            ev,
+            OwnerEvent::Connection(ConnectionStateEvent::Disconnected)
+        )
+    })
 }
 
 // ── 1e: atomic log save ──────────────────────────────────────────────────────

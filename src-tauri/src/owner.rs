@@ -507,10 +507,16 @@ impl Owner {
                     inflight.cancel.store(true, Ordering::Relaxed);
                     inflight.discard = true;
                 }
-                let log_result = if self.active_log.is_some() {
-                    self.stop_log().await.map(|_| ())
+                // M5 review M3: a flush failure must not read back as the
+                // *disconnect* having failed — every step below runs
+                // unconditionally regardless of `flush_error`, and the reply
+                // (built after) names the two outcomes distinctly instead of
+                // handing the raw flush error back as if it were a
+                // disconnect error.
+                let flush_error = if self.active_log.is_some() {
+                    self.stop_log().await.err()
                 } else {
-                    Ok(())
+                    None
                 };
                 // An offline-origin tune must SURVIVE disconnect (design spec
                 // §"Disconnect while editing"): drop the live link but keep the
@@ -533,7 +539,18 @@ impl Owner {
                 self.capture = None;
                 self.capturing = false;
                 (self.emit)(OwnerEvent::Connection(ConnectionStateEvent::Disconnected));
-                let _ = reply.send(log_result);
+                let reply_result = match flush_error {
+                    Some(error) => {
+                        eprintln!(
+                            "disconnect: log flush failed while stopping the active log: {error}"
+                        );
+                        Err(format!(
+                            "the device was disconnected, but the log flush failed: {error}"
+                        ))
+                    }
+                    None => Ok(()),
+                };
+                let _ = reply.send(reply_result);
             }
             Command::SimulateLinkDrop { reply } => {
                 let _ = reply.send(self.simulate_link_drop().await);
