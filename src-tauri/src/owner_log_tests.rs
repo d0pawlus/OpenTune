@@ -515,3 +515,18 @@ async fn opening_a_new_log_bumps_the_generation_past_the_previous_one() {
     let _ = std::fs::remove_file(path_a);
     let _ = std::fs::remove_file(path_b);
 }
+
+/// M5 review CRITICAL (C3): the app-exit flush path (`lib.rs`) sends
+/// `StopLog` unconditionally and must treat "nothing was recording" as a
+/// no-op success rather than an error. It tells the two apart by matching
+/// this exact message, so pin the owner's contract here — if `stop_log`
+/// stops reporting `NO_ACTIVE_LOG` for an idle owner, the exit path's
+/// success/error fold silently breaks.
+#[tokio::test]
+async fn stop_log_with_no_active_log_reports_no_active_log() {
+    let owner = test_owner();
+    let error = send(&owner, |reply| Command::StopLog { reply })
+        .await
+        .unwrap_err();
+    assert_eq!(error, NO_ACTIVE_LOG);
+}

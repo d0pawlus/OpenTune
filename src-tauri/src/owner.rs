@@ -62,6 +62,11 @@ const MAX_LOG_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// instead of silently reading whatever log now occupies the slot — see
 /// [`Owner::check_log_id`].
 const LOG_CHANGED: &str = "log changed since it was opened";
+/// [`Owner::stop_log`] (and [`Owner::add_log_marker`]) report this when there
+/// is no [`Owner::active_log`] to act on. `pub(crate)` so the exit-flush path
+/// (M5 review CRITICAL C3, `lib.rs`) can tell "nothing to flush" apart from a
+/// real flush failure without duplicating the literal.
+pub(crate) const NO_ACTIVE_LOG: &str = "no active log";
 
 /// A oneshot reply channel carrying an operation's result back to the
 /// awaiting IPC command.
@@ -1320,7 +1325,7 @@ impl Owner {
         let active = self
             .active_log
             .take()
-            .ok_or_else(|| "no active log".to_string())?;
+            .ok_or_else(|| NO_ACTIVE_LOG.to_string())?;
         let path = active.path.clone();
         let format = active.format;
         let log = active.log;
@@ -1352,7 +1357,7 @@ impl Owner {
         let active = self
             .active_log
             .as_mut()
-            .ok_or_else(|| "no active log".to_string())?;
+            .ok_or_else(|| NO_ACTIVE_LOG.to_string())?;
         let timestamp_10us = active.timestamp();
         active.log.entries.push(LogEntry::Marker(Marker {
             counter: active.counter,
