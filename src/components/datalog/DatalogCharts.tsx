@@ -4,11 +4,11 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { VirtualDynoReportDto } from "../../ipc/bindings";
 import type { LogDataset } from "../../stores/datalog";
-
-interface AxisBounds {
-  min: number | null;
-  max: number | null;
-}
+import {
+  buildFacetedPlot,
+  type AxisBounds,
+  type FacetedSeries,
+} from "./facetedPlotConfig";
 
 interface DatalogChartsProps {
   logA?: LogDataset;
@@ -20,14 +20,10 @@ interface DatalogChartsProps {
   yBounds: AxisBounds;
 }
 
-interface FacetedSeries {
-  label: string;
-  x: (number | null)[];
-  y: (number | null)[];
-  color: string;
-}
-
 const palette = ["#2374e1", "#e15554", "#3a9d5d", "#8c5bd6", "#e58b22"];
+
+const MIN_PLOT_WIDTH = 320;
+const PLOT_HEIGHT = 320;
 
 function useFacetedPlot(
   series: FacetedSeries[],
@@ -39,52 +35,18 @@ function useFacetedPlot(
   useEffect(() => {
     const element = host.current;
     if (!element || series.length === 0) return;
-    const plotSeries = series.map((item) => ({
-      label: item.label,
-      stroke: item.color,
-      width: scatter ? 0 : 1,
-      points: { show: scatter, size: scatter ? 3 : 0 },
-      paths: scatter ? () => null : undefined,
-      sorted: scatter ? (0 as const) : (1 as const),
-      facets: [
-        { scale: "x", auto: true },
-        { scale: "y", auto: true },
-      ],
-    }));
-    const options: uPlot.Options = {
-      mode: 2,
-      width: Math.max(320, element.clientWidth || 800),
-      height: 320,
-      series: plotSeries,
-      scales: {
-        x: {
-          time: false,
-          range: (_plot, minimum, maximum) => [
-            xBounds.min ?? minimum,
-            xBounds.max ?? maximum,
-          ],
-        },
-        y: {
-          range: (_plot, minimum, maximum) => [
-            yBounds.min ?? minimum,
-            yBounds.max ?? maximum,
-          ],
-        },
-      },
-      axes: [{ label: "X" }, { label: "Y" }],
-      legend: { show: true },
-      cursor: { drag: { x: true, y: true, setScale: true } },
-    };
-    const data = series.map((item) => [item.x, item.y]);
-    const plot = new uPlot(
-      options,
-      data as unknown as uPlot.AlignedData,
-      element,
+    const { options, data } = buildFacetedPlot(
+      series,
+      { min: xBounds.min, max: xBounds.max },
+      { min: yBounds.min, max: yBounds.max },
+      scatter,
+      element.clientWidth || 800,
     );
+    const plot = new uPlot(options, data, element);
     const resize = () =>
       plot.setSize({
-        width: Math.max(320, element.clientWidth || 800),
-        height: 320,
+        width: Math.max(MIN_PLOT_WIDTH, element.clientWidth || 800),
+        height: PLOT_HEIGHT,
       });
     window.addEventListener("resize", resize);
     return () => {
