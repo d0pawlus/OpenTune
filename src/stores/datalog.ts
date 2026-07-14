@@ -26,6 +26,12 @@ export interface LogDataset {
    * different log's rows into this dataset. */
   logId: number;
   fields: LogFieldDto[];
+  /** Derived (math) channel names, kept out of `fields` (M5 review HIGH —
+   * H3): analysis commands (`runStats`, anomaly, dyno) send every name in
+   * `fields` straight to the backend, which rejects unknown names with
+   * `MissingChannel`. These are still merged into `columns` so charts keep
+   * offering them alongside real channels. */
+  mathChannelNames: string[];
   tMs: (number | null)[];
   columns: Record<string, (number | null)[]>;
   markers: MarkerDto[];
@@ -69,14 +75,16 @@ const withMathChannels = (
   specs: MathChannelSpec[],
 ): LogDataset => {
   const columns = { ...dataset.columns };
-  const fields = [...dataset.summary.fields];
+  const mathChannelNames: string[] = [];
   for (const spec of specs) {
     const source = columns[spec.source];
     if (!source) continue;
     columns[spec.name] = evaluateMathChannel(spec, source, dataset.tMs);
-    fields.push({ name: spec.name, units: "" });
+    mathChannelNames.push(spec.name);
   }
-  return { ...dataset, fields, columns };
+  // `fields` is intentionally left untouched here — it must only ever hold
+  // real backend channel names (see the `mathChannelNames` doc comment).
+  return { ...dataset, mathChannelNames, columns };
 };
 
 const message = (error: unknown): string =>
@@ -162,6 +170,7 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           summary,
           logId,
           fields: summary.fields,
+          mathChannelNames: [],
           tMs,
           columns,
           markers: [...markers.values()].sort(
@@ -316,12 +325,16 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
       0,
       Math.min(dataset.summary.record_count - 1, Math.round(requestedRow)),
     );
-    const channels = dataset.fields.map(
-      (field) =>
-        [field.name, dataset.columns[field.name]?.[row] ?? null] as [
-          string,
-          number | null,
-        ],
+    // Replay must drive every gauge the dataset can feed, real fields and
+    // derived math channels alike (M5 review H3 kept math names out of
+    // `fields`, so they must be added back in explicitly here).
+    const channelNames = [
+      ...dataset.fields.map((field) => field.name),
+      ...dataset.mathChannelNames,
+    ];
+    const channels = channelNames.map(
+      (name) =>
+        [name, dataset.columns[name]?.[row] ?? null] as [string, number | null],
     );
     // Replay semantics, not live semantics: a null column entry is a real
     // recorded gap and must clear the channel (see `applyReplayRow`).

@@ -127,6 +127,36 @@ describe("datalog store", () => {
     expect(useRealtimeStore.getState().channels).toEqual({});
   });
 
+  // M5 review HIGH (H3): `fields` must only ever hold real backend channel
+  // names — analysis commands send every name in `fields` straight to the
+  // backend, which rejects unknown names with `MissingChannel`. Derived math
+  // channels are tracked separately in `mathChannelNames` and still merged
+  // into `columns` so charts keep offering them.
+  it("keeps derived math channels out of fields, tracked separately, and merged into columns", async () => {
+    await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+    const before = useDatalogStore.getState().logs.A;
+    expect(before?.fields).toEqual([{ name: "rpm", units: "RPM" }]);
+    expect(before?.mathChannelNames).toEqual([]);
+
+    useDatalogStore.getState().addMathChannel({
+      id: "smooth",
+      name: "rpm smooth",
+      source: "rpm",
+      operation: { kind: "movingAverage", window: 3 },
+    });
+
+    const after = useDatalogStore.getState().logs.A;
+    expect(after?.fields).toEqual([{ name: "rpm", units: "RPM" }]);
+    expect(after?.mathChannelNames).toEqual(["rpm smooth"]);
+    expect(after?.columns["rpm smooth"]).toHaveLength(20_001);
+
+    useDatalogStore.getState().removeMathChannel("smooth");
+    const removed = useDatalogStore.getState().logs.A;
+    expect(removed?.fields).toEqual([{ name: "rpm", units: "RPM" }]);
+    expect(removed?.mathChannelNames).toEqual([]);
+    expect(removed?.columns["rpm smooth"]).toBeUndefined();
+  });
+
   // M2/M3 re-review finding 7: a genuine null gap recorded in the log must
   // clear the gauge while scrubbing over it, not freeze the last reading.
   it("scrubbing over a recorded null gap clears the channel", async () => {

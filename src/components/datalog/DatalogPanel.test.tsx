@@ -217,4 +217,88 @@ describe("DatalogPanel", () => {
       expect(stop.disabled).toBe(true);
     });
   });
+
+  // M5 review HIGH (H3): a math channel must not leak into analysis
+  // requests (the backend rejects unknown names with `MissingChannel`), but
+  // it must still be selectable in the chart pickers.
+  describe("math channels vs. analysis (H3)", () => {
+    beforeEach(() => {
+      vi.mocked(ipc.commands.openLog).mockResolvedValue({
+        status: "ok",
+        data: {
+          log_id: 1,
+          fields: [{ name: "rpm", units: "RPM" }],
+          record_count: 3,
+          marker_count: 0,
+          duration_ms: 80,
+        },
+      });
+      vi.mocked(ipc.commands.getLogData).mockResolvedValue({
+        status: "ok",
+        data: {
+          offset: 0,
+          total_records: 3,
+          t_ms: [0, 40, 80],
+          columns: [[1000, 1100, 1200]],
+          markers: [],
+        },
+      });
+    });
+
+    const openLogAWithMathChannel = async () => {
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+        target: { value: "/tmp/a.csv" },
+      });
+      fireEvent.click(within(logA).getByRole("button", { name: "Open log" }));
+      await waitFor(() => expect(ipc.commands.getLogData).toHaveBeenCalled());
+
+      const mathLibrary = screen.getByRole("group", {
+        name: "Math-channel library",
+      });
+      fireEvent.change(
+        within(mathLibrary).getByLabelText("Derived channel name"),
+        { target: { value: "rpm smooth" } },
+      );
+      fireEvent.click(
+        within(mathLibrary).getByRole("button", { name: "Create channel" }),
+      );
+    };
+
+    it("keeps a math channel selectable in the chart time-series picker", async () => {
+      await openLogAWithMathChannel();
+
+      const chartControls = screen.getByRole("group", {
+        name: "Shared chart controls",
+      });
+      const timeChannels = within(chartControls).getByLabelText(
+        "Time-series channels",
+      );
+      expect(within(timeChannels).getByText("rpm smooth")).toBeTruthy();
+    });
+
+    it("sends only real field names to logStats when a math channel is defined", async () => {
+      vi.mocked(ipc.commands.logStats).mockResolvedValue({
+        status: "ok",
+        data: {
+          total_rows: 3,
+          accepted_rows: 3,
+          stats: [],
+          filtered: [],
+          decisions: [],
+        },
+      });
+      await openLogAWithMathChannel();
+
+      fireEvent.click(screen.getByRole("button", { name: "Log statistics" }));
+
+      await waitFor(() =>
+        expect(ipc.commands.logStats).toHaveBeenCalledWith(1, {
+          channels: ["rpm"],
+          reject_when: [],
+        }),
+      );
+    });
+  });
 });

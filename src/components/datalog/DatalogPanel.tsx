@@ -853,10 +853,16 @@ export function DatalogPanel({ locale }: { locale: Locale }) {
   const [xMax, setXMax] = useState("");
   const [yMin, setYMin] = useState("");
   const [yMax, setYMax] = useState("");
-  const channels = useMemo(
-    () => (logs.A ?? logs.B)?.fields.map((field) => field.name) ?? [],
-    [logs],
-  );
+  const channels = useMemo(() => {
+    const dataset = logs.A ?? logs.B;
+    if (!dataset) return [];
+    // Chart pickers offer real + derived channels (M5 review H3 kept math
+    // names out of `dataset.fields` so analysis commands never see them).
+    return [
+      ...dataset.fields.map((field) => field.name),
+      ...dataset.mathChannelNames,
+    ];
+  }, [logs]);
   const selectedTimeChannels =
     timeChannels.length > 0 ? timeChannels : channels.slice(0, 1);
   const selectedScatterY = scatterY || channels[0] || "";
