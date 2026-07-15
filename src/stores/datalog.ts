@@ -20,7 +20,18 @@ export interface LogDataset {
   path: string;
   format: LogFormatDto;
   summary: LogSummaryDto;
+  /** The generation token this dataset's data was fetched under (M5 review
+   * CRITICAL — C2): every later page/save/analysis call for this slot must
+   * send it back, so a stale in-flight request can never splice a
+   * different log's rows into this dataset. */
+  logId: number;
   fields: LogFieldDto[];
+  /** Derived (math) channel names, kept out of `fields` (M5 review HIGH —
+   * H3): analysis commands (`runStats`, anomaly, dyno) send every name in
+   * `fields` straight to the backend, which rejects unknown names with
+   * `MissingChannel`. These are still merged into `columns` so charts keep
+   * offering them alongside real channels. */
+  mathChannelNames: string[];
   tMs: (number | null)[];
   columns: Record<string, (number | null)[]>;
   markers: MarkerDto[];
@@ -64,14 +75,16 @@ const withMathChannels = (
   specs: MathChannelSpec[],
 ): LogDataset => {
   const columns = { ...dataset.columns };
-  const fields = [...dataset.summary.fields];
+  const mathChannelNames: string[] = [];
   for (const spec of specs) {
     const source = columns[spec.source];
     if (!source) continue;
     columns[spec.name] = evaluateMathChannel(spec, source, dataset.tMs);
-    fields.push({ name: spec.name, units: "" });
+    mathChannelNames.push(spec.name);
   }
-  return { ...dataset, fields, columns };
+  // `fields` is intentionally left untouched here — it must only ever hold
+  // real backend channel names (see the `mathChannelNames` doc comment).
+  return { ...dataset, mathChannelNames, columns };
 };
 
 const message = (error: unknown): string =>
@@ -98,17 +111,34 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
       set({ error: "A log path is required." });
       return;
     }
+    // H2: `logs.A` always wins dataset-selector priority over `logs.B` (see
+    // the Playback component), so this slot only backs an active replay
+    // when its current dataset *is* that prioritized one. Unloading it here
+    // — reopening the slot that is being replayed — must not leave the
+    // dashboard frozen behind a stale `replaying: true` with no dataset left
+    // to drive it. Loading into the *other*, inactive slot (A/B exist for
+    // side-by-side comparison) must not disturb the active replay.
+    const priorState = get();
+    const unloadsActiveReplay =
+      priorState.replaying &&
+      (priorState.logs.A ?? priorState.logs.B) === priorState.logs[slot];
+    if (unloadsActiveReplay) priorState.stopPlayback();
     set({ loading: true, error: null, playing: false });
     try {
       const opened = await commands.openLog(path.trim(), format);
       if (opened.status === "error") throw new Error(opened.error);
       const summary = opened.data;
+      const logId = summary.log_id;
       const tMs: (number | null)[] = [];
       const rawColumns = summary.fields.map(() => [] as (number | null)[]);
       const markers = new Map<string, MarkerDto>();
       let offset = 0;
       while (offset < summary.record_count) {
-        const page = await commands.getLogData(offset, PAGE_SIZE);
+        // A stale `logId` (another open/stop superseded this one while this
+        // loop was still paging) comes back as a typed error here — thrown
+        // like any other page error, so the loop aborts and no partial
+        // dataset is ever committed to the store (see the `catch` below).
+        const page = await commands.getLogData(logId, offset, PAGE_SIZE);
         if (page.status === "error") throw new Error(page.error);
         if (page.data.offset !== offset) {
           throw new Error(`Unexpected log page offset ${page.data.offset}.`);
@@ -138,7 +168,9 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           path: path.trim(),
           format,
           summary,
+          logId,
           fields: summary.fields,
+          mathChannelNames: [],
           tMs,
           columns,
           markers: [...markers.values()].sort(
@@ -183,6 +215,11 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           recording: state.recording
             ? { ...state.recording, active: false }
             : null,
+          // Final M5-fixes review (Important 1): `stop_log` auto-opens the
+          // just-recorded log under a NEW generation token. Clearing
+          // `activeSlot` forces the next analysis click down `activate()`'s
+          // reopen path instead of resending a now-stale `logId`.
+          activeSlot: null,
         }));
       }
     } catch (error) {
@@ -215,16 +252,29 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
     if (!source || !path.trim()) return;
     set({ loading: true, error: null });
     try {
+      // Re-open the source into the backend to guarantee it is the current
+      // `opened_log` before saving — this mints a FRESH log_id, which is
+      // what `saveLog` must send (the slot's previously stored id is stale
+      // the instant this reopen assigns a new generation).
       const opened = await commands.openLog(source.path, source.format);
       if (opened.status === "error") {
         set({ loading: false, error: opened.error });
         return;
       }
-      const saved = await commands.saveLog(path.trim(), format);
-      set({
-        loading: false,
-        activeSlot: slot,
-        error: saved.status === "error" ? saved.error : null,
+      const logId = opened.data.log_id;
+      const saved = await commands.saveLog(logId, path.trim(), format);
+      set((state) => {
+        const current = state.logs[slot];
+        return {
+          loading: false,
+          activeSlot: slot,
+          error: saved.status === "error" ? saved.error : null,
+          // Keep the slot's stored id in sync with the backend generation
+          // this reopen just assigned (same rule as `activate()`'s reopen).
+          logs: current
+            ? { ...state.logs, [slot]: { ...current, logId } }
+            : state.logs,
+        };
       });
     } catch (error) {
       set({ loading: false, error: message(error) });
@@ -280,12 +330,16 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
       0,
       Math.min(dataset.summary.record_count - 1, Math.round(requestedRow)),
     );
-    const channels = dataset.fields.map(
-      (field) =>
-        [field.name, dataset.columns[field.name]?.[row] ?? null] as [
-          string,
-          number | null,
-        ],
+    // Replay must drive every gauge the dataset can feed, real fields and
+    // derived math channels alike (M5 review H3 kept math names out of
+    // `fields`, so they must be added back in explicitly here).
+    const channelNames = [
+      ...dataset.fields.map((field) => field.name),
+      ...dataset.mathChannelNames,
+    ];
+    const channels = channelNames.map(
+      (name) =>
+        [name, dataset.columns[name]?.[row] ?? null] as [string, number | null],
     );
     // Replay semantics, not live semantics: a null column entry is a real
     // recorded gap and must clear the channel (see `applyReplayRow`).

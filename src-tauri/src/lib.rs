@@ -9,12 +9,17 @@ pub mod events;
 mod layout;
 mod log_bridge;
 mod log_commands;
+mod log_paths;
 mod offline_commands;
 pub mod owner;
 mod realtime_commands;
 pub mod session;
 mod session_diff;
 mod tune_commands;
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use specta_typescript::Typescript;
 use tauri::Manager as _;
@@ -74,6 +79,75 @@ fn build_specta() -> Builder<tauri::Wry> {
         ])
 }
 
+/// M5 review CRITICAL (C3): hard cap on the best-effort log flush run on app
+/// exit. The app must never hang on close, so a stuck `StopLog` (owner
+/// wedged, wire stalled) is abandoned after this long and exit proceeds
+/// anyway.
+const EXIT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Pure decision for one `RunEvent::ExitRequested`: `flush_done` is the
+/// "exit flush already ran" guard, read at the top of
+/// [`handle_exit_requested`]. The first pass (guard unset) must be
+/// deferred — `prevent_exit()`, then flush. The second, self-triggered pass
+/// — from the flush task's own `app_handle.exit(0)`, by which point the
+/// guard is set — must be let through unconditionally, or the app could
+/// never actually close.
+fn should_defer_exit(flush_done: bool) -> bool {
+    !flush_done
+}
+
+/// Fold a `StopLog` reply into the exit-flush outcome. Success and "nothing
+/// was recording" ([`owner::NO_ACTIVE_LOG`]) both need no report; any other
+/// error is handed back for the caller to log — the flush is best-effort
+/// and must never block exit.
+fn exit_flush_outcome<T>(result: Result<T, String>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(error) if error == owner::NO_ACTIVE_LOG => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Handle one `RunEvent::ExitRequested`. On the first pass, defers the exit
+/// and spawns a best-effort flush of any active recording — hard-capped at
+/// [`EXIT_FLUSH_TIMEOUT`] so the app can never hang on close — then sets
+/// `flush_done` and calls `app_handle.exit(0)`, which re-raises
+/// `ExitRequested`; [`should_defer_exit`] now reads the guard as set and lets
+/// that second pass straight through.
+fn handle_exit_requested(
+    app_handle: &tauri::AppHandle<tauri::Wry>,
+    api: &tauri::ExitRequestApi,
+    flush_done: &Arc<AtomicBool>,
+) {
+    if !should_defer_exit(flush_done.load(Ordering::SeqCst)) {
+        return;
+    }
+    api.prevent_exit();
+
+    let owner_handle = app_handle.state::<owner::OwnerHandle>().inner().clone();
+    let app_handle = app_handle.clone();
+    let flush_done = Arc::clone(flush_done);
+    tauri::async_runtime::spawn(async move {
+        let reply = tokio::time::timeout(
+            EXIT_FLUSH_TIMEOUT,
+            owner::request(&owner_handle, |reply| owner::Command::StopLog { reply }),
+        )
+        .await;
+        match reply {
+            Ok(result) => {
+                if let Err(error) = exit_flush_outcome(result) {
+                    eprintln!("exit: log flush failed, exiting anyway: {error}");
+                }
+            }
+            Err(_) => {
+                eprintln!("exit: log flush timed out after {EXIT_FLUSH_TIMEOUT:?}, exiting anyway")
+            }
+        }
+        flush_done.store(true, Ordering::SeqCst);
+        app_handle.exit(0);
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = build_specta();
@@ -83,7 +157,11 @@ pub fn run() {
         .export(Typescript::default(), "../src/ipc/bindings.ts")
         .expect("failed to export typescript bindings");
 
-    tauri::Builder::default()
+    // M5 review CRITICAL (C3): guards `handle_exit_requested` against its
+    // own `app_handle.exit(0)` re-raising `ExitRequested`.
+    let exit_flush_done = Arc::new(AtomicBool::new(false));
+
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder.invoke_handler())
@@ -106,8 +184,50 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(move |app_handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            handle_exit_requested(app_handle, &api, &exit_flush_done);
+        }
+    });
+}
+
+#[cfg(test)]
+mod exit_flush_tests {
+    use super::*;
+
+    // M5 review CRITICAL (C3): pure decision logic extracted out of
+    // `handle_exit_requested` so the defer/allow behaviour is unit-testable
+    // without a running Tauri app.
+
+    #[test]
+    fn first_exit_request_with_guard_unset_is_deferred() {
+        assert!(should_defer_exit(false));
+    }
+
+    #[test]
+    fn second_exit_request_with_guard_set_is_allowed_through() {
+        assert!(!should_defer_exit(true));
+    }
+
+    #[test]
+    fn exit_flush_outcome_treats_success_as_nothing_to_report() {
+        assert_eq!(exit_flush_outcome(Ok(())), Ok(()));
+    }
+
+    #[test]
+    fn exit_flush_outcome_treats_no_active_log_as_nothing_to_report() {
+        let reply: Result<(), String> = Err(owner::NO_ACTIVE_LOG.to_string());
+        assert_eq!(exit_flush_outcome(reply), Ok(()));
+    }
+
+    #[test]
+    fn exit_flush_outcome_surfaces_a_real_flush_error() {
+        let reply: Result<(), String> = Err("disk full".to_string());
+        assert_eq!(exit_flush_outcome(reply), Err("disk full".to_string()));
+    }
 }
 
 #[cfg(test)]

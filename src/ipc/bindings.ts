@@ -124,11 +124,11 @@ export const commands = {
 	addLogMarker: (text: string) => typedError<null, string>(__TAURI_INVOKE("add_log_marker", { text })),
 	logStatus: () => typedError<LogStatusDto, string>(__TAURI_INVOKE("log_status")),
 	openLog: (path: string, format: LogFormatDto) => typedError<LogSummaryDto, string>(__TAURI_INVOKE("open_log", { path, format })),
-	getLogData: (offset: number, limit: number) => typedError<LogDataDto, string>(__TAURI_INVOKE("get_log_data", { offset, limit })),
-	saveLog: (path: string, format: LogFormatDto) => typedError<null, string>(__TAURI_INVOKE("save_log", { path, format })),
-	logStats: (params: LogStatsParamsDto) => typedError<LogStatsReportDto, string>(__TAURI_INVOKE("log_stats", { params })),
-	detectAnomaly: (thresholds: AnomalyThresholdsDto) => typedError<AnomalyReportDto, string>(__TAURI_INVOKE("detect_anomaly", { thresholds })),
-	virtualDyno: (params: VirtualDynoParamsDto) => typedError<VirtualDynoReportDto, string>(__TAURI_INVOKE("virtual_dyno", { params })),
+	getLogData: (logId: number, offset: number, limit: number) => typedError<LogDataDto, string>(__TAURI_INVOKE("get_log_data", { logId, offset, limit })),
+	saveLog: (logId: number, path: string, format: LogFormatDto) => typedError<null, string>(__TAURI_INVOKE("save_log", { logId, path, format })),
+	logStats: (logId: number, params: LogStatsParamsDto) => typedError<LogStatsReportDto, string>(__TAURI_INVOKE("log_stats", { logId, params })),
+	detectAnomaly: (logId: number, thresholds: AnomalyThresholdsDto) => typedError<AnomalyReportDto, string>(__TAURI_INVOKE("detect_anomaly", { logId, thresholds })),
+	virtualDyno: (logId: number, params: VirtualDynoParamsDto) => typedError<VirtualDynoReportDto, string>(__TAURI_INVOKE("virtual_dyno", { logId, params })),
 	/**  Persist the dashboard layout JSON to the app config dir. */
 	saveLayout: (json: string) => typedError<null, string>(__TAURI_INVOKE("save_layout", { json })),
 	/**  Load the persisted dashboard layout JSON; `None` when never saved. */
@@ -494,6 +494,14 @@ export type LogStatusDto = {
 };
 
 export type LogSummaryDto = {
+	/**
+	 *  The generation token for this `opened_log` assignment (M5 review
+	 *  CRITICAL — C2): every later command reading `opened_log`
+	 *  (`get_log_data`, `save_log`, `log_stats`, `detect_anomaly`,
+	 *  `virtual_dyno`) must echo this id back, and is rejected once a later
+	 *  `open_log`/`stop_log` has superseded it.
+	 */
+	log_id: number,
 	fields: LogFieldDto[],
 	record_count: number,
 	marker_count: number,

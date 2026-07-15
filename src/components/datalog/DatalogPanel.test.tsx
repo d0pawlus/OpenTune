@@ -26,6 +26,26 @@ vi.mock("../../ipc/bindings", () => ({
   },
 }));
 
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: vi.fn(async () => null),
+  save: vi.fn(async () => null),
+}));
+
+// jsdom has no `matchMedia` implementation; the lazily-loaded uPlot chart
+// (mounted once a log is loaded) queries it for device-pixel-ratio changes.
+if (!window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
 describe("DatalogPanel", () => {
   beforeEach(() => {
     useDatalogStore.getState().reset();
@@ -71,5 +91,335 @@ describe("DatalogPanel", () => {
     await waitFor(() =>
       expect(ipc.commands.startLog).toHaveBeenCalledWith("/tmp/run.csv", "Csv"),
     );
+  });
+
+  // M5 review CRITICAL (C2): while a log load is in flight, re-clicking
+  // Open must not be possible — that race is exactly what let a second
+  // open splice its rows into the first load's still-paging dataset.
+  it("disables the Open button for both slots while a log load is in flight", async () => {
+    let resolveOpen: (value: {
+      status: "ok";
+      data: {
+        log_id: number;
+        fields: never[];
+        record_count: number;
+        marker_count: number;
+        duration_ms: number;
+      };
+    }) => void = () => {};
+    vi.mocked(ipc.commands.openLog).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOpen = resolve;
+        }),
+    );
+
+    render(<DatalogPanel locale="en" />);
+    const logA = screen.getByRole("group", { name: "Log A" });
+    const logB = screen.getByRole("group", { name: "Log B" });
+    fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+      target: { value: "/tmp/a.csv" },
+    });
+    // Slot B also has a non-empty path, so its later `disabled` can only be
+    // explained by the in-flight load, not by its own empty-path guard.
+    fireEvent.change(within(logB).getByPlaceholderText("/path/to/log.csv"), {
+      target: { value: "/tmp/b.csv" },
+    });
+    const openA = within(logA).getByRole("button", {
+      name: "Open log",
+    }) as HTMLButtonElement;
+    const openB = within(logB).getByRole("button", {
+      name: "Open log",
+    }) as HTMLButtonElement;
+    expect(openA.disabled).toBe(false);
+    expect(openB.disabled).toBe(false);
+
+    fireEvent.click(openA);
+    await waitFor(() => expect(openA.disabled).toBe(true));
+    expect(openB.disabled).toBe(true);
+
+    resolveOpen({
+      status: "ok",
+      data: {
+        log_id: 1,
+        fields: [],
+        record_count: 0,
+        marker_count: 0,
+        duration_ms: 0,
+      },
+    });
+    await waitFor(() => expect(openA.disabled).toBe(false));
+  });
+
+  // H2: once a user scrubs a datalog, `replaying: true` gates every live
+  // frame off the dashboard. A Stop control and a visible indicator must
+  // always be present so that frozen state is never silent.
+  describe("playback escape hatch", () => {
+    beforeEach(() => {
+      vi.mocked(ipc.commands.openLog).mockResolvedValue({
+        status: "ok",
+        data: {
+          log_id: 1,
+          fields: [{ name: "rpm", units: "RPM" }],
+          record_count: 3,
+          marker_count: 0,
+          duration_ms: 80,
+        },
+      });
+      vi.mocked(ipc.commands.getLogData).mockResolvedValue({
+        status: "ok",
+        data: {
+          offset: 0,
+          total_records: 3,
+          t_ms: [0, 40, 80],
+          columns: [[1000, 1100, 1200]],
+          markers: [],
+        },
+      });
+    });
+
+    const openLogA = async () => {
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+        target: { value: "/tmp/a.csv" },
+      });
+      fireEvent.click(within(logA).getByRole("button", { name: "Open log" }));
+      await waitFor(() => expect(ipc.commands.getLogData).toHaveBeenCalled());
+    };
+
+    it("hides the replay indicator and disables Stop before any playback starts", async () => {
+      await openLogA();
+      const playback = screen.getByRole("group", { name: "Playback" });
+
+      expect(screen.queryByText("Replay — live gauges paused")).toBeNull();
+      const stop = within(playback).getByRole("button", {
+        name: "Stop replay",
+      }) as HTMLButtonElement;
+      expect(stop.disabled).toBe(true);
+    });
+
+    it("shows the replay indicator and an enabled Stop button once scrubbing starts, and Stop returns to live", async () => {
+      await openLogA();
+      const playback = screen.getByRole("group", { name: "Playback" });
+
+      fireEvent.change(within(playback).getByLabelText("Row position"), {
+        target: { value: "1" },
+      });
+
+      expect(useDatalogStore.getState().replaying).toBe(true);
+      expect(screen.getByText("Replay — live gauges paused")).toBeTruthy();
+      const stop = within(playback).getByRole("button", {
+        name: "Stop replay",
+      }) as HTMLButtonElement;
+      expect(stop.disabled).toBe(false);
+
+      fireEvent.click(stop);
+
+      expect(useDatalogStore.getState().replaying).toBe(false);
+      expect(useDatalogStore.getState().playing).toBe(false);
+      expect(screen.queryByText("Replay — live gauges paused")).toBeNull();
+      expect(stop.disabled).toBe(true);
+    });
+  });
+
+  // M5 review HIGH (H3): a math channel must not leak into analysis
+  // requests (the backend rejects unknown names with `MissingChannel`), but
+  // it must still be selectable in the chart pickers.
+  describe("math channels vs. analysis (H3)", () => {
+    beforeEach(() => {
+      vi.mocked(ipc.commands.openLog).mockResolvedValue({
+        status: "ok",
+        data: {
+          log_id: 1,
+          fields: [{ name: "rpm", units: "RPM" }],
+          record_count: 3,
+          marker_count: 0,
+          duration_ms: 80,
+        },
+      });
+      vi.mocked(ipc.commands.getLogData).mockResolvedValue({
+        status: "ok",
+        data: {
+          offset: 0,
+          total_records: 3,
+          t_ms: [0, 40, 80],
+          columns: [[1000, 1100, 1200]],
+          markers: [],
+        },
+      });
+    });
+
+    const openLogAWithMathChannel = async () => {
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      fireEvent.change(within(logA).getByPlaceholderText("/path/to/log.csv"), {
+        target: { value: "/tmp/a.csv" },
+      });
+      fireEvent.click(within(logA).getByRole("button", { name: "Open log" }));
+      await waitFor(() => expect(ipc.commands.getLogData).toHaveBeenCalled());
+
+      const mathLibrary = screen.getByRole("group", {
+        name: "Math-channel library",
+      });
+      fireEvent.change(
+        within(mathLibrary).getByLabelText("Derived channel name"),
+        { target: { value: "rpm smooth" } },
+      );
+      fireEvent.click(
+        within(mathLibrary).getByRole("button", { name: "Create channel" }),
+      );
+    };
+
+    it("keeps a math channel selectable in the chart time-series picker", async () => {
+      await openLogAWithMathChannel();
+
+      const chartControls = screen.getByRole("group", {
+        name: "Shared chart controls",
+      });
+      const timeChannels = within(chartControls).getByLabelText(
+        "Time-series channels",
+      );
+      expect(within(timeChannels).getByText("rpm smooth")).toBeTruthy();
+    });
+
+    it("sends only real field names to logStats when a math channel is defined", async () => {
+      vi.mocked(ipc.commands.logStats).mockResolvedValue({
+        status: "ok",
+        data: {
+          total_rows: 3,
+          accepted_rows: 3,
+          stats: [],
+          filtered: [],
+          decisions: [],
+        },
+      });
+      await openLogAWithMathChannel();
+
+      fireEvent.click(screen.getByRole("button", { name: "Log statistics" }));
+
+      await waitFor(() =>
+        expect(ipc.commands.logStats).toHaveBeenCalledWith(1, {
+          channels: ["rpm"],
+          reject_when: [],
+        }),
+      );
+    });
+  });
+
+  // Task 7b: native file dialogs alongside the free-text path inputs. Open
+  // fields use `open()`, record/export destination fields use `save()`, and
+  // a cancelled dialog (null) must leave the text input untouched.
+  describe("Browse buttons (native file dialogs)", () => {
+    it("Log A Browse opens a native open dialog filtered to csv/mlg and fills the path", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce("/tmp/picked-a.csv");
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+
+      fireEvent.click(within(logA).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() =>
+        expect(
+          (
+            within(logA).getByPlaceholderText(
+              "/path/to/log.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-a.csv"),
+      );
+      expect(open).toHaveBeenCalledWith({
+        multiple: false,
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("Log B Browse fills only Log B's path input", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce("/tmp/picked-b.csv");
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      const logB = screen.getByRole("group", { name: "Log B" });
+
+      fireEvent.click(within(logB).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() =>
+        expect(
+          (
+            within(logB).getByPlaceholderText(
+              "/path/to/log.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-b.csv"),
+      );
+      expect(
+        (
+          within(logA).getByPlaceholderText(
+            "/path/to/log.csv",
+          ) as HTMLInputElement
+        ).value,
+      ).toBe("");
+    });
+
+    it("Recording Browse uses save() and fills the recording destination path", async () => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(save).mockResolvedValueOnce("/tmp/picked-recording.csv");
+      render(<DatalogPanel locale="en" />);
+      const recording = screen.getByRole("group", { name: "Recording" });
+
+      fireEvent.click(
+        within(recording).getByRole("button", { name: "Browse…" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          (
+            within(recording).getByPlaceholderText(
+              "/path/to/recording.csv",
+            ) as HTMLInputElement
+          ).value,
+        ).toBe("/tmp/picked-recording.csv"),
+      );
+      expect(save).toHaveBeenCalledWith({
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("Export Browse uses save() and fills the export destination path", async () => {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(save).mockResolvedValueOnce("/tmp/picked-export.csv");
+      render(<DatalogPanel locale="en" />);
+      const exportGroup = screen.getByRole("group", { name: "Export" });
+
+      fireEvent.click(
+        within(exportGroup).getByRole("button", { name: "Browse…" }),
+      );
+
+      await waitFor(() => {
+        const input = within(exportGroup).getByLabelText(
+          "Explicit file path",
+        ) as HTMLInputElement;
+        expect(input.value).toBe("/tmp/picked-export.csv");
+      });
+      expect(save).toHaveBeenCalledWith({
+        filters: [{ name: "Log", extensions: ["csv", "mlg"] }],
+      });
+    });
+
+    it("leaves the path input untouched when the dialog is cancelled", async () => {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      vi.mocked(open).mockResolvedValueOnce(null);
+      render(<DatalogPanel locale="en" />);
+      const logA = screen.getByRole("group", { name: "Log A" });
+      const input = within(logA).getByPlaceholderText(
+        "/path/to/log.csv",
+      ) as HTMLInputElement;
+      fireEvent.change(input, { target: { value: "/tmp/manual.csv" } });
+
+      fireEvent.click(within(logA).getByRole("button", { name: "Browse…" }));
+
+      await waitFor(() => expect(open).toHaveBeenCalled());
+      expect(input.value).toBe("/tmp/manual.csv");
+    });
   });
 });

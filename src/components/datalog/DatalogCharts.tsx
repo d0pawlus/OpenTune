@@ -4,11 +4,12 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { VirtualDynoReportDto } from "../../ipc/bindings";
 import type { LogDataset } from "../../stores/datalog";
-
-interface AxisBounds {
-  min: number | null;
-  max: number | null;
-}
+import { t, type Locale } from "../../i18n";
+import {
+  buildFacetedPlot,
+  type AxisBounds,
+  type FacetedSeries,
+} from "./facetedPlotConfig";
 
 interface DatalogChartsProps {
   logA?: LogDataset;
@@ -18,80 +19,56 @@ interface DatalogChartsProps {
   scatterY: string;
   xBounds: AxisBounds;
   yBounds: AxisBounds;
-}
-
-interface FacetedSeries {
-  label: string;
-  x: (number | null)[];
-  y: (number | null)[];
-  color: string;
+  locale: Locale;
 }
 
 const palette = ["#2374e1", "#e15554", "#3a9d5d", "#8c5bd6", "#e58b22"];
+
+const MIN_PLOT_WIDTH = 320;
+const PLOT_HEIGHT = 320;
 
 function useFacetedPlot(
   series: FacetedSeries[],
   xBounds: AxisBounds,
   yBounds: AxisBounds,
   scatter: boolean,
+  xLabel: string,
+  yLabel: string,
 ) {
   const host = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const element = host.current;
     if (!element || series.length === 0) return;
-    const plotSeries = series.map((item) => ({
-      label: item.label,
-      stroke: item.color,
-      width: scatter ? 0 : 1,
-      points: { show: scatter, size: scatter ? 3 : 0 },
-      paths: scatter ? () => null : undefined,
-      sorted: scatter ? (0 as const) : (1 as const),
-      facets: [
-        { scale: "x", auto: true },
-        { scale: "y", auto: true },
-      ],
-    }));
-    const options: uPlot.Options = {
-      mode: 2,
-      width: Math.max(320, element.clientWidth || 800),
-      height: 320,
-      series: plotSeries,
-      scales: {
-        x: {
-          time: false,
-          range: (_plot, minimum, maximum) => [
-            xBounds.min ?? minimum,
-            xBounds.max ?? maximum,
-          ],
-        },
-        y: {
-          range: (_plot, minimum, maximum) => [
-            yBounds.min ?? minimum,
-            yBounds.max ?? maximum,
-          ],
-        },
-      },
-      axes: [{ label: "X" }, { label: "Y" }],
-      legend: { show: true },
-      cursor: { drag: { x: true, y: true, setScale: true } },
-    };
-    const data = series.map((item) => [item.x, item.y]);
-    const plot = new uPlot(
-      options,
-      data as unknown as uPlot.AlignedData,
-      element,
+    const { options, data } = buildFacetedPlot(
+      series,
+      { min: xBounds.min, max: xBounds.max },
+      { min: yBounds.min, max: yBounds.max },
+      scatter,
+      element.clientWidth || 800,
+      xLabel,
+      yLabel,
     );
+    const plot = new uPlot(options, data, element);
     const resize = () =>
       plot.setSize({
-        width: Math.max(320, element.clientWidth || 800),
-        height: 320,
+        width: Math.max(MIN_PLOT_WIDTH, element.clientWidth || 800),
+        height: PLOT_HEIGHT,
       });
     window.addEventListener("resize", resize);
     return () => {
       window.removeEventListener("resize", resize);
       plot.destroy();
     };
-  }, [scatter, series, xBounds.max, xBounds.min, yBounds.max, yBounds.min]);
+  }, [
+    scatter,
+    series,
+    xBounds.max,
+    xBounds.min,
+    yBounds.max,
+    yBounds.min,
+    xLabel,
+    yLabel,
+  ]);
   return host;
 }
 
@@ -106,17 +83,30 @@ function FacetedPlot({
   yBounds,
   scatter,
   label,
+  xLabel,
+  yLabel,
+  noDataText,
 }: {
   series: FacetedSeries[];
   xBounds: AxisBounds;
   yBounds: AxisBounds;
   scatter: boolean;
   label: string;
+  xLabel: string;
+  yLabel: string;
+  noDataText: string;
 }) {
-  const host = useFacetedPlot(series, xBounds, yBounds, scatter);
+  const host = useFacetedPlot(
+    series,
+    xBounds,
+    yBounds,
+    scatter,
+    xLabel,
+    yLabel,
+  );
   return (
     <div className="dl-chart" role="img" aria-label={label}>
-      {series.length === 0 ? <p>No chart data</p> : <div ref={host} />}
+      {series.length === 0 ? <p>{noDataText}</p> : <div ref={host} />}
     </div>
   );
 }
@@ -129,6 +119,7 @@ export function DatalogCharts({
   scatterY,
   xBounds,
   yBounds,
+  locale,
 }: DatalogChartsProps) {
   const logs = useMemo(
     () =>
@@ -175,53 +166,72 @@ export function DatalogCharts({
     [logs, scatterX, scatterY],
   );
 
+  const xAxisLabel = t("datalog.xAxis", locale);
+  const yAxisLabel = t("datalog.yAxis", locale);
+  const noChartData = t("datalog.noChartData", locale);
+
   return (
     <div className="dl-chart-grid">
       <FacetedPlot
-        label="Time-series plot"
+        label={t("datalog.timeSeriesPlot", locale)}
         series={timeSeries}
         xBounds={xBounds}
         yBounds={yBounds}
         scatter={false}
+        xLabel={xAxisLabel}
+        yLabel={yAxisLabel}
+        noDataText={noChartData}
       />
       <FacetedPlot
-        label="Scatter plot"
+        label={t("datalog.scatterPlot", locale)}
         series={scatterSeries}
         xBounds={xBounds}
         yBounds={yBounds}
         scatter
+        xLabel={xAxisLabel}
+        yLabel={yAxisLabel}
+        noDataText={noChartData}
       />
     </div>
   );
 }
 
-export function DynoChart({ report }: { report: VirtualDynoReportDto }) {
+export function DynoChart({
+  report,
+  locale,
+}: {
+  report: VirtualDynoReportDto;
+  locale: Locale;
+}) {
   const series = useMemo(() => {
     const points = [...report.points].sort(
       (a, b) => (a.rpm ?? 0) - (b.rpm ?? 0),
     );
     return [
       {
-        label: "WHP",
+        label: t("datalog.whp", locale),
         x: points.map((point) => point.rpm),
         y: points.map((point) => point.wheel_hp),
         color: palette[0],
       },
       {
-        label: "Torque Nm",
+        label: t("datalog.torqueNm", locale),
         x: points.map((point) => point.rpm),
         y: points.map((point) => point.estimated_engine_torque_nm),
         color: palette[1],
       },
     ];
-  }, [report]);
+  }, [report, locale]);
   return (
     <FacetedPlot
-      label="Virtual dyno WHP and torque curves"
+      label={t("datalog.dynoChartLabel", locale)}
       series={series}
       xBounds={{ min: null, max: null }}
       yBounds={{ min: null, max: null }}
       scatter={false}
+      xLabel={t("datalog.xAxis", locale)}
+      yLabel={t("datalog.yAxis", locale)}
+      noDataText={t("datalog.noChartData", locale)}
     />
   );
 }

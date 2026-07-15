@@ -16,6 +16,19 @@ export function rowAtTime(
   return Math.max(0, Math.min(tMs.length - 1, high));
 }
 
+/**
+ * The last recorded (non-null) timestamp in the log, scanned backwards with
+ * no array copy. H4: the previous `[...tMs].reverse().find(...)` recomputed
+ * a full copy + reverse of up to 100k elements on every animation frame.
+ */
+export function lastValidTime(tMs: readonly (number | null)[]): number {
+  for (let index = tMs.length - 1; index >= 0; index -= 1) {
+    const value = tMs[index];
+    if (value !== null) return value;
+  }
+  return 0;
+}
+
 export function playbackTarget(
   startLogMs: number,
   elapsedWallMs: number,
