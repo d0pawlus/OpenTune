@@ -27,14 +27,17 @@ vi.mock("../../ipc/bindings", () => ({
     openTune: vi.fn(async () => ({
       status: "ok",
       data: {
-        signature: "s",
-        menus: [],
-        dialogs: [],
-        constants: [],
-        tables: [],
-        curves: [],
-        gauges: [],
-        frontpage: { gauge_slots: [], indicators: [] },
+        definition: {
+          signature: "s",
+          menus: [],
+          dialogs: [],
+          constants: [],
+          tables: [],
+          curves: [],
+          gauges: [],
+          frontpage: { gauge_slots: [], indicators: [] },
+        },
+        report: { applied: 1, skipped: 0, clamped: [], failed: [] },
       },
     })),
     saveTune: vi.fn(async () => ({ status: "ok", data: null })),
@@ -114,6 +117,30 @@ describe("OfflinePanel", () => {
     await vi.waitFor(() =>
       expect(commands.saveTune).toHaveBeenCalledWith("/tmp/out.msq"),
     );
+  });
+
+  it("shows the .msq load report after opening a project", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValueOnce("/tmp/MyProject");
+    const { commands } = await import("../../ipc/bindings");
+    vi.mocked(commands.openTune).mockResolvedValueOnce({
+      status: "ok",
+      data: {
+        definition: emptyDefinition,
+        report: {
+          applied: 3613,
+          skipped: 668,
+          clamped: ["ltitEmaAlpha"],
+          failed: [["engineType", 'unknown option "BAD"']],
+        },
+      },
+    });
+    render(<OfflinePanel locale="en" />);
+    fireEvent.click(screen.getByText(/open project/i));
+    await screen.findByText(/3613/);
+    expect(screen.getByText(/668/)).toBeTruthy();
+    expect(screen.getByText(/ltitEmaAlpha/)).toBeTruthy();
+    expect(screen.getByText(/engineType/)).toBeTruthy();
   });
 
   it("surfaces an error and does not load a definition when newTune fails", async () => {

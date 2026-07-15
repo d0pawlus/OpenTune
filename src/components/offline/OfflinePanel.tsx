@@ -2,10 +2,19 @@
 import { useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { commands } from "../../ipc/bindings";
-import type { DefinitionDto } from "../../ipc/bindings";
+import type { DefinitionDto, MsqReportDto } from "../../ipc/bindings";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import "./offline.css";
+
+/** Cap name lists in the load report so a pathological file can't flood the panel. */
+const REPORT_NAME_CAP = 12;
+
+function cappedNames(names: string[]): string {
+  const shown = names.slice(0, REPORT_NAME_CAP).join(", ");
+  const more = names.length - REPORT_NAME_CAP;
+  return more > 0 ? `${shown} (+${more})` : shown;
+}
 
 async function pickFile(name: string, ext: string): Promise<string | null> {
   const picked = await open({
@@ -32,10 +41,12 @@ function loadDefinition(def: DefinitionDto): void {
  */
 export function OfflinePanel({ locale }: { locale: Locale }) {
   const [error, setError] = useState<string | null>(null);
+  const [report, setReport] = useState<MsqReportDto | null>(null);
   const hasTune = useTuneStore((s) => s.definition !== null);
 
   const newTune = async () => {
     setError(null);
+    setReport(null);
     const ini = await pickFile("INI", "ini");
     if (!ini) return;
     const res = await commands.newTune(ini);
@@ -45,19 +56,22 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
 
   const openTune = async () => {
     setError(null);
+    setReport(null);
     const ini = await pickFile("INI", "ini");
     if (!ini) return;
     const msq = await pickFile("Tune", "msq");
     if (!msq) return;
     const res = await commands.openTune(ini, msq);
     if (res.status === "error") return setError(res.error);
-    loadDefinition(res.data);
+    loadDefinition(res.data.definition);
+    setReport(res.data.report);
   };
 
   // ponytail: TunerStudio project layout is fixed (projectCfg/mainController.ini
   // + CurrentTune.msq); open_tune reports a clear error if either is missing.
   const openProject = async () => {
     setError(null);
+    setReport(null);
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return;
     const res = await commands.openTune(
@@ -65,7 +79,8 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
       `${dir}/CurrentTune.msq`,
     );
     if (res.status === "error") return setError(res.error);
-    loadDefinition(res.data);
+    loadDefinition(res.data.definition);
+    setReport(res.data.report);
   };
 
   const saveTune = async () => {
@@ -96,6 +111,26 @@ export function OfflinePanel({ locale }: { locale: Locale }) {
         </button>
       </div>
       {error && <p className="offline-error">{error}</p>}
+      {report && (
+        <div className="offline-report" role="status">
+          <p>
+            {t("offline.reportApplied", locale)}: {report.applied} ·{" "}
+            {t("offline.reportSkipped", locale)}: {report.skipped}
+          </p>
+          {report.clamped.length > 0 && (
+            <p className="offline-report-clamped">
+              {t("offline.reportClamped", locale)}:{" "}
+              {cappedNames(report.clamped)}
+            </p>
+          )}
+          {report.failed.length > 0 && (
+            <p className="offline-report-failed">
+              {t("offline.reportFailed", locale)}:{" "}
+              {cappedNames(report.failed.map(([name]) => name))}
+            </p>
+          )}
+        </div>
+      )}
     </section>
   );
 }

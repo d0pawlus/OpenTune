@@ -80,9 +80,10 @@ export const commands = {
 	/**
 	 *  Open a `.msq` tune file offline: build a session from `ini_path`, then
 	 *  load `msq_path` into it (signature-checked). Returns the parsed
-	 *  definition. Replaces any current session only if the INI and `.msq` load.
+	 *  definition plus the load report (skipped/clamped/failed constants).
+	 *  Replaces any current session only if the INI and `.msq` load.
 	 */
-	openTune: (iniPath: string, msqPath: string) => typedError<DefinitionDto, string>(__TAURI_INVOKE("open_tune", { iniPath, msqPath })),
+	openTune: (iniPath: string, msqPath: string) => typedError<OpenTuneDto, string>(__TAURI_INVOKE("open_tune", { iniPath, msqPath })),
 	/**
 	 *  Save the current tune to `path` as a `.msq` file. Errors if no tune is
 	 *  loaded or the file cannot be written.
@@ -529,6 +530,32 @@ export type MenuItemDto = {
 /**  A field-level or cell-level selective merge request from the frontend. */
 export type MergePickDto = { type: "all"; name: string } | { type: "cells"; name: string; indices: number[] };
 
+/**  Per-constant outcome summary of a `.msq` load. */
+export type MsqReportDto = {
+	/**  Constants applied (clamped ones included). */
+	applied: number,
+	/**
+	 *  Count of file constants the definition doesn't declare (rusEFI
+	 *  files carry hundreds of `UNALLOCATED_SPACE_*` fillers — names would
+	 *  be noise).
+	 */
+	skipped: number,
+	/**  Constants whose value was clamped into the INI's `[low, high]`. */
+	clamped: string[],
+	/**  Constants that failed to apply, with the reason. */
+	failed: ([string, string])[],
+};
+
+/**
+ *  Result of opening a `.msq` offline: the parsed definition plus the load
+ *  report. The report MUST reach the user — a partial load silently shown
+ *  as INI defaults was the M7 rusEFI bug.
+ */
+export type OpenTuneDto = {
+	definition: DefinitionDto,
+	report: MsqReportDto,
+};
+
 /**  Port information for the frontend UI. */
 export type PortInfoDto = {
 	name: string,
@@ -597,6 +624,11 @@ export type SummaryStatDto = {
 /**  A table editor definition (bin/cell constant references). */
 export type TableDto = {
 	name: string,
+	/**
+	 *  3-D map id ("" when absent) — menu items may reference a table by
+	 *  this id (`subMenu = veTableMap`) instead of its editor name.
+	 */
+	map3d_id: string,
 	title: string,
 	page: number,
 	x_bins: string,

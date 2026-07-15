@@ -178,11 +178,12 @@ pub enum Command {
         reply: Reply<DefinitionDto>,
     },
     /// Build a fresh offline session and load a `.msq` into it
-    /// (M4 Task 3 — offline tune lifecycle).
+    /// (M4 Task 3 — offline tune lifecycle). Replies with the definition
+    /// plus the `.msq` load report (skipped/clamped/failed constants).
     OpenTune {
         ini_path: String,
         msq_path: String,
-        reply: Reply<DefinitionDto>,
+        reply: Reply<crate::dto::OpenTuneDto>,
     },
     /// Serialize the current tune to `.msq` at `path` (M4 Task 3 — offline
     /// tune lifecycle).

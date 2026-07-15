@@ -2,7 +2,7 @@
 //! Offline tuning: create / open / save a tune with no live ECU link.
 use tauri::State;
 
-use crate::dto::DefinitionDto;
+use crate::dto::{DefinitionDto, OpenTuneDto};
 use crate::owner::{request, Command, OwnerHandle};
 
 /// Start a fresh offline session with a blank tune built from the INI at
@@ -19,14 +19,15 @@ pub async fn new_tune(
 
 /// Open a `.msq` tune file offline: build a session from `ini_path`, then
 /// load `msq_path` into it (signature-checked). Returns the parsed
-/// definition. Replaces any current session only if the INI and `.msq` load.
+/// definition plus the load report (skipped/clamped/failed constants).
+/// Replaces any current session only if the INI and `.msq` load.
 #[tauri::command]
 #[specta::specta]
 pub async fn open_tune(
     ini_path: String,
     msq_path: String,
     owner: State<'_, OwnerHandle>,
-) -> Result<DefinitionDto, String> {
+) -> Result<OpenTuneDto, String> {
     request(&owner, |reply| Command::OpenTune {
         ini_path,
         msq_path,

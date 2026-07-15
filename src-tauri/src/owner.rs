@@ -685,18 +685,22 @@ impl Owner {
 
     /// Build an offline tune from `ini_path` with a `.msq` loaded into it,
     /// and make it the current session. Same build-first ordering as
-    /// [`Self::new_tune`].
+    /// [`Self::new_tune`]. The `.msq` load report rides along so the UI can
+    /// tell the user about skipped/clamped/failed constants.
     async fn open_tune(
         &mut self,
         ini_path: String,
         msq_path: String,
-    ) -> Result<DefinitionDto, String> {
-        let session = tokio::task::spawn_blocking(move || {
+    ) -> Result<crate::dto::OpenTuneDto, String> {
+        let (session, report) = tokio::task::spawn_blocking(move || {
             ops::build_offline_session_from_msq(&ini_path, &msq_path)
         })
         .await
         .map_err(|e| format!("open_tune panicked: {e}"))??;
-        let dto = DefinitionDto::from(session.def.as_ref());
+        let dto = crate::dto::OpenTuneDto {
+            definition: DefinitionDto::from(session.def.as_ref()),
+            report: report.into(),
+        };
         self.reset_session();
         self.session = Some(session);
         Ok(dto)
