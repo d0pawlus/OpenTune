@@ -503,6 +503,21 @@ impl Tune {
         ))
     }
 
+    /// The constant's resolved inclusive `[low, high]` range — the same
+    /// bounds [`Tune::set`] validates against. Load paths (`.msq` import)
+    /// use this to clamp file values like TunerStudio does, instead of
+    /// rejecting them.
+    pub fn bounds(&self, name: &str) -> Result<(f64, f64), ModelError> {
+        let c = self
+            .def
+            .constant(name)
+            .ok_or_else(|| ModelError::UnknownConstant(name.to_string()))?;
+        Ok((
+            self.resolve(&c.name, &c.low)?,
+            self.resolve(&c.name, &c.high)?,
+        ))
+    }
+
     /// Resolve all four write-path numbers for a constant.
     fn scaling(&self, c: &ConstantDef) -> Result<codec::Scaling, ModelError> {
         Ok(codec::Scaling {
