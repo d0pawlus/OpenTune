@@ -40,6 +40,7 @@ vi.mock("../../ipc/bindings", () => ({
 // bundled INI's veTable1Tbl/veTable names, trimmed to a 2x2 grid).
 const table: TableDto = {
   name: "veTable1Tbl",
+  map3d_id: "",
   title: "VE Table",
   page: 2,
   x_bins: "rpmBins",

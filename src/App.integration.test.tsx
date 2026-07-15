@@ -253,6 +253,7 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
       title: string,
     ): DefinitionDto["tables"][number] => ({
       name,
+      map3d_id: "",
       title,
       page: 2,
       x_bins: `${name}_x`,

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useMemo } from "react";
 import type { ConstantDto, DefinitionDto, Value } from "../../ipc/bindings";
+import type { Locale } from "../../i18n";
 import { Field } from "./Field";
+import { TableEditorView } from "../table-editor/TableEditor";
+import { CurveEditorView } from "../curve-editor/CurveEditor";
 
 /** Guard against a pathological cycle of panels referencing each other. */
 const MAX_PANEL_DEPTH = 8;
@@ -24,6 +27,8 @@ interface DialogEngineProps {
   onEdit: (name: string, value: Value) => void;
   /** Recursion depth for nested panels. */
   depth?: number;
+  /** UI locale for embedded table/curve editors. */
+  locale?: Locale;
 }
 
 /**
@@ -39,6 +44,7 @@ export function DialogEngine({
   conditions,
   onEdit,
   depth = 0,
+  locale = "en",
 }: DialogEngineProps) {
   const constants = useMemo(
     () =>
@@ -89,15 +95,45 @@ export function DialogEngine({
           }
 
           if (typeof kind === "object" && "Panel" in kind && kind.Panel) {
+            // A `panel =` may name another dialog OR a table/curve editor —
+            // rusEFI embeds its VE/ignition tables in dialogs this way.
+            // Dialogs win on a name clash (they always did); editors are
+            // checked before falling through to the nothing-found null.
+            const name = kind.Panel;
+            if (!definition.dialogs.some((d) => d.name === name)) {
+              const table = definition.tables.find((tb) => tb.name === name);
+              if (table) {
+                return (
+                  <TableEditorView
+                    key={i}
+                    table={table}
+                    constants={definition.constants}
+                    locale={locale}
+                  />
+                );
+              }
+              const curve = definition.curves.find((c) => c.name === name);
+              if (curve) {
+                return (
+                  <CurveEditorView
+                    key={i}
+                    curve={curve}
+                    constants={definition.constants}
+                    locale={locale}
+                  />
+                );
+              }
+            }
             return (
               <DialogEngine
                 key={i}
                 definition={definition}
-                dialogName={kind.Panel}
+                dialogName={name}
                 values={values}
                 conditions={conditions}
                 onEdit={onEdit}
                 depth={depth + 1}
+                locale={locale}
               />
             );
           }

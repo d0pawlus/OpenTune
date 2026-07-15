@@ -53,7 +53,7 @@ export function CurveEditor({ locale }: { locale: Locale }) {
   const curve = definition?.curves.find((c) => c.name === activeCurve) ?? null;
   if (!curve || !definition) return null;
   return (
-    <Editor
+    <CurveEditorView
       key={curve.name}
       curve={curve}
       constants={definition.constants}
@@ -68,7 +68,12 @@ interface EditorProps {
   locale: Locale;
 }
 
-function Editor({ curve, constants, locale }: EditorProps) {
+/**
+ * The curve editor bound to an explicit `curve` — also embedded directly by
+ * `DialogEngine` when a dialog's `panel =` names a curve (mirrors
+ * `TableEditorView`).
+ */
+export function CurveEditorView({ curve, constants, locale }: EditorProps) {
   const values = useTuneStore((s) => s.values);
   const [selection, setSelection] = useState<Selection>(ORIGIN);
   const [draft, setDraft] = useState<{ cell: Cell; text: string } | null>(null);

@@ -6,6 +6,7 @@ import { isLinkAlive, useConnectionStore } from "../../stores/connection";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
+import { resolveMenuTarget } from "./menuTarget";
 import { TableEditor } from "../table-editor/TableEditor";
 import { CurveEditor } from "../curve-editor/CurveEditor";
 import { TuneDiff } from "../diff/TuneDiff";
@@ -272,9 +273,17 @@ export function TunePanel({ locale }: { locale: Locale }) {
                   type="button"
                   className="tune-menu-item"
                   aria-current={activeDialog === item.dialog}
-                  onClick={() =>
-                    useTuneStore.getState().setActiveDialog(item.dialog)
-                  }
+                  onClick={() => {
+                    // A menu item may point at a dialog, a table editor (or
+                    // its 3-D map id), or a curve — rusEFI menus do all four.
+                    const target = resolveMenuTarget(definition, item.dialog);
+                    const store = useTuneStore.getState();
+                    if (target.kind === "table")
+                      store.setActiveTable(target.name);
+                    else if (target.kind === "curve")
+                      store.setActiveCurve(target.name);
+                    else store.setActiveDialog(target.name);
+                  }}
                 >
                   {item.label}
                 </button>
@@ -333,6 +342,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
               values={values}
               conditions={conditions}
               onEdit={onEdit}
+              locale={locale}
             />
           ) : (
             <p>{t("tune.noDialog", locale)}</p>
