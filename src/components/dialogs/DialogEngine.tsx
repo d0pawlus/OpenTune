@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import type { ConstantDto, DefinitionDto, Value } from "../../ipc/bindings";
 import type { Locale } from "../../i18n";
 import { Field } from "./Field";
+import { resolveMenuTarget } from "./menuTarget";
 import { TableEditorView } from "../table-editor/TableEditor";
 import { CurveEditorView } from "../curve-editor/CurveEditor";
 
@@ -95,40 +96,43 @@ export function DialogEngine({
           }
 
           if (typeof kind === "object" && "Panel" in kind && kind.Panel) {
-            // A `panel =` may name another dialog OR a table/curve editor —
-            // rusEFI embeds its VE/ignition tables in dialogs this way.
-            // Dialogs win on a name clash (they always did); editors are
-            // checked before falling through to the nothing-found null.
-            const name = kind.Panel;
-            if (!definition.dialogs.some((d) => d.name === name)) {
-              const table = definition.tables.find((tb) => tb.name === name);
-              if (table) {
-                return (
-                  <TableEditorView
-                    key={i}
-                    table={table}
-                    constants={definition.constants}
-                    locale={locale}
-                  />
-                );
-              }
-              const curve = definition.curves.find((c) => c.name === name);
-              if (curve) {
-                return (
-                  <CurveEditorView
-                    key={i}
-                    curve={curve}
-                    constants={definition.constants}
-                    locale={locale}
-                  />
-                );
-              }
+            // A `panel =` may name another dialog OR a table/curve editor
+            // (by name or 3-D map id) — rusEFI embeds its VE/ignition
+            // tables in dialogs this way. Same resolution rule as menu
+            // items: `resolveMenuTarget` is the single copy of the
+            // dialogs-win precedence.
+            const target = resolveMenuTarget(definition, kind.Panel);
+            if (target.kind === "table") {
+              const table = definition.tables.find(
+                (tb) => tb.name === target.name,
+              );
+              return table ? (
+                <TableEditorView
+                  key={i}
+                  table={table}
+                  constants={definition.constants}
+                  locale={locale}
+                />
+              ) : null;
+            }
+            if (target.kind === "curve") {
+              const curve = definition.curves.find(
+                (c) => c.name === target.name,
+              );
+              return curve ? (
+                <CurveEditorView
+                  key={i}
+                  curve={curve}
+                  constants={definition.constants}
+                  locale={locale}
+                />
+              ) : null;
             }
             return (
               <DialogEngine
                 key={i}
                 definition={definition}
-                dialogName={name}
+                dialogName={target.name}
                 values={values}
                 conditions={conditions}
                 onEdit={onEdit}

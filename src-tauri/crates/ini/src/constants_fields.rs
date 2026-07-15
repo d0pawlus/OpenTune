@@ -179,18 +179,21 @@ pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
     Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
 }
 
-/// Clamp a declared bit range to what the storage type can actually hold.
-/// Real rusEFI INIs declare e.g. `bits, U08, ..., [0:11]`; TunerStudio
-/// tolerates it, so poisoning every later encode would be worse than
-/// clamping. ponytail: silent clamp — the one known case is a 1-bit-field
-/// oddity, not a data-loss path.
+/// Clamp a declared bit range to what the storage type can actually hold,
+/// and normalize an inverted `[hi:lo]` declaration to `lo <= hi` — the
+/// keyed-options capacity math below subtracts the bounds and would
+/// underflow on a reversed range. Real rusEFI INIs declare e.g.
+/// `bits, U08, ..., [0:11]`; TunerStudio tolerates it, so poisoning every
+/// later encode would be worse than clamping. ponytail: silent clamp — the
+/// one known case is a 1-bit-field oddity, not a data-loss path.
 pub(crate) fn clamp_bit_range(bit_lo: u8, bit_hi: u8, storage: ScalarType) -> (u8, u8) {
     let top = match storage {
         ScalarType::U08 | ScalarType::S08 => 7,
         ScalarType::U16 | ScalarType::S16 => 15,
         ScalarType::U32 | ScalarType::S32 | ScalarType::F32 => 31,
     };
-    (bit_lo.min(top), bit_hi.min(top))
+    let (lo, hi) = (bit_lo.min(top), bit_hi.min(top));
+    (lo.min(hi), lo.max(hi))
 }
 
 /// Parse a bits option list. Two dialects exist:
@@ -198,10 +201,13 @@ pub(crate) fn clamp_bit_range(bit_lo: u8, bit_hi: u8, storage: ScalarType) -> (u
 /// - keyed: `0="DEFAULT", 22="BMW_M52", ...` (rusEFI `engineType`) — built
 ///   into a positional list with `"INVALID"` filling unlisted indices
 ///   (rusEFI's own filler convention), so raw values keep indexing
-///   positionally. Keys past the bit range's capacity are dropped — they
-///   are unreachable values, and honoring them would let a corrupt INI
-///   allocate an absurd list.
+///   positionally. Keys past the bit range's capacity — or past
+///   [`MAX_KEYED_OPTIONS`] — are dropped: they are unreachable (or absurd)
+///   values, and honoring them would let a corrupt INI balloon one
+///   constant into tens of thousands of filler strings.
 pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<String> {
+    /// Far above any real TunerStudio enum (rusEFI's engineType peaks ~105).
+    const MAX_KEYED_OPTIONS: usize = 1024;
     let keyed: Option<Vec<(usize, String)>> = raw
         .iter()
         .map(|field| {
@@ -211,7 +217,8 @@ pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<S
         .collect();
     match keyed {
         Some(pairs) if !pairs.is_empty() => {
-            let capacity = 1usize << (bit_hi - bit_lo + 1).min(16);
+            let capacity =
+                (1usize << u32::from(bit_hi - bit_lo + 1).min(16)).min(MAX_KEYED_OPTIONS);
             let len = pairs
                 .iter()
                 .map(|(i, _)| i + 1)

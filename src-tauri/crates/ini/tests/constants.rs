@@ -767,3 +767,45 @@ fn bit_range_wider_than_storage_clamps_to_storage_width() {
     assert_eq!(*bit_lo, 0);
     assert_eq!(*bit_hi, 7, "bit_hi must clamp to U08's top bit");
 }
+
+#[test]
+fn inverted_bit_range_normalizes_instead_of_panicking() {
+    // A reversed `[hi:lo]` range must not abort the parse (debug-build u8
+    // underflow in the keyed-options capacity math) — normalize lo <= hi.
+    let ini = constants_ini("badRange = bits, U16, 0, [15:0], 0=\"A\", 3=\"B\"");
+    let def = parse_definition(&ini).expect("inverted range should degrade, not panic");
+    let c = def.constant("badRange").expect("badRange");
+    let ConstantKind::Bits {
+        bit_lo,
+        bit_hi,
+        options,
+        ..
+    } = &c.kind
+    else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert!(
+        bit_lo <= bit_hi,
+        "range must be normalized: {bit_lo}..{bit_hi}"
+    );
+    assert_eq!(options[0], "A");
+    assert_eq!(options[3], "B");
+}
+
+#[test]
+fn keyed_bits_option_list_length_is_capped() {
+    // One hostile/corrupt keyed index must not balloon a ConstantDef into
+    // tens of thousands of "INVALID" fillers.
+    let ini = constants_ini("huge = bits, U16, 0, [0:15], 0=\"A\", 65535=\"Z\"");
+    let def = parse_definition(&ini).expect("sparse keyed bits should parse");
+    let c = def.constant("huge").expect("huge");
+    let ConstantKind::Bits { options, .. } = &c.kind else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert!(
+        options.len() <= 1024,
+        "keyed option list must be capped, got {}",
+        options.len()
+    );
+    assert_eq!(options[0], "A");
+}

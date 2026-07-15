@@ -284,6 +284,48 @@ describe("App composition: Dashboard + TunePanel over the shared tune store", ()
       screen.getByRole("button", { name: "AFR Target Table" }),
     ).toBeTruthy();
   });
+
+  // rusEFI menus point items straight at table editors (`subMenu =
+  // veTableTbl` / its 3-D map id). The clicked item must read as the
+  // current one even though the target is a table, not a dialog.
+  it("marks a table-target menu item as current after clicking it", async () => {
+    const table: DefinitionDto["tables"][number] = {
+      name: "veTable1Tbl",
+      map3d_id: "veTable1Map",
+      title: "VE Table",
+      page: 2,
+      x_bins: "ve_x",
+      x_channel: "rpm",
+      y_bins: "ve_y",
+      y_channel: "fuelLoad",
+      z: "ve_z",
+      xy_labels: [],
+      up_down_label: [],
+      help: "",
+    };
+    vi.mocked(ipc.commands.getDefinition).mockResolvedValue({
+      status: "ok",
+      data: {
+        ...definition,
+        menus: [
+          {
+            label: "Fuel",
+            items: [{ label: "VE (menu)", dialog: "veTable1Map" }],
+          },
+        ],
+        tables: [table],
+      },
+    });
+
+    await renderConnected();
+
+    const item = await screen.findByRole("button", { name: "VE (menu)" });
+    fireEvent.click(item);
+    await vi.waitFor(() =>
+      expect(item.getAttribute("aria-current")).toBe("true"),
+    );
+    expect(useTuneStore.getState().activeTable).toBe("veTable1Tbl");
+  });
 });
 
 /**

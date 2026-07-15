@@ -169,6 +169,80 @@ describe("DialogEngine", () => {
     ).toBeTruthy();
   });
 
+  it("embeds the table editor when a panel names the table's 3-D map id", async () => {
+    // Same resolution rule as menu items (resolveMenuTarget): a panel may
+    // reference the table by map3d_id, not just its editor name.
+    const def = definition();
+    def.tables = [
+      {
+        name: "veTableTbl",
+        map3d_id: "veTableMap",
+        title: "VE Table",
+        page: 0,
+        x_bins: "veRpmBins",
+        x_channel: "",
+        y_bins: "veLoadBins",
+        y_channel: "",
+        z: "veTable",
+        xy_labels: [],
+        up_down_label: [],
+        help: "",
+      },
+    ];
+    def.constants = [
+      ...def.constants,
+      {
+        name: "veTable",
+        units: "%",
+        digits: 1,
+        low: 0,
+        high: 120,
+        kind: { Array: { rows: 2, cols: 2 } },
+      },
+      {
+        name: "veRpmBins",
+        units: "rpm",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+      {
+        name: "veLoadBins",
+        units: "kPa",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+    ];
+    def.dialogs.push({
+      name: "veTableDialog3D",
+      title: "",
+      fields: [{ kind: { Panel: "veTableMap" }, visible: null, enable: null }],
+    });
+    vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [
+        { Array: [1000, 2000] },
+        { Array: [30, 60] },
+        { Array: [50, 51, 52, 53] },
+      ],
+    });
+    render(
+      <DialogEngine
+        definition={def}
+        dialogName="veTableDialog3D"
+        values={{}}
+        conditions={{}}
+        onEdit={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("region", { name: "VE Table" }),
+    ).toBeTruthy();
+  });
+
   it("embeds the curve editor when a panel names a curve", async () => {
     const def = definition();
     def.curves = [
