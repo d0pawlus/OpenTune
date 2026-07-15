@@ -215,6 +215,11 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
           recording: state.recording
             ? { ...state.recording, active: false }
             : null,
+          // Final M5-fixes review (Important 1): `stop_log` auto-opens the
+          // just-recorded log under a NEW generation token. Clearing
+          // `activeSlot` forces the next analysis click down `activate()`'s
+          // reopen path instead of resending a now-stale `logId`.
+          activeSlot: null,
         }));
       }
     } catch (error) {

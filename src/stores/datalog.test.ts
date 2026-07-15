@@ -157,6 +157,34 @@ describe("datalog store", () => {
     expect(removed?.columns["rpm smooth"]).toBeUndefined();
   });
 
+  // Final M5-fixes review (Important 1): `stop_log` auto-opens the
+  // just-recorded log under a NEW generation token, but nothing in the
+  // frontend touched `activeSlot`. If the recording landed in an
+  // already-active slot, `activate()` in AnalysisSection sees
+  // `activeSlot === slot`, skips the reopen, and resends the stale
+  // `logId` forever — the backend rejects it and the UI can never
+  // self-heal. Clearing `activeSlot` here forces the next analysis click
+  // down the reopen path, which re-syncs the slot's stored `logId`.
+  it("clears activeSlot after stopping a recording so the next analysis reopens and resyncs the log_id", async () => {
+    await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
+    expect(useDatalogStore.getState().activeSlot).toBe("A");
+
+    vi.mocked(ipc.commands.stopLog).mockResolvedValue({
+      status: "ok",
+      data: {
+        log_id: 2,
+        fields: [{ name: "rpm", units: "RPM" }],
+        record_count: 5,
+        marker_count: 0,
+        duration_ms: 5_000,
+      },
+    });
+
+    await useDatalogStore.getState().stopRecording();
+
+    expect(useDatalogStore.getState().activeSlot).toBeNull();
+  });
+
   // M2/M3 re-review finding 7: a genuine null gap recorded in the log must
   // clear the gauge while scrubbing over it, not freeze the last reading.
   it("scrubbing over a recorded null gap clears the channel", async () => {
