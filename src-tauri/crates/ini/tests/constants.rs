@@ -708,3 +708,62 @@ page = 1
 // `parse_page_sizes`), not full strict pageSize parsing in general. The
 // bounds (1 MiB / 64 pages) sit far above every real fixture in this repo,
 // so this does not reopen the real-INI-ingestion risk noted above.
+
+/// Minimal parseable INI wrapping `[Constants]` body lines (mirrors the
+/// preprocessor tests' helper; pageSize sized for a single U16 constant).
+fn constants_ini(body: &str) -> String {
+    format!(
+        r#"[MegaTune]
+signature = "test"
+queryCommand = "Q"
+versionInfo = "S"
+ochGetCommand = "r"
+pageReadCommand = "p"
+pageValueWrite = "w"
+burnCommand = "b"
+blockingFactor = 1
+blockReadTimeout = 1
+
+[Constants]
+pageSize = 4
+page = 1
+
+{body}
+"#
+    )
+}
+
+#[test]
+fn keyed_bits_options_build_positional_list_with_invalid_gaps() {
+    // rusEFI's engineType uses `index="LABEL"` pairs instead of a positional
+    // list. Unlisted indices must land as "INVALID" (rusEFI's own filler
+    // convention) so raw values keep indexing options positionally.
+    let ini = constants_ini(
+        "engineType = bits, U16, 0, [0:6], 0=\"DEFAULT\", 22=\"BMW_M52\", 99=\"MINIMAL_PINS\"",
+    );
+    let def = parse_definition(&ini).expect("keyed bits should parse");
+    let c = def.constant("engineType").expect("engineType");
+    let ConstantKind::Bits { options, .. } = &c.kind else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!(options.len(), 100);
+    assert_eq!(options[0], "DEFAULT");
+    assert_eq!(options[22], "BMW_M52");
+    assert_eq!(options[99], "MINIMAL_PINS");
+    assert_eq!(options[1], "INVALID");
+}
+
+#[test]
+fn bit_range_wider_than_storage_clamps_to_storage_width() {
+    // Real rusEFI INIs declare e.g. `bits, U08, ..., [0:11]` — a 12-bit
+    // range on 8-bit storage. TunerStudio tolerates it; the range must clamp
+    // to the storage width instead of poisoning every later encode.
+    let ini = constants_ini("wheelMethod = bits, U08, 0, [0:11], \"None\", \"Average\"");
+    let def = parse_definition(&ini).expect("overflowing bit range should parse");
+    let c = def.constant("wheelMethod").expect("wheelMethod");
+    let ConstantKind::Bits { bit_lo, bit_hi, .. } = &c.kind else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!(*bit_lo, 0);
+    assert_eq!(*bit_hi, 7, "bit_hi must clamp to U08's top bit");
+}

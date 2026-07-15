@@ -22,13 +22,15 @@
 //! - `#include` is **not implemented**. Speeduino INIs use none; adding it
 //!   would require a filesystem-aware API this crate does not have. This
 //!   is a deliberate, documented limitation, not an oversight.
-//! - `$name` macro-list expansion (as used inside `#define` value lists)
-//!   is out of scope for the preprocessor itself — `#define` here only
-//!   tracks *that a symbol is defined* for `#ifdef`/`#ifndef`, not its
-//!   value.
+//! - `$name` references expand to the matching `#define`'s value text
+//!   (rusEFI pin dictionaries: `#define gpio_list="NONE", ...` referenced
+//!   as `$gpio_list` from bits option lists). A `$name` with no matching
+//!   define is left untouched. This mirrors `hyper-tuner/ini`'s `#define`
+//!   handling, the one preprocessor feature it does implement.
 
 use crate::Diagnostic;
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 
 /// One entry on the conditional-nesting stack while scanning.
 struct Frame {
@@ -82,8 +84,9 @@ pub(crate) fn preprocess_with_diagnostics(
     active_symbols: &HashSet<String>,
 ) -> Preprocessed {
     let mut symbols: HashSet<String> = active_symbols.clone();
+    let mut defines: HashMap<String, String> = HashMap::new();
     let mut stack: Vec<Frame> = Vec::new();
-    let mut out_lines: Vec<&str> = Vec::new();
+    let mut out_lines: Vec<Cow<'_, str>> = Vec::new();
     let mut diagnostics = Vec::new();
 
     for (line_index, raw_line) in ini_text.lines().enumerate() {
@@ -95,6 +98,7 @@ pub(crate) fn preprocess_with_diagnostics(
             apply_directive(
                 directive,
                 &mut symbols,
+                &mut defines,
                 &mut stack,
                 currently_active,
                 line_number,
@@ -104,7 +108,7 @@ pub(crate) fn preprocess_with_diagnostics(
         }
 
         if currently_active {
-            out_lines.push(raw_line);
+            out_lines.push(expand_defines(raw_line, &defines));
         }
     }
 
@@ -124,7 +128,11 @@ pub(crate) fn preprocess_with_diagnostics(
 /// A recognized preprocessor directive, with its payload already
 /// extracted (but not yet interpreted against the symbol table).
 enum Directive<'a> {
-    Define(&'a str),
+    Define {
+        name: &'a str,
+        /// The text after `=`, when present — the define's value list.
+        value: Option<&'a str>,
+    },
     Set(&'a str),
     Unset(&'a str),
     If(Condition<'a>),
@@ -170,7 +178,10 @@ fn parse_directive(trimmed: &str) -> Option<Directive<'_>> {
         return Some(Directive::Set(first_token(arg)));
     }
     if let Some(arg) = strip_keyword(rest, "define") {
-        return Some(Directive::Define(first_token(arg)));
+        return Some(Directive::Define {
+            name: first_token(arg),
+            value: arg.split_once('=').map(|(_, v)| v.trim()),
+        });
     }
 
     None
@@ -219,15 +230,22 @@ fn condition_holds(cond: &Condition<'_>, symbols: &HashSet<String>) -> bool {
 fn apply_directive(
     directive: Directive<'_>,
     symbols: &mut HashSet<String>,
+    defines: &mut HashMap<String, String>,
     stack: &mut Vec<Frame>,
     currently_active: bool,
     line_number: usize,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     match directive {
-        Directive::Define(name) => {
+        Directive::Define { name, value } => {
             if currently_active {
                 symbols.insert(name.to_string());
+                if let Some(value) = value {
+                    // Expand at definition time against earlier defines, so
+                    // chained references resolve without cycle risk.
+                    let expanded = expand_defines(value, defines).into_owned();
+                    defines.insert(name.to_string(), expanded);
+                }
             }
         }
         Directive::Set(name) => {
@@ -318,6 +336,43 @@ fn apply_directive(
                 )));
             }
         }
+    }
+}
+
+/// Replace each `$name` whose `name` matches a known `#define` with that
+/// define's value text. Unknown references (and bare `$`) pass through
+/// unchanged, so e.g. `"$100"` in a help string is never mangled.
+fn expand_defines<'a>(line: &'a str, defines: &HashMap<String, String>) -> Cow<'a, str> {
+    if defines.is_empty() || !line.contains('$') {
+        return Cow::Borrowed(line);
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut changed = false;
+    let mut rest = line;
+    while let Some(pos) = rest.find('$') {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 1..];
+        let end = after
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(after.len());
+        let name = &after[..end];
+        match defines.get(name) {
+            Some(value) => {
+                out.push_str(value);
+                changed = true;
+            }
+            None => {
+                out.push('$');
+                out.push_str(name);
+            }
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(line)
     }
 }
 

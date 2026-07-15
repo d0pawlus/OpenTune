@@ -179,6 +179,57 @@ pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
     Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
 }
 
+/// Clamp a declared bit range to what the storage type can actually hold.
+/// Real rusEFI INIs declare e.g. `bits, U08, ..., [0:11]`; TunerStudio
+/// tolerates it, so poisoning every later encode would be worse than
+/// clamping. ponytail: silent clamp — the one known case is a 1-bit-field
+/// oddity, not a data-loss path.
+pub(crate) fn clamp_bit_range(bit_lo: u8, bit_hi: u8, storage: ScalarType) -> (u8, u8) {
+    let top = match storage {
+        ScalarType::U08 | ScalarType::S08 => 7,
+        ScalarType::U16 | ScalarType::S16 => 15,
+        ScalarType::U32 | ScalarType::S32 | ScalarType::F32 => 31,
+    };
+    (bit_lo.min(top), bit_hi.min(top))
+}
+
+/// Parse a bits option list. Two dialects exist:
+/// - positional: `"None", "Average", ...` (Speeduino, most of rusEFI)
+/// - keyed: `0="DEFAULT", 22="BMW_M52", ...` (rusEFI `engineType`) — built
+///   into a positional list with `"INVALID"` filling unlisted indices
+///   (rusEFI's own filler convention), so raw values keep indexing
+///   positionally. Keys past the bit range's capacity are dropped — they
+///   are unreachable values, and honoring them would let a corrupt INI
+///   allocate an absurd list.
+pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<String> {
+    let keyed: Option<Vec<(usize, String)>> = raw
+        .iter()
+        .map(|field| {
+            let (key, label) = field.split_once('=')?;
+            Some((key.trim().parse::<usize>().ok()?, unquote(label)))
+        })
+        .collect();
+    match keyed {
+        Some(pairs) if !pairs.is_empty() => {
+            let capacity = 1usize << (bit_hi - bit_lo + 1).min(16);
+            let len = pairs
+                .iter()
+                .map(|(i, _)| i + 1)
+                .filter(|&n| n <= capacity)
+                .max()
+                .unwrap_or(0);
+            let mut options = vec!["INVALID".to_string(); len];
+            for (i, label) in pairs {
+                if i < len {
+                    options[i] = label;
+                }
+            }
+            options
+        }
+        _ => raw.iter().map(|s| unquote(s)).collect(),
+    }
+}
+
 /// Resolve an offset field: either a literal integer, or the `lastOffset`
 /// keyword, which resolves to the start offset of the previous
 /// successfully-parsed field on this page (aliasing it) — unless that
@@ -414,11 +465,8 @@ fn parse_array_no_offset(name: &str, fields: &[String]) -> crate::Result<Constan
 /// `[PcVariables]` bits: `name = bits, TYPE, [lo:hi], "option0", "option1", ...`
 /// (no offset field). Same Wall #3 discovery as [`parse_array_no_offset`] —
 /// real speeduino.ini's `[PcVariables]` uses `bits` extensively (e.g.
-/// `tsCanId`, `idleUnits`). A `$name`-style macro-list reference in place of
-/// a quoted option (e.g. `algorithmNames = bits, U08, [0:2],
-/// $loadSourceNames`) is captured verbatim as a single option string —
-/// `$name` macro-list expansion is out of scope (see `preprocessor.rs`'s
-/// documented limitation), so this degrades gracefully rather than erroring.
+/// `tsCanId`, `idleUnits`). `$name` macro-list references are expanded by
+/// the preprocessor before this parser runs (see `preprocessor.rs`).
 fn parse_bits_no_offset(name: &str, fields: &[String]) -> crate::Result<ConstantDef> {
     let storage = fields
         .get(1)
@@ -428,7 +476,8 @@ fn parse_bits_no_offset(name: &str, fields: &[String]) -> crate::Result<Constant
         .get(2)
         .and_then(|s| parse_bit_range(s))
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
-    let options: Vec<String> = fields.iter().skip(3).map(|s| unquote(s)).collect();
+    let (bit_lo, bit_hi) = clamp_bit_range(bit_lo, bit_hi, storage);
+    let options = parse_bit_options(&fields[3.min(fields.len())..], bit_lo, bit_hi);
 
     Ok(ConstantDef {
         name: name.to_string(),
@@ -563,7 +612,8 @@ fn parse_bits(
         .get(3)
         .and_then(|s| parse_bit_range(s))
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
-    let options: Vec<String> = fields.iter().skip(4).map(|s| unquote(s)).collect();
+    let (bit_lo, bit_hi) = clamp_bit_range(bit_lo, bit_hi, storage);
+    let options = parse_bit_options(&fields[4.min(fields.len())..], bit_lo, bit_hi);
 
     *running_offset = OffsetCounter::Known(offset);
 
