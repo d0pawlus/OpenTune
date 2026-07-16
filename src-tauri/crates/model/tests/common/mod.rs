@@ -73,9 +73,10 @@ pub fn scalar(
     scalar_on(1, name, ty, offset, scale, low, high)
 }
 
-/// A two-page (numbers 1 and 2, `PAGE_SIZE` bytes each) tune around the
-/// given constants.
-pub fn tune(endianness: Endianness, constants: Vec<ConstantDef>) -> Tune {
+/// A two-page (numbers 1 and 2, `PAGE_SIZE` bytes each) definition around
+/// the given constants. Tests needing pc_variables/pc_defaults/
+/// output_channels customize the returned value before `Tune::new`.
+pub fn definition(endianness: Endianness, constants: Vec<ConstantDef>) -> Definition {
     let pages = vec![
         PageDef {
             number: 1,
@@ -86,11 +87,12 @@ pub fn tune(endianness: Endianness, constants: Vec<ConstantDef>) -> Tune {
             size: PAGE_SIZE,
         },
     ];
-    Tune::new(Arc::new(Definition {
+    Definition {
         comms: comms(endianness),
         pages,
         constants,
         pc_variables: vec![],
+        pc_defaults: vec![],
         menus: vec![],
         dialogs: vec![],
         tables: vec![],
@@ -103,7 +105,13 @@ pub fn tune(endianness: Endianness, constants: Vec<ConstantDef>) -> Tune {
             indicators: Vec::new(),
         },
         ve_analyze: None,
-    }))
+    }
+}
+
+/// A two-page (numbers 1 and 2, `PAGE_SIZE` bytes each) tune around the
+/// given constants.
+pub fn tune(endianness: Endianness, constants: Vec<ConstantDef>) -> Tune {
+    Tune::new(Arc::new(definition(endianness, constants)))
 }
 
 /// Load page 1 with `bytes` at offset 0, zero-padded to the page size.

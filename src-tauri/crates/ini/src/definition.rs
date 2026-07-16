@@ -45,6 +45,10 @@ pub struct Definition {
     /// PC-side (host-only) variables — same shape as `constants` but never
     /// stored in ECU memory.
     pub pc_variables: Vec<ConstantDef>,
+    /// `[ConstantsExtensions]` `defaultValue = name, value` pairs — the
+    /// starting values of [`Self::pc_variables`] (labels unquoted). MS3-era
+    /// bounds/scale expressions (`{ rpmhigh }`) resolve against these.
+    pub pc_defaults: Vec<(String, String)>,
     /// Top-level menus for the stock UI.
     pub menus: Vec<MenuDef>,
     /// Dialogs referenced by menu items and panels.
@@ -102,13 +106,27 @@ impl Definition {
 /// matches the "graceful degradation" contract: parsing still succeeds
 /// and produces a usable `Definition`, just using the else-branch values.
 ///
+/// When the caller *does* know the active symbols (TunerStudio projects
+/// persist them in `project.properties` → `ecuSettings`), use
+/// [`parse_definition_with_symbols`] instead.
+///
 /// UI sections (`menus`, `dialogs`, `tables`, `curves`) are parsed by
 /// [`crate::ui_parser::parse_ui`] (Task 3). Expression *evaluation*
 /// (resolving `Number::Expr` against other constants) is Task 2's scope;
 /// this function only captures expressions as raw strings.
 pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
-    let active_symbols = HashSet::new();
-    let preprocessed = preprocess_with_diagnostics(ini_text, &active_symbols);
+    parse_definition_with_symbols(ini_text, &HashSet::new())
+}
+
+/// [`parse_definition`] with an explicit active-symbol set for the
+/// preprocessor's `#if` gates. MS1's `mapBins`/`tpsBins` live behind
+/// `#if SPEED_DENSITY`/`#elif ALPHA_N` — with an empty set BOTH vanish and
+/// the VE table's yBins reference dangles.
+pub fn parse_definition_with_symbols(
+    ini_text: &str,
+    active_symbols: &HashSet<String>,
+) -> Result<Definition, IniError> {
+    let preprocessed = preprocess_with_diagnostics(ini_text, active_symbols);
     let preprocessor_diagnostics = preprocessed.diagnostics;
     let preprocessed = preprocessed.text;
 
@@ -143,6 +161,7 @@ pub fn parse_definition(ini_text: &str) -> Result<Definition, IniError> {
         pages: parsed.pages,
         constants: parsed.constants,
         pc_variables: parsed.pc_variables,
+        pc_defaults: parsed.pc_defaults,
         menus: ui.menus,
         dialogs: ui.dialogs,
         tables: ui.tables,

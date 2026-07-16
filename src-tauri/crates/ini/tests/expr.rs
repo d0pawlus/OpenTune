@@ -291,25 +291,32 @@ fn eval_bool_propagates_errors() {
 
 // ---------------------------------------------------------------------
 // 2.3 — unsupported function-call forms
+//
+// Contract updated with function-call support (MS3): arguments are now
+// full expressions whose own errors propagate precisely; a call whose
+// args resolve but that no resolver knows still reports UnsupportedFn.
+// Either way the exotic real-INI forms degrade to a clean error.
 // ---------------------------------------------------------------------
 
 #[test]
 fn bit_string_value_call_is_unsupported() {
-    let err = eval("bitStringValue(label, sel)", &no_vars).unwrap_err();
+    // Args resolve (plain variables) — the CALL is what plain eval refuses.
+    let err = eval("bitStringValue(injLayout, nCylinders)", &lookup).unwrap_err();
     assert_eq!(err, ExprError::UnsupportedFn("bitStringValue".to_string()));
 }
 
 #[test]
-fn table_call_with_string_literal_arg_is_unsupported() {
-    // Real form: `table(x, "f.inc")` — the string literal must not force a
-    // lexer error; the function-call form itself is what is unsupported.
-    let err = eval(r#"table(x, "f.inc")"#, &no_vars).unwrap_err();
-    assert_eq!(err, ExprError::UnsupportedFn("table".to_string()));
+fn table_call_with_string_literal_arg_is_a_clean_error() {
+    // Real form: `table(x, "f.inc")` — the grammar deliberately does not
+    // lex string literals, so the argument list fails as a syntax error
+    // (clean, never a panic or silent misparse).
+    let err = eval(r#"table(injLayout, "f.inc")"#, &lookup).unwrap_err();
+    assert!(matches!(err, ExprError::Syntax(_)), "got {err:?}");
 }
 
 #[test]
 fn unsupported_fn_inside_larger_expression_still_reported() {
-    let err = eval("1 + bitStringValue(a, b)", &no_vars).unwrap_err();
+    let err = eval("1 + bitStringValue(injLayout, nCylinders)", &lookup).unwrap_err();
     assert_eq!(err, ExprError::UnsupportedFn("bitStringValue".to_string()));
 }
 
@@ -476,4 +483,133 @@ fn eval_bool_supports_indicator_style_bitwise_expr() {
     let lookup = |n: &str| bit_lookup(n);
     assert!(eval_bool("sd_status & 1", &lookup).unwrap());
     assert!(!eval_bool("sd_status & 4", &lookup).unwrap());
+}
+
+// ---------------------------------------------------------------------
+// Ternary conditional — MS3-era INIs compute bounds and even scale
+// factors with it (`{ clt_exp ? 230 : 120 }`,
+// `{ prefSpeedUnits == 0 ? 0.22369 : 0.36 }`).
+// ---------------------------------------------------------------------
+
+#[test]
+fn evaluates_ternary_conditional() {
+    assert_eq!(eval("1 ? 2 : 3", &no_vars).unwrap(), 2.0);
+    assert_eq!(eval("0 ? 2 : 3", &no_vars).unwrap(), 3.0);
+}
+
+#[test]
+fn ternary_binds_below_comparison_like_c() {
+    // The whole comparison is the condition, per C precedence.
+    let lookup = |n: &str| match n {
+        "prefSpeedUnits" => Some(0.0),
+        _ => None,
+    };
+    assert_eq!(
+        eval("prefSpeedUnits == 0 ?  0.22369 :  0.36", &lookup).unwrap(),
+        0.22369
+    );
+}
+
+#[test]
+fn ternary_nests_right_associatively() {
+    assert_eq!(eval("0 ? 1 : 0 ? 2 : 3", &no_vars).unwrap(), 3.0);
+    assert_eq!(eval("1 ? 0 ? 4 : 5 : 6", &no_vars).unwrap(), 5.0);
+}
+
+#[test]
+fn ternary_with_variable_condition_matches_ms3_clthighlim() {
+    let lookup = |n: &str| match n {
+        "clt_exp" => Some(0.0),
+        _ => None,
+    };
+    assert_eq!(eval("clt_exp ? 230 : 120", &lookup).unwrap(), 120.0);
+}
+
+#[test]
+fn ternary_missing_colon_is_a_syntax_error() {
+    assert!(eval("1 ? 2", &no_vars).is_err());
+}
+
+#[test]
+fn ternary_evaluates_eagerly_like_and_or() {
+    // Same contract as `&&`/`||`: a typo'd variable fails loudly even in
+    // the branch not taken.
+    let err = eval("1 ? 2 : bogusVar", &no_vars).unwrap_err();
+    assert_eq!(err, ExprError::UnknownVar("bogusVar".to_string()));
+}
+
+// ---------------------------------------------------------------------
+// Function calls — `eval_with_functions` resolves TunerStudio builtins
+// via a caller-supplied hook (MS3: `getChannelScaleByOffset(...)`).
+// Plain `eval` keeps rejecting every call as UnsupportedFn.
+// ---------------------------------------------------------------------
+
+fn fake_funcs(name: &str, args: &[f64]) -> Option<f64> {
+    match (name, args) {
+        ("double", [x]) => Some(x * 2.0),
+        ("add", [a, b]) => Some(a + b),
+        _ => None,
+    }
+}
+
+#[test]
+fn eval_with_functions_dispatches_calls() {
+    use opentune_ini::eval_with_functions;
+    assert_eq!(
+        eval_with_functions("double(21)", &no_vars, &fake_funcs).unwrap(),
+        42.0
+    );
+    assert_eq!(
+        eval_with_functions("add(1, 2) * 2", &no_vars, &fake_funcs).unwrap(),
+        6.0
+    );
+}
+
+#[test]
+fn function_arguments_are_full_expressions_including_variables() {
+    use opentune_ini::eval_with_functions;
+    assert_eq!(
+        eval_with_functions("double(nCylinders + 1)", &lookup, &fake_funcs).unwrap(),
+        10.0
+    );
+}
+
+#[test]
+fn unknown_function_is_still_unsupported() {
+    use opentune_ini::eval_with_functions;
+    assert_eq!(
+        eval_with_functions("mystery(1)", &no_vars, &fake_funcs).unwrap_err(),
+        ExprError::UnsupportedFn("mystery".to_string())
+    );
+}
+
+#[test]
+fn plain_eval_still_rejects_all_function_calls() {
+    assert_eq!(
+        eval("double(21)", &no_vars).unwrap_err(),
+        ExprError::UnsupportedFn("double".to_string())
+    );
+}
+
+#[test]
+fn function_call_inside_ternary_matches_ms3_pwm_scale_shape() {
+    use opentune_ini::eval_with_functions;
+    let vars = |n: &str| match n {
+        "pwm_opt_curve_a" => Some(1.0),
+        "pwm_opt_load_a_offset" => Some(18.0),
+        _ => None,
+    };
+    let funcs = |name: &str, args: &[f64]| match (name, args) {
+        ("getChannelScaleByOffset", [x]) if *x == 18.0 => Some(0.1),
+        _ => None,
+    };
+    assert_eq!(
+        eval_with_functions(
+            "pwm_opt_curve_a == 0 ? 1 : getChannelScaleByOffset(pwm_opt_load_a_offset)",
+            &vars,
+            &funcs,
+        )
+        .unwrap(),
+        0.1
+    );
 }

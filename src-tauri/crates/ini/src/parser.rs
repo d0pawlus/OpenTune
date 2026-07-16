@@ -50,7 +50,10 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
     // Required fields
     let signature = require_string(&kv, "signature")?;
     let query_command = require_string(&kv, "queryCommand")?;
-    let version_info = require_string(&kv, "versionInfo")?;
+    // MegaTune-era MS1 INIs (B&G 3.0) predate `versionInfo` — the firmware
+    // answers the `queryCommand` with its version byte, so the signature
+    // query doubles as the version query when the key is absent.
+    let version_info = require_string(&kv, "versionInfo").unwrap_or_else(|_| query_command.clone());
     // `ochGetCommand` is not in `SCATTERED_COMMS_KEYS` (it never lives in
     // `[Constants]` in the real file); when `[MegaTune]`/`[TunerStudio]`
     // lacks it entirely, fall back to the `[OutputChannels]` scanner rather
@@ -61,8 +64,10 @@ pub fn parse_comms(ini_text: &str) -> Result<CommsSettings> {
     let page_read_command = require_string(&kv, "pageReadCommand")?;
     let page_value_write = require_string(&kv, "pageValueWrite")?;
     let burn_command = require_string(&kv, "burnCommand")?;
-    let blocking_factor = require_u32(&kv, "blockingFactor")?;
-    let block_read_timeout_ms = require_u32(&kv, "blockReadTimeout")?;
+    // Also absent from the MegaTune-era dialect; TunerStudio defaults them
+    // rather than erroring.
+    let blocking_factor = opt_u32(&kv, "blockingFactor", DEFAULT_BLOCKING_FACTOR)?;
+    let block_read_timeout_ms = opt_u32(&kv, "blockReadTimeout", DEFAULT_BLOCK_READ_TIMEOUT_MS)?;
 
     // Optional fields with defaults
     let page_activation_delay_ms = opt_u32(&kv, "pageActivationDelay", 0)?;
@@ -164,7 +169,16 @@ const SCATTERED_COMMS_KEYS: &[&str] = &[
     "interWriteDelay",
     "pageActivationDelay",
     "messageEnvelopeFormat",
+    // MegaTune-era MS1 declares `endianness = big` in `[Constants]`, not in
+    // `[MegaTune]` — missing it byte-swaps every U16 on the wire.
+    "endianness",
 ];
+
+/// TunerStudio's default when a (MegaTune-era) INI omits `blockingFactor`.
+const DEFAULT_BLOCKING_FACTOR: u32 = 256;
+/// Default when `blockReadTimeout` is absent, per the
+/// [`CommsSettings::block_read_timeout_ms`] docstring example.
+const DEFAULT_BLOCK_READ_TIMEOUT_MS: u32 = 2000;
 
 /// First element of a possibly comma-separated value, honoring double quotes
 /// (a comma inside `"..."` does not split). Returns the element verbatim
@@ -309,17 +323,6 @@ fn require_string(kv: &[(String, String)], key: &str) -> Result<String> {
     find_raw(kv, key)
         .map(|v| unquote(v).to_string())
         .ok_or_else(|| IniError::MissingKey(key.to_string()))
-}
-
-fn require_u32(kv: &[(String, String)], key: &str) -> Result<u32> {
-    let raw = find_raw(kv, key).ok_or_else(|| IniError::MissingKey(key.to_string()))?;
-    unquote(raw)
-        .trim()
-        .parse::<u32>()
-        .map_err(|e| IniError::InvalidValue {
-            key: key.to_string(),
-            detail: e.to_string(),
-        })
 }
 
 fn opt_u32(kv: &[(String, String)], key: &str, default: u32) -> Result<u32> {

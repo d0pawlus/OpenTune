@@ -95,6 +95,7 @@ fn hand_built_definition() -> Definition {
             digits: 0,
         }],
         pc_variables: vec![],
+        pc_defaults: vec![],
         menus: vec![MenuDef {
             label: "Tuning".to_string(),
             items: vec![MenuItem {

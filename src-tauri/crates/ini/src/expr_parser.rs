@@ -19,15 +19,29 @@ pub(crate) struct Parser<'a> {
     src: &'a str,
     chars: Peekable<CharIndices<'a>>,
     lookup: &'a dyn Fn(&str) -> Option<f64>,
+    /// Function-call resolver: `(name, args) -> value`. `None` means the
+    /// function is unsupported — plain [`crate::eval`] passes a resolver
+    /// that always returns `None`.
+    funcs: &'a dyn Fn(&str, &[f64]) -> Option<f64>,
     depth: usize,
 }
 
+/// The no-function resolver used by plain [`crate::eval`].
+pub(crate) fn no_functions(_name: &str, _args: &[f64]) -> Option<f64> {
+    None
+}
+
 impl<'a> Parser<'a> {
-    pub(crate) fn new(src: &'a str, lookup: &'a dyn Fn(&str) -> Option<f64>) -> Self {
+    pub(crate) fn new(
+        src: &'a str,
+        lookup: &'a dyn Fn(&str) -> Option<f64>,
+        funcs: &'a dyn Fn(&str, &[f64]) -> Option<f64>,
+    ) -> Self {
         Self {
             src,
             chars: src.char_indices().peekable(),
             lookup,
+            funcs,
             depth: 0,
         }
     }
@@ -85,12 +99,34 @@ impl<'a> Parser<'a> {
         self.depth -= 1;
     }
 
-    // expr := or_expr
+    // expr := ternary
     pub(crate) fn parse_expr(&mut self) -> Result<f64, ExprError> {
         self.enter()?;
-        let result = self.parse_or();
+        let result = self.parse_ternary();
         self.exit();
         result
+    }
+
+    // ternary := or_expr ( "?" ternary ":" ternary )?
+    //
+    // Lowest precedence and right-associative, per C. MS3-era INIs compute
+    // bounds and scale factors with it (`{ clt_exp ? 230 : 120 }`). Both
+    // branches are evaluated eagerly — same contract as `&&`/`||` (see
+    // [`Parser::parse_or`]): a typo'd variable fails loudly regardless of
+    // which branch is taken.
+    fn parse_ternary(&mut self) -> Result<f64, ExprError> {
+        let cond = self.parse_or()?;
+        self.skip_whitespace();
+        if !self.eat_char('?') {
+            return Ok(cond);
+        }
+        let then_value = self.parse_ternary()?;
+        self.skip_whitespace();
+        if !self.eat_char(':') {
+            return Err(ExprError::Syntax("expected `:` in ternary".to_string()));
+        }
+        let else_value = self.parse_ternary()?;
+        Ok(if truthy(cond) { then_value } else { else_value })
     }
 
     // or_expr := and_expr ( "||" and_expr )*
@@ -358,18 +394,37 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses a bare identifier, or — if immediately followed by `(` — a
-    /// function-call form. All function calls are currently unsupported: as
-    /// soon as `name(` is recognized we return [`ExprError::UnsupportedFn`]
-    /// without attempting to lex the argument list (which may contain
-    /// syntax this grammar does not otherwise support, e.g. string
-    /// literals).
+    /// function-call form. Each argument is a full expression; the call is
+    /// resolved via the `funcs` hook, and a `None` from it surfaces as
+    /// [`ExprError::UnsupportedFn`] (which is every call under plain
+    /// [`crate::eval`] — only [`crate::eval_with_functions`] callers supply
+    /// builtins, e.g. MS3's `getChannelScaleByOffset(...)`). Arguments this
+    /// grammar cannot lex (e.g. string literals) stay syntax errors.
     fn parse_ident_or_call(&mut self) -> Result<f64, ExprError> {
         let name = self.parse_ident();
         self.skip_whitespace();
-        if self.chars.peek().map(|&(_, c)| c) == Some('(') {
-            return Err(ExprError::UnsupportedFn(name));
+        if self.chars.peek().map(|&(_, c)| c) != Some('(') {
+            return (self.lookup)(&name).ok_or(ExprError::UnknownVar(name));
         }
-        (self.lookup)(&name).ok_or(ExprError::UnknownVar(name))
+        self.chars.next(); // consume '('
+        let mut args = Vec::new();
+        self.skip_whitespace();
+        if !self.eat_char(')') {
+            loop {
+                args.push(self.parse_expr()?);
+                if self.eat_char(',') {
+                    continue;
+                }
+                if self.eat_char(')') {
+                    break;
+                }
+                return Err(ExprError::Syntax(format!(
+                    "expected `,` or `)` in `{name}(...)` arguments at byte {}",
+                    self.pos()
+                )));
+            }
+        }
+        (self.funcs)(&name, &args).ok_or(ExprError::UnsupportedFn(name))
     }
 }
 

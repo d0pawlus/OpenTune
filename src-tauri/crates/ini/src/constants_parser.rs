@@ -16,7 +16,9 @@
 //! unknown constructs and to hard-fail only on the specific overflow case
 //! (see `IniError`/`Diagnostic` conventions in `parser.rs`).
 
-use crate::constants_fields::{parse_constant_line, ConstantLineResult, OffsetCounter};
+use crate::constants_fields::{
+    parse_constant_line, split_fields, unquote, ConstantLineResult, OffsetCounter,
+};
 use crate::{ConstantDef, ConstantKind, Diagnostic, Endianness, IniError, PageDef};
 use std::collections::HashMap;
 
@@ -40,6 +42,10 @@ pub struct ParsedConstants {
     pub pages: Vec<PageDef>,
     pub constants: Vec<ConstantDef>,
     pub pc_variables: Vec<ConstantDef>,
+    /// `[ConstantsExtensions]` `defaultValue = name, value` pairs — the
+    /// values `[PcVariables]` start with (labels arrive unquoted). MS3-era
+    /// bounds expressions (`{ rpmhigh }`) resolve against these.
+    pub pc_defaults: Vec<(String, String)>,
     pub endianness: Option<Endianness>,
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -48,6 +54,7 @@ pub struct ParsedConstants {
 enum Section {
     Constants,
     PcVariables,
+    ConstantsExtensions,
     Other,
 }
 
@@ -61,6 +68,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
     let mut pages: Vec<PageDef> = Vec::new();
     let mut constants: Vec<ConstantDef> = Vec::new();
     let mut pc_variables: Vec<ConstantDef> = Vec::new();
+    let mut pc_defaults: Vec<(String, String)> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut endianness: Option<Endianness> = None;
 
@@ -79,6 +87,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
             section = match inner.trim() {
                 "Constants" => Section::Constants,
                 "PcVariables" => Section::PcVariables,
+                "ConstantsExtensions" => Section::ConstantsExtensions,
                 _ => Section::Other,
             };
             continue;
@@ -94,6 +103,19 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
         };
         let key = key.trim();
         let value = strip_inline_comment(value).trim();
+
+        if section == Section::ConstantsExtensions {
+            // Only `defaultValue` matters to us; the other extension kinds
+            // (`requiresPowerCycle`, `maintainConstantValue`, ...) are
+            // known-benign TunerStudio hints, skipped without a diagnostic.
+            if key == "defaultValue" {
+                let fields = split_fields(value);
+                if let (Some(name), Some(default)) = (fields.first(), fields.get(1)) {
+                    pc_defaults.push((name.clone(), unquote(default)));
+                }
+            }
+            continue;
+        }
 
         match key {
             "page" => {
@@ -181,6 +203,7 @@ pub fn parse_constants(ini_text: &str) -> crate::Result<ParsedConstants> {
         pages,
         constants,
         pc_variables,
+        pc_defaults,
         endianness,
         diagnostics,
     })

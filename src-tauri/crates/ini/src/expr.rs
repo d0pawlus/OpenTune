@@ -117,7 +117,27 @@ pub enum ExprError {
 /// Returns [`ExprError`] on an unknown variable, an unsupported function
 /// call, a division by zero, a malformed expression, or excessive nesting.
 pub fn eval(expr: &str, lookup: &dyn Fn(&str) -> Option<f64>) -> Result<f64, ExprError> {
-    let mut parser = Parser::new(expr, lookup);
+    eval_with_functions(expr, lookup, &crate::expr_parser::no_functions)
+}
+
+/// [`eval`] with a function-call resolver: `funcs(name, args)` returns the
+/// call's value, or `None` for an unsupported function (which then surfaces
+/// as [`ExprError::UnsupportedFn`]). MS3-era INIs need this for the
+/// `getChannel*ByOffset(...)` builtins their generic PWM curves use.
+///
+/// Same sandbox as [`eval`]: a closed arithmetic grammar over caller-supplied
+/// closures — no code execution, no I/O; `funcs` only computes numbers from
+/// numbers.
+///
+/// # Errors
+///
+/// See [`eval`].
+pub fn eval_with_functions(
+    expr: &str,
+    lookup: &dyn Fn(&str) -> Option<f64>,
+    funcs: &dyn Fn(&str, &[f64]) -> Option<f64>,
+) -> Result<f64, ExprError> {
+    let mut parser = Parser::new(expr, lookup, funcs);
     let value = parser.parse_expr()?;
     parser.skip_whitespace();
     if parser.peek_char().is_some() {

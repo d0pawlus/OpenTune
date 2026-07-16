@@ -47,7 +47,8 @@ pub fn decode_frame(def: &Definition, block: &[u8]) -> RealtimeFrame {
                 translate,
                 ..
             } => decode_scalar(block, *kind, *offset, endian)
-                .map(|raw| (name.as_str(), raw * scale + translate)),
+                // TunerStudio formula: physical = (raw + translate) * scale.
+                .map(|raw| (name.as_str(), (raw + translate) * scale)),
             OutputChannelDef::Bits {
                 name,
                 storage,

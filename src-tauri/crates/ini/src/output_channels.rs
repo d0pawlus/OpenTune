@@ -13,7 +13,7 @@ use crate::ScalarType;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub enum OutputChannelDef {
     /// `map = scalar, U16, 4, "kpa", 1.000, 0.000` — offset into the och block.
-    /// physical = raw*scale + translate. No min/max/digits (unlike ConstantDef).
+    /// physical = (raw + translate) * scale. No min/max/digits (unlike ConstantDef).
     Scalar {
         name: String,
         kind: ScalarType,
