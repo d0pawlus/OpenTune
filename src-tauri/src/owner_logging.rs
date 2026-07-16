@@ -6,6 +6,7 @@
 //! [`super::Owner`]'s private `active_log`/`opened_log` state the same as
 //! everything left in the parent.
 
+use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use opentune_datalog::{Field, Log, LogEntry, Marker, Record};
@@ -36,7 +37,13 @@ const LOG_CHANGED: &str = "log changed since it was opened";
 pub(crate) const NO_ACTIVE_LOG: &str = "no active log";
 
 pub(super) struct ActiveLog {
+    /// The raw path the webview asked to record to, kept verbatim for the
+    /// status UI (`log_status`).
     pub(super) path: String,
+    /// The validated write target resolved once at `start_log`, so `stop_log`
+    /// writes to the destination chosen up front instead of re-resolving a
+    /// path whose meaning may have shifted mid-recording.
+    validated: PathBuf,
     pub(super) format: LogFormatDto,
     pub(super) log: Log,
     started: Instant,
@@ -52,16 +59,24 @@ impl Owner {
         if self.active_log.is_some() {
             return Err("a log is already active".into());
         }
-        validate_log_write_path(&path)?;
+        let validated = validate_log_write_path(&path)?;
         let session = self
             .session
             .as_ref()
             .ok_or_else(|| self.not_connected_error())?;
-        // M5 review M2: an och block size of zero means no realtime frame
-        // will ever feed this log (see `Session::poll_frame_full`'s own
-        // gate) — starting anyway would silently record zero-column rows
-        // for the whole session instead of failing up front.
-        if session.def.comms.och_block_size == 0 {
+        // M5 review M2 + och>u16 guard: mirror `Session::poll_frame_full`'s
+        // own frame-length gate up front. An och block size of zero means no
+        // realtime frame will ever feed this log; one above `u16::MAX` can't
+        // be requested as a read length at all. Either way every poll would
+        // fail and the log would silently record zero rows for the whole
+        // session, so reject both here instead of after the fact.
+        let och_len = u16::try_from(session.def.comms.och_block_size).map_err(|_| {
+            format!(
+                "cannot start log: ochBlockSize {} exceeds u16",
+                session.def.comms.och_block_size
+            )
+        })?;
+        if och_len == 0 {
             return Err(format!("cannot start log: {NO_OCH_BLOCK}"));
         }
         let fields = session
@@ -78,6 +93,7 @@ impl Owner {
             });
         self.active_log = Some(ActiveLog {
             path,
+            validated,
             format,
             log,
             started: Instant::now(),
@@ -94,11 +110,13 @@ impl Owner {
             .active_log
             .take()
             .ok_or_else(|| NO_ACTIVE_LOG.to_string())?;
-        let path = active.path.clone();
+        // Write to the target resolved at `start_log`, not by re-validating
+        // `active.path` — the destination was chosen when recording began.
+        let target = active.validated;
         let format = active.format;
         let log = active.log;
         let result = tokio::task::spawn_blocking(move || {
-            let result = write_log_path(&path, format, &log);
+            let result = write_validated(&target, format, &log);
             (log, result)
         })
         .await
@@ -329,7 +347,19 @@ pub(super) fn read_log_path(path: &str, format: LogFormatDto) -> Result<Log, Str
 /// destination file (M5 review M5). The temp file is removed on any error.
 pub(super) fn write_log_path(path: &str, format: LogFormatDto, log: &Log) -> Result<(), String> {
     let target = validate_log_write_path(path)?;
-    let temp_path = temp_write_path(&target);
+    write_validated(&target, format, log)
+}
+
+/// Atomically write `log` to an already-validated `target` (see
+/// [`write_log_path`], which validates a raw webview path first). Splitting
+/// the write off the validation lets `stop_log` reuse the target it resolved
+/// at `start_log` without re-validating.
+pub(super) fn write_validated(
+    target: &Path,
+    format: LogFormatDto,
+    log: &Log,
+) -> Result<(), String> {
+    let temp_path = temp_write_path(target);
 
     let result = (|| -> Result<(), String> {
         let file = std::fs::File::create(&temp_path)
@@ -340,7 +370,7 @@ pub(super) fn write_log_path(path: &str, format: LogFormatDto, log: &Log) -> Res
         use std::io::Write as _;
         writer.flush().map_err(|error| error.to_string())?;
         drop(writer);
-        std::fs::rename(&temp_path, &target)
+        std::fs::rename(&temp_path, target)
             .map_err(|error| format!("{}: {error}", target.display()))
     })();
 

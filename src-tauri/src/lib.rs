@@ -117,6 +117,7 @@ fn exit_flush_outcome<T>(result: Result<T, String>) -> Result<(), String> {
 fn handle_exit_requested(
     app_handle: &tauri::AppHandle<tauri::Wry>,
     api: &tauri::ExitRequestApi,
+    code: Option<i32>,
     flush_done: &Arc<AtomicBool>,
 ) {
     if !should_defer_exit(flush_done.load(Ordering::SeqCst)) {
@@ -144,7 +145,9 @@ fn handle_exit_requested(
             }
         }
         flush_done.store(true, Ordering::SeqCst);
-        app_handle.exit(0);
+        // Preserve the exit code the original request carried (a window close
+        // is `None`) rather than always forcing 0.
+        app_handle.exit(code.unwrap_or(0));
     });
 }
 
@@ -188,8 +191,8 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(move |app_handle, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event {
-            handle_exit_requested(app_handle, &api, &exit_flush_done);
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+            handle_exit_requested(app_handle, &api, code, &exit_flush_done);
         }
     });
 }
