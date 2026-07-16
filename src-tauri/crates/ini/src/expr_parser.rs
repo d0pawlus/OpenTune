@@ -24,6 +24,10 @@ pub(crate) struct Parser<'a> {
     /// that always returns `None`.
     funcs: &'a dyn Fn(&str, &[f64]) -> Option<f64>,
     depth: usize,
+    /// Inside the UNTAKEN branch of a ternary: name/function resolution
+    /// failures yield 0.0 instead of erroring (the branch still parses for
+    /// grammar, its value is discarded). See [`Parser::parse_ternary`].
+    muted: bool,
 }
 
 /// The no-function resolver used by plain [`crate::eval`].
@@ -43,6 +47,7 @@ impl<'a> Parser<'a> {
             lookup,
             funcs,
             depth: 0,
+            muted: false,
         }
     }
 
@@ -107,26 +112,43 @@ impl<'a> Parser<'a> {
         result
     }
 
-    // ternary := or_expr ( "?" ternary ":" ternary )?
+    // ternary := or_expr ( "?" expr ":" expr )?
     //
     // Lowest precedence and right-associative, per C. MS3-era INIs compute
-    // bounds and scale factors with it (`{ clt_exp ? 230 : 120 }`). Both
-    // branches are evaluated eagerly — same contract as `&&`/`||` (see
-    // [`Parser::parse_or`]): a typo'd variable fails loudly regardless of
-    // which branch is taken.
+    // bounds and scale factors with it (`{ clt_exp ? 230 : 120 }`).
+    //
+    // Branches recurse through [`Parser::parse_expr`] so the `MAX_DEPTH`
+    // guard applies — a ternary nesting bomb degrades to `TooDeep` instead
+    // of overflowing the stack (PR #22 review finding).
+    //
+    // Unlike `&&`/`||` (eager — see [`Parser::parse_or`]), only the TAKEN
+    // branch's resolution errors surface: TunerStudio evaluates `?:`
+    // lazily, and real tunes rely on it (`curve == 0 ? 1 :
+    // getChannelScaleByOffset(offset)` with an unconfigured PWM slot must
+    // yield 1, not fail the constant). The untaken branch still parses —
+    // the grammar needs its extent — with resolution failures muted to 0.0
+    // (see [`Parser::muted`]); its syntax errors still surface.
     fn parse_ternary(&mut self) -> Result<f64, ExprError> {
         let cond = self.parse_or()?;
         self.skip_whitespace();
         if !self.eat_char('?') {
             return Ok(cond);
         }
-        let then_value = self.parse_ternary()?;
+        let outer = self.muted;
+        let take_then = truthy(cond);
+        self.muted = outer || !take_then;
+        let then_value = self.parse_expr();
+        self.muted = outer;
+        let then_value = then_value?;
         self.skip_whitespace();
         if !self.eat_char(':') {
             return Err(ExprError::Syntax("expected `:` in ternary".to_string()));
         }
-        let else_value = self.parse_ternary()?;
-        Ok(if truthy(cond) { then_value } else { else_value })
+        self.muted = outer || take_then;
+        let else_value = self.parse_expr();
+        self.muted = outer;
+        let else_value = else_value?;
+        Ok(if take_then { then_value } else { else_value })
     }
 
     // or_expr := and_expr ( "||" and_expr )*
@@ -404,7 +426,11 @@ impl<'a> Parser<'a> {
         let name = self.parse_ident();
         self.skip_whitespace();
         if self.chars.peek().map(|&(_, c)| c) != Some('(') {
-            return (self.lookup)(&name).ok_or(ExprError::UnknownVar(name));
+            return match (self.lookup)(&name) {
+                Some(value) => Ok(value),
+                None if self.muted => Ok(0.0),
+                None => Err(ExprError::UnknownVar(name)),
+            };
         }
         self.chars.next(); // consume '('
         let mut args = Vec::new();
@@ -424,7 +450,11 @@ impl<'a> Parser<'a> {
                 )));
             }
         }
-        (self.funcs)(&name, &args).ok_or(ExprError::UnsupportedFn(name))
+        match (self.funcs)(&name, &args) {
+            Some(value) => Ok(value),
+            None if self.muted => Ok(0.0),
+            None => Err(ExprError::UnsupportedFn(name)),
+        }
     }
 }
 
