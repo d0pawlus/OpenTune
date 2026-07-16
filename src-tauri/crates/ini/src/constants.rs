@@ -96,9 +96,9 @@ pub struct ConstantDef {
     pub offset: usize,
     /// The storage/interpretation kind (scalar, array, bits, or text).
     pub kind: ConstantKind,
-    /// Multiplier applied to the raw stored value: `physical = raw * scale + translate`.
+    /// Multiplier applied to the raw stored value: `physical = (raw + translate) * scale`.
     pub scale: Number,
-    /// Offset applied to the raw stored value: `physical = raw * scale + translate`.
+    /// Offset applied to the raw stored value: `physical = (raw + translate) * scale`.
     pub translate: Number,
     /// The unit label shown in the UI (e.g. `"RPM"`, `"deg"`).
     pub units: String,

@@ -4,7 +4,7 @@
 //! ported half): the physics produce a [`ChannelValues`] snapshot; this
 //! module writes it into the och block at whatever offsets/types the loaded
 //! INI's `[OutputChannels]` declares. Raw encoding mirrors `opentune-model`'s
-//! `codec::encode_raw` (`raw = round((physical - translate) / scale)`, per
+//! `codec::encode_raw` (`raw = round(physical / scale - translate)`, per
 //! `ScalarType` + endianness), but clamps out-of-range values instead of
 //! erroring — the sim must stay graceful, never panic its thread.
 
@@ -98,9 +98,9 @@ pub(crate) fn encode_channels(
                 ..
             } => {
                 if let Some(physical) = values.scalar(name) {
-                    // Inverse of physical = raw*scale + translate.
+                    // Inverse of TunerStudio's physical = (raw + translate) * scale.
                     let raw = if *scale != 0.0 {
-                        ((physical - translate) / scale).round()
+                        (physical / scale - translate).round()
                     } else {
                         0.0
                     };

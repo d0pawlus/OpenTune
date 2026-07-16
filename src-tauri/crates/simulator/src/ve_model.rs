@@ -131,10 +131,10 @@ pub(crate) fn ve_context(def: &Definition, memory: &MemoryImage) -> Option<VeCon
 
 /// Decode one array-kind constant's current raw bytes into physical values,
 /// preserving the array's declared row-major order (module doc comment).
-/// `physical = raw * scale + translate` per element (`ConstantDef::scale`/
-/// `translate`); a `Number::Expr` scale/translate can't be resolved here
-/// (no expression evaluator in this crate) and fails the whole array open
-/// (`None`) rather than guessing.
+/// `physical = (raw + translate) * scale` per element (TunerStudio's
+/// documented formula; `ConstantDef::scale`/`translate`); a `Number::Expr`
+/// scale/translate can't be resolved here (no expression evaluator in this
+/// crate) and fails the whole array open (`None`) rather than guessing.
 fn decode_array(
     constant: &ConstantDef,
     endian: Endianness,
@@ -155,7 +155,7 @@ fn decode_array(
     }
     Some(
         raw.chunks_exact(width)
-            .map(|chunk| decode_scalar(chunk, *elem, endian) * scale + translate)
+            .map(|chunk| (decode_scalar(chunk, *elem, endian) + translate) * scale)
             .collect(),
     )
 }

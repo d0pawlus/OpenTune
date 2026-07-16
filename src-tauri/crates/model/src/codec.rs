@@ -41,6 +41,20 @@ pub(crate) fn width(ty: ScalarType) -> usize {
     }
 }
 
+/// The `(min, max)` raw values a scalar storage type can hold. Backs the
+/// `getChannelMin/MaxByOffset` builtins' encodable-range approximation.
+pub(crate) fn raw_range(ty: ScalarType) -> (f64, f64) {
+    match ty {
+        ScalarType::U08 => (0.0, f64::from(u8::MAX)),
+        ScalarType::S08 => (f64::from(i8::MIN), f64::from(i8::MAX)),
+        ScalarType::U16 => (0.0, f64::from(u16::MAX)),
+        ScalarType::S16 => (f64::from(i16::MIN), f64::from(i16::MAX)),
+        ScalarType::U32 => (0.0, f64::from(u32::MAX)),
+        ScalarType::S32 => (f64::from(i32::MIN), f64::from(i32::MAX)),
+        ScalarType::F32 => (f64::from(f32::MIN), f64::from(f32::MAX)),
+    }
+}
+
 fn arr2(b: &[u8]) -> [u8; 2] {
     [b[0], b[1]]
 }
@@ -178,7 +192,10 @@ pub(crate) fn bits_mask(
     Ok((1u64 << (bit_hi - bit_lo + 1)) - 1)
 }
 
-/// Decode a scalar region to its physical value.
+/// Decode a scalar region to its physical value, per TunerStudio's
+/// documented formula: `userValue = (msValue + translate) * scale`. NOT
+/// `raw * scale + translate` — the two agree only when `translate == 0`
+/// or `scale == 1` (see `tests/scaling.rs`).
 pub(crate) fn decode_scalar(
     region: &[u8],
     ty: ScalarType,
@@ -186,7 +203,7 @@ pub(crate) fn decode_scalar(
     scale: f64,
     translate: f64,
 ) -> Value {
-    Value::Scalar(read_raw(region, ty, endian) * scale + translate)
+    Value::Scalar((read_raw(region, ty, endian) + translate) * scale)
 }
 
 /// Decode an array region element-wise (row-major) to physical values.
@@ -201,7 +218,7 @@ pub(crate) fn decode_array(
     Value::Array(
         region
             .chunks_exact(w)
-            .map(|chunk| read_raw(chunk, elem, endian) * scale + translate)
+            .map(|chunk| (read_raw(chunk, elem, endian) + translate) * scale)
             .collect(),
     )
 }
@@ -228,7 +245,8 @@ pub(crate) fn decode_text(region: &[u8]) -> Value {
 }
 
 /// Range-check a physical value against the inclusive `[low, high]` bounds
-/// and encode its inverse-scaled raw bytes (`raw = (x - translate) / scale`).
+/// and encode its inverse-scaled raw bytes, per TunerStudio's documented
+/// formula: `msValue = userValue / scale - translate`.
 pub(crate) fn encode_scalar(
     name: &str,
     s: &Scaling,
@@ -240,10 +258,14 @@ pub(crate) fn encode_scalar(
         name: name.to_string(),
         value: x,
     };
-    if !x.is_finite() || x < s.low || x > s.high {
+    // Normalize an inverted low/high declaration (real MS3 typo fallout:
+    // `psInitValue` shifts to low=1, high=0) — the declared ORDER must not
+    // reject every value.
+    let (low, high) = (s.low.min(s.high), s.low.max(s.high));
+    if !x.is_finite() || x < low || x > high {
         return Err(out_of_range());
     }
-    encode_raw((x - s.translate) / s.scale, ty, endian).ok_or_else(out_of_range)
+    encode_raw(x / s.scale - s.translate, ty, endian).ok_or_else(out_of_range)
 }
 
 /// Encode an array element-wise; the element count must match `shape`

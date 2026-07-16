@@ -14,7 +14,7 @@
 /// which is the shape `specta` generates for the TS union.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum Value {
-    /// A single physical scalar (already `raw * scale + translate`).
+    /// A single physical scalar (already `(raw + translate) * scale`).
     Scalar(f64),
     /// A physical array/table of scalars, row-major.
     Array(Vec<f64>),
