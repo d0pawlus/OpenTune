@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Diagnostic: open an INI + .msq the way `open_tune` does and report what
-//! failed to apply. Usage: cargo run -p opentune-project --example msq_dump -- <ini> <msq>
+//! failed to apply.
+//! Usage: cargo run -p opentune-project --example msq_dump -- <ini> <msq> [SYMBOL,SYMBOL,...]
+//!
+//! The optional symbol list seeds the preprocessor's `#if` gates — pass the
+//! project's `project.properties` → `ecuSettings` values to reproduce what
+//! the app resolves (it reads them from the sibling file automatically).
 
 use std::sync::Arc;
 
@@ -11,11 +16,27 @@ fn read_text(path: &str) -> String {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let ini_path = args.next().expect("usage: msq_dump <ini> <msq>");
-    let msq_path = args.next().expect("usage: msq_dump <ini> <msq>");
+    let ini_path = args
+        .next()
+        .expect("usage: msq_dump <ini> <msq> [SYMBOL,...]");
+    let msq_path = args
+        .next()
+        .expect("usage: msq_dump <ini> <msq> [SYMBOL,...]");
+    let symbols: std::collections::HashSet<String> = args
+        .next()
+        .map(|list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
 
     let ini_text = read_text(&ini_path);
-    let def = Arc::new(opentune_ini::parse_definition(&ini_text).expect("parse ini"));
+    let def = Arc::new(
+        opentune_ini::parse_definition_with_symbols(&ini_text, &symbols).expect("parse ini"),
+    );
     let mut tune = opentune_model::Tune::new(Arc::clone(&def));
 
     let xml = read_text(&msq_path);

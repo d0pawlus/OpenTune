@@ -110,6 +110,7 @@ pub fn tune(constants: Vec<ConstantDef>) -> Tune {
         pages,
         constants,
         pc_variables: vec![],
+        pc_defaults: vec![],
         menus: vec![],
         dialogs: vec![],
         tables: vec![],

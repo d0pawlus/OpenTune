@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use opentune_ini::{ConstantDef, ConstantKind, Definition, Number};
+use opentune_ini::{ConstantDef, ConstantKind, Definition, Number, OutputChannelDef};
 
 use crate::codec;
 use crate::edit::Edit;
@@ -110,7 +110,7 @@ impl Tune {
 
     /// Read and decode a constant's current value by name.
     ///
-    /// Scalars and arrays return physical values (`raw * scale + translate`);
+    /// Scalars and arrays return physical values (`(raw + translate) * scale`);
     /// bits return the selected option index; text returns the bytes up to
     /// the first NUL, lossily decoded as UTF-8.
     pub fn get(&self, name: &str) -> Result<Value, ModelError> {
@@ -440,19 +440,126 @@ impl Tune {
         match number {
             Number::Lit(value) => Ok(*value),
             Number::Expr(expr) => {
-                // `opentune_ini::eval` is the sandboxed INI expression
-                // evaluator (closed arithmetic grammar, no code execution,
-                // no I/O — see `ini/src/expr.rs`), not a general eval.
+                // `opentune_ini::eval_with_functions` is the sandboxed INI
+                // expression evaluator (closed arithmetic grammar, no code
+                // execution, no I/O — see `ini/src/expr.rs`), not a general
+                // eval.
                 let lookup = |var: &str| self.lookup_expr_var(var);
-                opentune_ini::eval(expr, &lookup).map_err(|err| {
+                let funcs = |name: &str, args: &[f64]| self.channel_function(name, args);
+                opentune_ini::eval_with_functions(expr, &lookup, &funcs).map_err(|err| {
                     ModelError::UnresolvedExpr(format!("`{owner}`: `{{ {expr} }}`: {err}"))
                 })
             }
         }
     }
 
-    /// Expression-variable lookup: a constant name resolves to its current
-    /// physical value.
+    /// Expression-variable lookup, in the order TunerStudio resolves names:
+    /// page-backed constant → `[PcVariables]` entry (via its
+    /// `[ConstantsExtensions]` `defaultValue`) → computed `[OutputChannels]`
+    /// entry (evaluated recursively, depth-capped).
+    ///
+    /// The MS3 dialect needs the full chain: `fc_rpm`'s `high = { rpmhigh }`
+    /// reads a pc_variable, and `launchvss_minvss`'s `scale =
+    /// { msToPrefUnitsScale }` reads a computed channel that itself reads
+    /// the `prefSpeedUnits` pc_variable.
+    fn lookup_expr_var(&self, var: &str) -> Option<f64> {
+        /// Real MS3 chains are 2 deep (`{clthighlim}` → `clt_exp`); the cap
+        /// turns a self-referential computed channel into `UnresolvedExpr`
+        /// instead of unbounded recursion.
+        const MAX_EXPR_LOOKUP_DEPTH: u8 = 4;
+        self.lookup_expr_var_depth(var, MAX_EXPR_LOOKUP_DEPTH)
+    }
+
+    fn lookup_expr_var_depth(&self, var: &str, depth: u8) -> Option<f64> {
+        if depth == 0 {
+            return None;
+        }
+        if let Some(c) = self.def.constant(var) {
+            return self.page_backed_value(c);
+        }
+        if let Some(pc) = self.def.pc_variables.iter().find(|c| c.name == var) {
+            return self.pc_variable_value(pc);
+        }
+        if let Some(OutputChannelDef::Computed { expr, .. }) = self.def.output_channel(var) {
+            let lookup = |v: &str| self.lookup_expr_var_depth(v, depth - 1);
+            let funcs = |name: &str, args: &[f64]| self.channel_function(name, args);
+            // `opentune_ini::eval_with_functions` is the sandboxed INI
+            // expression evaluator (closed arithmetic grammar, no code
+            // execution, no I/O — see `ini/src/expr.rs`), not a general eval.
+            return opentune_ini::eval_with_functions(expr, &lookup, &funcs).ok();
+        }
+        None
+    }
+
+    /// TunerStudio's `getChannel*ByOffset(offset)` builtins: metadata of
+    /// the `[OutputChannels]` scalar declared at byte `offset` of the
+    /// realtime block. MS3's generic PWM curves use them so a curve axis
+    /// adopts the scaling of whichever load channel the tuner selected
+    /// (`{ getChannelScaleByOffset(pwm_opt_load_a_offset) }`).
+    ///
+    /// ponytail: Min/Max approximate as the channel's encodable physical
+    /// range (storage limits through its scale/translate) and Digits as 0 —
+    /// the och grammar carries no such metadata, and this never clips a
+    /// value the channel could actually represent. Revisit if a real INI
+    /// pins tighter semantics.
+    fn channel_function(&self, name: &str, args: &[f64]) -> Option<f64> {
+        let &[offset] = args else { return None };
+        if offset < 0.0 || offset.fract() != 0.0 {
+            return None;
+        }
+        let (kind, scale, translate) = self.def.output_channels.iter().find_map(|ch| match ch {
+            OutputChannelDef::Scalar {
+                offset: o,
+                kind,
+                scale,
+                translate,
+                ..
+            } if *o == offset as usize => Some((*kind, *scale, *translate)),
+            _ => None,
+        })?;
+        let (raw_min, raw_max) = codec::raw_range(kind);
+        let (a, b) = ((raw_min + translate) * scale, (raw_max + translate) * scale);
+        match name {
+            "getChannelScaleByOffset" => Some(scale),
+            "getChannelTranslateByOffset" => Some(translate),
+            "getChannelMinByOffset" => Some(a.min(b)),
+            "getChannelMaxByOffset" => Some(a.max(b)),
+            "getChannelDigitsByOffset" => Some(0.0),
+            _ => None,
+        }
+    }
+
+    /// A pc_variable's value: its `[ConstantsExtensions]` `defaultValue`,
+    /// or 0 when none is declared (TunerStudio initializes pc_variables to
+    /// zero / the first option). Bits defaults are stored as the option
+    /// *label* (`defaultValue = clt_exp, "Expanded"`); a numeric index is
+    /// accepted as fallback. Array/text pc_variables have no numeric value.
+    ///
+    /// Loading per-project overrides (`pcVariableValues.msq`) is a known
+    /// follow-up; defaults match the shipped example projects.
+    fn pc_variable_value(&self, pc: &ConstantDef) -> Option<f64> {
+        let default = self
+            .def
+            .pc_defaults
+            .iter()
+            .find(|(name, _)| name == &pc.name)
+            .map(|(_, value)| value.as_str());
+        match &pc.kind {
+            ConstantKind::Scalar(_) => default.map_or(Some(0.0), |v| v.trim().parse::<f64>().ok()),
+            ConstantKind::Bits { options, .. } => {
+                let Some(text) = default else {
+                    return Some(0.0);
+                };
+                if let Some(idx) = options.iter().position(|o| o == text) {
+                    return Some(idx as f64);
+                }
+                text.trim().parse::<f64>().ok()
+            }
+            _ => None,
+        }
+    }
+
+    /// A page-backed constant's current physical value.
     ///
     /// Deliberately **Lit-only**: a referenced scalar whose own
     /// `scale`/`translate` is an `Expr` resolves to `None` instead of
@@ -460,10 +567,9 @@ impl Tune {
     /// level, which real INIs satisfy (e.g. `{ 0.1 / stoich }` where
     /// `stoich` is plain-scaled); anything deeper surfaces as
     /// `UnresolvedExpr` rather than risking unbounded recursion. `Bits`
-    /// constants resolve to their selected index; arrays, text, and PC
-    /// variables do not resolve.
-    fn lookup_expr_var(&self, var: &str) -> Option<f64> {
-        let c = self.def.constant(var)?;
+    /// constants resolve to their selected index; arrays and text do not
+    /// resolve.
+    fn page_backed_value(&self, c: &ConstantDef) -> Option<f64> {
         let index = self.def.pages.iter().position(|p| p.number == c.page)?;
         let page = &self.pages[index];
         let endian = self.def.comms.endianness;

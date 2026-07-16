@@ -316,14 +316,12 @@ fn pc_variables_support_array_bits_and_string_classes_not_just_scalar() {
             assert_eq!(*storage, ScalarType::U08);
             assert_eq!(*bit_lo, 0);
             assert_eq!(*bit_hi, 3);
-            assert_eq!(
-                options,
-                &vec![
-                    "CAN ID 0".to_string(),
-                    "CAN ID 1".to_string(),
-                    "INVALID".to_string(),
-                ]
-            );
+            // The fixture supplies 3 labels for a 16-capacity field; the
+            // tail is synthesized by position (MegaTune convention — see
+            // `partial_bit_option_list_synthesizes_the_missing_tail`).
+            assert_eq!(options.len(), 16);
+            assert_eq!(options[..3], ["CAN ID 0", "CAN ID 1", "INVALID"]);
+            assert_eq!(options[3], "3");
         }
         other => panic!("expected Bits, got {other:?}"),
     }
@@ -871,4 +869,108 @@ fn keyed_bits_option_list_length_is_capped() {
         options.len()
     );
     assert_eq!(options[0], "A");
+}
+
+#[test]
+fn constants_extensions_default_values_land_in_pc_defaults() {
+    // MS3-era INIs give `[PcVariables]` their values via
+    // `[ConstantsExtensions]` `defaultValue = name, value` lines. Bounds
+    // expressions (`{ rpmhigh }`) resolve against these, so dropping them
+    // fails 234 constant applies on the real MS3 example project.
+    let ini = "\
+[MegaTune]
+   signature            = \"test ECU\"
+   queryCommand         = \"Q\"
+   versionInfo          = \"S\"
+   ochGetCommand        = \"r\"
+   pageReadCommand      = \"p\"
+   pageValueWrite       = \"w\"
+   burnCommand          = \"b\"
+   blockingFactor       = 121
+   blockReadTimeout     = 1000
+
+[PcVariables]
+   rpmhigh = scalar, U16, \"rpm\", 1, 0, 0, 30000, 0
+   wue_lpg = bits, U08, [0:0], \"No\", \"Yes\"
+
+[Constants]
+    pageSize = 4
+page = 1
+      knownScalar = scalar, U08, 0, \"units\", 1.0, 0.0, 0.0, 255, 0
+
+[ConstantsExtensions]
+    defaultValue = rpmhigh, 9000
+    defaultValue = wue_lpg, \"No\"
+    requiresPowerCycle = knownScalar
+";
+    let def = parse_definition(ini).expect("must parse");
+    let default = |name: &str| {
+        def.pc_defaults
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+    };
+    assert_eq!(default("rpmhigh"), Some("9000"));
+    assert_eq!(default("wue_lpg"), Some("No"), "labels arrive unquoted");
+    assert_eq!(
+        default("knownScalar"),
+        None,
+        "other extension kinds ignored"
+    );
+}
+
+#[test]
+fn missing_comma_between_numeric_fields_takes_the_first_token() {
+    // Real MS3 typo (`psInitValue = array, U08, 204, [51], "", 1, 0       0,
+    // 1, 0, noSizeMutation` — missing comma after translate). TunerStudio
+    // tolerates it; the whitespace-joined `0       0` must parse as 0, not
+    // become an unevaluable expression that fails the constant's apply.
+    let ini =
+        constants_ini("psInitValue = array ,  U08,    0,    [   4], \"\",  1, 0       0,     1, 0");
+    let def = parse_definition(&ini).expect("must parse");
+    let c = def.constant("psInitValue").expect("psInitValue");
+    assert_eq!(c.translate, Number::Lit(0.0));
+    assert_eq!(c.low, Number::Lit(1.0));
+}
+
+#[test]
+fn partial_bit_option_list_synthesizes_the_missing_tail() {
+    // MSII: `nCylinders = bits, U08, 0, [0:3], "INVALID"` — one label for
+    // raw 0, the rest synthesized by position ("1".."15"). TunerStudio's
+    // own .msq for this project stores the label "8" for an 8-cylinder
+    // engine, which only resolves if the tail exists.
+    let ini = constants_ini("nCylinders = bits, U08, 0, [0:3], \"INVALID\"");
+    let def = parse_definition(&ini).expect("must parse");
+    let c = def.constant("nCylinders").expect("nCylinders");
+    let ConstantKind::Bits { options, .. } = &c.kind else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!(options.len(), 16);
+    assert_eq!(options[0], "INVALID");
+    assert_eq!(options[8], "8");
+    assert_eq!(options[15], "15");
+}
+
+#[test]
+fn offset_glued_to_bit_range_splits_at_the_bracket() {
+    // MS1/Extra typo TunerStudio tolerates: `TwoLambda = bits, U08,
+    // 188[0:0], "None*^(DT)", "Fitted (DT only)"` — missing comma between
+    // the offset and the bit range. Must not hard-fail the whole parse.
+    let ini = constants_ini("TwoLambda = bits, U08, 0[0:0], \"None*^(DT)\", \"Fitted (DT only)\"");
+    let def = parse_definition(&ini).expect("must parse");
+    let c = def.constant("TwoLambda").expect("TwoLambda");
+    let ConstantKind::Bits {
+        bit_lo,
+        bit_hi,
+        options,
+        ..
+    } = &c.kind
+    else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!((*bit_lo, *bit_hi), (0, 0));
+    assert_eq!(
+        options[..2],
+        ["None*^(DT)".to_string(), "Fitted (DT only)".to_string()]
+    );
 }

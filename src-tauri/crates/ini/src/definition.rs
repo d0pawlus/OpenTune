@@ -45,6 +45,10 @@ pub struct Definition {
     /// PC-side (host-only) variables — same shape as `constants` but never
     /// stored in ECU memory.
     pub pc_variables: Vec<ConstantDef>,
+    /// `[ConstantsExtensions]` `defaultValue = name, value` pairs — the
+    /// starting values of [`Self::pc_variables`] (labels unquoted). MS3-era
+    /// bounds/scale expressions (`{ rpmhigh }`) resolve against these.
+    pub pc_defaults: Vec<(String, String)>,
     /// Top-level menus for the stock UI.
     pub menus: Vec<MenuDef>,
     /// Dialogs referenced by menu items and panels.
@@ -157,6 +161,7 @@ pub fn parse_definition_with_symbols(
         pages: parsed.pages,
         constants: parsed.constants,
         pc_variables: parsed.pc_variables,
+        pc_defaults: parsed.pc_defaults,
         menus: ui.menus,
         dialogs: ui.dialogs,
         tables: ui.tables,

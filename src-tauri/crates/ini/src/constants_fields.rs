@@ -116,14 +116,24 @@ pub(crate) fn unquote(s: &str) -> String {
 /// Parse a number-or-expression field: `{ expr }` becomes
 /// [`Number::Expr`] with braces stripped and whitespace trimmed; anything
 /// else is parsed as a literal float.
+///
+/// Missing-comma tolerance: a bare field of several whitespace-separated
+/// tokens that are ALL numeric (real MS3 typo — `psInitValue`'s
+/// `..., 1, 0       0, ...`) takes the first token, matching TunerStudio's
+/// leniency. A genuine expression (`0.1 / stoich`) has non-numeric tokens
+/// and still lands in `Number::Expr`.
 pub(crate) fn parse_number(field: &str) -> Number {
     let trimmed = field.trim();
     if let Some(inner) = trimmed.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
         return Number::Expr(inner.trim().to_string());
     }
-    match trimmed.parse::<f64>() {
-        Ok(n) => Number::Lit(n),
-        Err(_) => Number::Expr(trimmed.to_string()),
+    if let Ok(n) = trimmed.parse::<f64>() {
+        return Number::Lit(n);
+    }
+    let mut tokens = trimmed.split_whitespace().map(|t| t.parse::<f64>());
+    match tokens.next() {
+        Some(Ok(first)) if tokens.all(|t| t.is_ok()) => Number::Lit(first),
+        _ => Number::Expr(trimmed.to_string()),
     }
 }
 
@@ -237,39 +247,37 @@ pub(crate) fn parse_bit_options(
             Some((key.trim().parse::<usize>().ok()?, unquote(label)))
         })
         .collect();
-    let options: Vec<String> = match keyed {
-        Some(pairs) if !pairs.is_empty() => {
-            let capacity =
-                (1usize << u32::from(bit_hi - bit_lo + 1).min(16)).min(MAX_KEYED_OPTIONS);
-            let len = pairs
-                .iter()
-                .map(|(i, _)| i + 1)
-                .filter(|&n| n <= capacity)
-                .max()
-                .unwrap_or(0);
-            let mut options = vec!["INVALID".to_string(); len];
-            for (i, label) in pairs {
-                if i < len {
-                    options[i] = label;
-                }
+    if let Some(pairs) = keyed.filter(|p| !p.is_empty()) {
+        let capacity = (1usize << u32::from(bit_hi - bit_lo + 1).min(16)).min(MAX_KEYED_OPTIONS);
+        let len = pairs
+            .iter()
+            .map(|(i, _)| i + 1)
+            .filter(|&n| n <= capacity)
+            .max()
+            .unwrap_or(0);
+        let mut options = vec!["INVALID".to_string(); len];
+        for (i, label) in pairs {
+            if i < len {
+                options[i] = label;
             }
-            options
         }
-        _ => raw.iter().map(|s| unquote(s)).collect(),
-    };
-    if !options.is_empty() {
         return options;
     }
-    // MegaTune-era fields may carry NO labels at all (`nCylinders = bits,
-    // U08, 116, [4:7+1]`); MegaTune synthesizes them by adding the display
-    // offset to the raw value (raw 0 → "1", raw 15 → "16").
+    // MegaTune-era positional lists may be PARTIAL — or absent entirely
+    // (`nCylinders = bits, U08, 116, [4:7+1]`; MSII's `nCylinders = bits,
+    // U08, 0, [0:3], "INVALID"`). MegaTune synthesizes the missing tail
+    // positions from the display offset (raw i → `display_offset + i`),
+    // which is exactly what TunerStudio's own `.msq` files store (an
+    // 8-cylinder MSII tune carries the label "8").
+    let mut options: Vec<String> = raw.iter().map(|s| unquote(s)).collect();
     let width = u32::from(bit_hi - bit_lo + 1);
     if width > MAX_SYNTHESIZED_BITS {
         return options;
     }
-    (0..1u32 << width)
-        .map(|i| (display_offset + i).to_string())
-        .collect()
+    for i in options.len()..1usize << width {
+        options.push((display_offset + i as u32).to_string());
+    }
+    options
 }
 
 /// Resolve an offset field: either a literal integer, or the `lastOffset`
@@ -647,21 +655,36 @@ fn parse_bits(
         .get(1)
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised bits storage type"))?;
-    let offset = match fields
-        .get(2)
-        .and_then(|s| resolve_offset(s, running_offset))
-    {
+    // Missing-comma tolerance (real MS1/Extra typo TunerStudio accepts:
+    // `TwoLambda = bits, U08, 188[0:0], ...`): an offset field glued to
+    // its bit range splits at `[`, and the option list starts one field
+    // earlier.
+    let (offset_field, range_field, options_from) = match fields.get(2) {
+        Some(f) if f.contains('[') => {
+            let bracket = f.find('[').expect("checked contains");
+            (
+                f[..bracket].trim().to_string(),
+                f[bracket..].trim().to_string(),
+                3usize,
+            )
+        }
+        Some(f) => (
+            f.clone(),
+            fields.get(3).cloned().unwrap_or_default(),
+            4usize,
+        ),
+        None => return Err(invalid(name, "unparseable offset")),
+    };
+    let offset = match resolve_offset(&offset_field, running_offset) {
         Some(OffsetResolution::Value(v)) => v,
         Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
         None => return Err(invalid(name, "unparseable offset")),
     };
-    let (bit_lo, bit_hi, display_offset) = fields
-        .get(3)
-        .and_then(|s| parse_bit_range(s))
-        .ok_or_else(|| invalid(name, "unparseable bit range"))?;
+    let (bit_lo, bit_hi, display_offset) =
+        parse_bit_range(&range_field).ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let (bit_lo, bit_hi) = clamp_bit_range(bit_lo, bit_hi, storage);
     let options = parse_bit_options(
-        &fields[4.min(fields.len())..],
+        &fields[options_from.min(fields.len())..],
         bit_lo,
         bit_hi,
         display_offset,

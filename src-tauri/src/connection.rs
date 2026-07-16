@@ -344,6 +344,7 @@ mod tests {
             pages: vec![opentune_ini::PageDef { number: 1, size: 4 }],
             constants: Vec::new(),
             pc_variables: Vec::new(),
+            pc_defaults: Vec::new(),
             menus: Vec::new(),
             dialogs: Vec::new(),
             tables: Vec::new(),

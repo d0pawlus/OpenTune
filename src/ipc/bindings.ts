@@ -667,7 +667,7 @@ export type TuneDirtyEvent = {
  *  which is the shape `specta` generates for the TS union.
  */
 export type Value = 
-/**  A single physical scalar (already `raw * scale + translate`). */
+/**  A single physical scalar (already `(raw + translate) * scale`). */
 ({ Scalar: number | null }) & { Array?: never; Enum?: never; Text?: never } | 
 /**  A physical array/table of scalars, row-major. */
 ({ Array: (number | null)[] }) & { Enum?: never; Scalar?: never; Text?: never } | 

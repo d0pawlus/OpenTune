@@ -43,7 +43,7 @@ mod ve_analyze_parser;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
 pub use definition::{parse_definition, parse_definition_with_symbols, Definition, PageDef};
-pub use expr::{eval, eval_bool, ExprError};
+pub use expr::{eval, eval_bool, eval_with_functions, ExprError};
 pub use gauges::{FrontPageDef, GaugeDef, IndicatorDef};
 pub use output_channels::OutputChannelDef;
 pub use parser::parse_comms;

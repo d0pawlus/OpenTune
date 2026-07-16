@@ -48,6 +48,7 @@ fn definition_with_pages(pages: Vec<PageDef>) -> Definition {
         pages,
         constants: Vec::new(),
         pc_variables: Vec::new(),
+        pc_defaults: Vec::new(),
         menus: Vec::new(),
         dialogs: Vec::new(),
         tables: Vec::new(),
