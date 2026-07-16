@@ -170,3 +170,50 @@ fn raw_real_ini_resolves_scattered_keys_from_live_if_branches() {
         "raw-text entry point must match parse_definition's preprocessed value"
     );
 }
+
+#[test]
+fn megatune_era_ini_defaults_the_keys_that_dialect_never_had() {
+    // MegaTune-era MS1 INIs (B&G 3.0 `mainController.ini`) predate
+    // `versionInfo`, `blockingFactor` and `blockReadTimeout` entirely:
+    // `[MegaTune]` holds only MTversion/queryCommand/signature (signature is
+    // an unquoted number — the firmware answers `Q` with a single byte), and
+    // the page commands sit scattered in `[Constants]`.
+    let ini = r#"
+[MegaTune]
+   MTversion      = 2.25 ; MegaTune itself; needs to match exec version.
+   queryCommand   = "Q"  ; B&G embedded code version 2.0/2.98x/3.00
+   signature      = 20   ; Versions above return a single byte, 20T.
+
+[Constants]
+   endianness          = big
+   nPages              = 1
+   burnCommand         = "B"
+   pageActivationDelay =  10
+   pageReadCommand     = "V"
+   pageValueWrite      = "W%o%v"
+   page = 1
+      pageSize   = 125
+      veTable    = array,  U08,       0, [8x8], "%",          1.0,      0.0,   0.0,   255.0,      0
+
+[OutputChannels]
+   ochGetCommand    = "A"
+   ochBlockSize     =  22
+"#;
+    let c = parse_comms(ini).expect("MegaTune-era INI must parse");
+    assert_eq!(c.signature, "20");
+    assert_eq!(c.query_command, "Q");
+    // No version command exists in this dialect — the signature query
+    // doubles as the version query.
+    assert_eq!(c.version_info, "Q");
+    assert_eq!(c.blocking_factor, 256, "TunerStudio's default when absent");
+    assert_eq!(
+        c.block_read_timeout_ms, 2000,
+        "docstring default when absent"
+    );
+    assert_eq!(c.burn_command, "B");
+    assert_eq!(c.page_read_command, "V");
+    assert_eq!(c.page_value_write, "W%o%v");
+    assert_eq!(c.och_get_command, "A");
+    assert_eq!(c.och_block_size, 22);
+    assert_eq!(c.endianness, Endianness::Big);
+}

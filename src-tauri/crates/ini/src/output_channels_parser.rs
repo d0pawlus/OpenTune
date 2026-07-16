@@ -160,7 +160,9 @@ fn parse_scalar(name: &str, fields: &[String]) -> Option<OutputChannelDef> {
 fn parse_bits(name: &str, fields: &[String]) -> Option<OutputChannelDef> {
     let storage = fields.get(1).and_then(|s| parse_scalar_type(s))?;
     let offset = fields.get(2)?.trim().parse::<usize>().ok()?;
-    let (bit_lo, bit_hi) = fields.get(3).and_then(|s| parse_bit_range(s))?;
+    // Output channels have no labels, so a MegaTune `+N` display offset
+    // (third tuple element) has nothing to apply to — drop it.
+    let (bit_lo, bit_hi, _) = fields.get(3).and_then(|s| parse_bit_range(s))?;
 
     Some(OutputChannelDef::Bits {
         name: name.to_string(),

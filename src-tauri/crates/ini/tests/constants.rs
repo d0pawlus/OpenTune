@@ -754,6 +754,69 @@ fn keyed_bits_options_build_positional_list_with_invalid_gaps() {
 }
 
 #[test]
+fn parse_definition_with_symbols_activates_gated_branches() {
+    // TunerStudio persists the active `#if` symbol set per-project
+    // (`project.properties` → `ecuSettings=...|...`), not in the INI. MS1's
+    // `tpsBins`/`mapBins` live behind `#elif ALPHA_N`/`#if SPEED_DENSITY`,
+    // so parsing with an empty set loses BOTH and the VE table's yBins
+    // dangles.
+    let body = "#if ALPHA_N\n\
+                tpsBins = array, U08, 0, [4], \"TPS\", 1.0, 0.0, 0.0, 255.0, 0\n\
+                #endif";
+    let ini = constants_ini(body);
+
+    let without = parse_definition(&ini).expect("parses without symbols");
+    assert!(
+        without.constant("tpsBins").is_none(),
+        "empty symbol set must not activate the ALPHA_N branch"
+    );
+
+    let symbols: std::collections::HashSet<String> = ["ALPHA_N".to_string()].into();
+    let with =
+        opentune_ini::parse_definition_with_symbols(&ini, &symbols).expect("parses with symbols");
+    assert!(
+        with.constant("tpsBins").is_some(),
+        "ALPHA_N symbol must activate the gated constant"
+    );
+}
+
+#[test]
+fn megatune_display_offset_bit_range_parses_and_synthesizes_labels() {
+    // MegaTune-era MS1 INIs write `nCylinders = bits, U08, 116, [4:7+1]` —
+    // bits 4..7 with a `+1` display offset and NO labels. MegaTune
+    // synthesizes the labels from the offset (raw 0 → "1", raw 15 → "16"),
+    // which is how a raw value of 3 renders as "4" cylinders.
+    let ini = constants_ini("nCylinders = bits, U08, 0, [4:7+1]");
+    let def = parse_definition(&ini).expect("display-offset bit range should parse");
+    let c = def.constant("nCylinders").expect("nCylinders");
+    let ConstantKind::Bits {
+        bit_lo,
+        bit_hi,
+        options,
+        ..
+    } = &c.kind
+    else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!((*bit_lo, *bit_hi), (4, 7));
+    assert_eq!(options.len(), 16);
+    assert_eq!(options[0], "1");
+    assert_eq!(options[15], "16");
+}
+
+#[test]
+fn labelless_bit_range_without_offset_synthesizes_zero_based_labels() {
+    // Same synthesis rule with no `+N` suffix: labels start at the raw value.
+    let ini = constants_ini("spare = bits, U08, 0, [0:0]");
+    let def = parse_definition(&ini).expect("labelless bit range should parse");
+    let c = def.constant("spare").expect("spare");
+    let ConstantKind::Bits { options, .. } = &c.kind else {
+        panic!("expected bits kind, got {:?}", c.kind);
+    };
+    assert_eq!(options, &["0", "1"]);
+}
+
+#[test]
 fn bit_range_wider_than_storage_clamps_to_storage_width() {
     // Real rusEFI INIs declare e.g. `bits, U08, ..., [0:11]` — a 12-bit
     // range on 8-bit storage. TunerStudio tolerates it; the range must clamp

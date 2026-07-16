@@ -173,10 +173,23 @@ fn parse_shape(s: &str) -> Option<Shape> {
 /// Parse the `[lo:hi]` bit-range syntax (both bounds inclusive), per the
 /// real Speeduino data verified against `mapSample`/`nCylinders` (a
 /// 2-value field spans `[0:1]`; a 16-value field spans `[4:7]`).
-pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8)> {
+///
+/// MegaTune-era MS1 INIs add a display-offset suffix on the high bound —
+/// `[4:7+1]` (`nCylinders`) means "bits 4..7, add 1 to the raw value for
+/// display" (raw 3 renders as "4" cylinders). Returns
+/// `(lo, hi, display_offset)`; the offset is `0` when no suffix is present.
+pub(crate) fn parse_bit_range(s: &str) -> Option<(u8, u8, u32)> {
     let inner = s.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
     let (lo, hi) = inner.split_once(':')?;
-    Some((lo.trim().parse().ok()?, hi.trim().parse().ok()?))
+    let (hi, display_offset) = match hi.split_once('+') {
+        Some((bound, off)) => (bound, off.trim().parse().ok()?),
+        None => (hi, 0),
+    };
+    Some((
+        lo.trim().parse().ok()?,
+        hi.trim().parse().ok()?,
+        display_offset,
+    ))
 }
 
 /// Clamp a declared bit range to what the storage type can actually hold,
@@ -205,9 +218,18 @@ pub(crate) fn clamp_bit_range(bit_lo: u8, bit_hi: u8, storage: ScalarType) -> (u
 ///   [`MAX_KEYED_OPTIONS`] — are dropped: they are unreachable (or absurd)
 ///   values, and honoring them would let a corrupt INI balloon one
 ///   constant into tens of thousands of filler strings.
-pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<String> {
+pub(crate) fn parse_bit_options(
+    raw: &[String],
+    bit_lo: u8,
+    bit_hi: u8,
+    display_offset: u32,
+) -> Vec<String> {
     /// Far above any real TunerStudio enum (rusEFI's engineType peaks ~105).
     const MAX_KEYED_OPTIONS: usize = 1024;
+    /// Synthesized label lists stay small: no real label-less field is wider
+    /// than MS1's 4-bit `nCylinders`, and a corrupt `[0:31]` must not
+    /// balloon into 2^32 strings.
+    const MAX_SYNTHESIZED_BITS: u32 = 8;
     let keyed: Option<Vec<(usize, String)>> = raw
         .iter()
         .map(|field| {
@@ -215,7 +237,7 @@ pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<S
             Some((key.trim().parse::<usize>().ok()?, unquote(label)))
         })
         .collect();
-    match keyed {
+    let options: Vec<String> = match keyed {
         Some(pairs) if !pairs.is_empty() => {
             let capacity =
                 (1usize << u32::from(bit_hi - bit_lo + 1).min(16)).min(MAX_KEYED_OPTIONS);
@@ -234,7 +256,20 @@ pub(crate) fn parse_bit_options(raw: &[String], bit_lo: u8, bit_hi: u8) -> Vec<S
             options
         }
         _ => raw.iter().map(|s| unquote(s)).collect(),
+    };
+    if !options.is_empty() {
+        return options;
     }
+    // MegaTune-era fields may carry NO labels at all (`nCylinders = bits,
+    // U08, 116, [4:7+1]`); MegaTune synthesizes them by adding the display
+    // offset to the raw value (raw 0 → "1", raw 15 → "16").
+    let width = u32::from(bit_hi - bit_lo + 1);
+    if width > MAX_SYNTHESIZED_BITS {
+        return options;
+    }
+    (0..1u32 << width)
+        .map(|i| (display_offset + i).to_string())
+        .collect()
 }
 
 /// Resolve an offset field: either a literal integer, or the `lastOffset`
@@ -479,12 +514,17 @@ fn parse_bits_no_offset(name: &str, fields: &[String]) -> crate::Result<Constant
         .get(1)
         .and_then(|s| parse_scalar_type(s))
         .ok_or_else(|| invalid(name, "unrecognised bits storage type"))?;
-    let (bit_lo, bit_hi) = fields
+    let (bit_lo, bit_hi, display_offset) = fields
         .get(2)
         .and_then(|s| parse_bit_range(s))
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let (bit_lo, bit_hi) = clamp_bit_range(bit_lo, bit_hi, storage);
-    let options = parse_bit_options(&fields[3.min(fields.len())..], bit_lo, bit_hi);
+    let options = parse_bit_options(
+        &fields[3.min(fields.len())..],
+        bit_lo,
+        bit_hi,
+        display_offset,
+    );
 
     Ok(ConstantDef {
         name: name.to_string(),
@@ -615,12 +655,17 @@ fn parse_bits(
         Some(OffsetResolution::Poisoned) => return Ok(FieldOutcome::PoisonedOffset),
         None => return Err(invalid(name, "unparseable offset")),
     };
-    let (bit_lo, bit_hi) = fields
+    let (bit_lo, bit_hi, display_offset) = fields
         .get(3)
         .and_then(|s| parse_bit_range(s))
         .ok_or_else(|| invalid(name, "unparseable bit range"))?;
     let (bit_lo, bit_hi) = clamp_bit_range(bit_lo, bit_hi, storage);
-    let options = parse_bit_options(&fields[4.min(fields.len())..], bit_lo, bit_hi);
+    let options = parse_bit_options(
+        &fields[4.min(fields.len())..],
+        bit_lo,
+        bit_hi,
+        display_offset,
+    );
 
     *running_offset = OffsetCounter::Known(offset);
 

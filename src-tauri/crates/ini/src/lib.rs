@@ -42,7 +42,7 @@ mod ve_analyze;
 mod ve_analyze_parser;
 
 pub use constants::{ConstantDef, ConstantKind, Number, ScalarType, Shape};
-pub use definition::{parse_definition, Definition, PageDef};
+pub use definition::{parse_definition, parse_definition_with_symbols, Definition, PageDef};
 pub use expr::{eval, eval_bool, ExprError};
 pub use gauges::{FrontPageDef, GaugeDef, IndicatorDef};
 pub use output_channels::OutputChannelDef;
@@ -100,6 +100,7 @@ pub struct CommsSettings {
     /// `queryCommand` — the signature/query command character (e.g. `"Q"`).
     pub query_command: String,
     /// `versionInfo` — the human-readable version query command (e.g. `"S"`).
+    /// MegaTune-era INIs omit it; it then defaults to [`Self::query_command`].
     pub version_info: String,
     /// `ochGetCommand` — the output-channel (realtime) get command. Used by
     /// `realtime` in M3 but parsed in M1 so the contract is complete.
@@ -111,11 +112,13 @@ pub struct CommsSettings {
     /// `burnCommand` — template to persist RAM→flash (e.g. `"b%2i"`).
     pub burn_command: String,
     /// `blockingFactor` — max payload bytes per block (e.g. 121 or 251).
+    /// Defaults to 256 (TunerStudio's default) when the INI omits it.
     pub blocking_factor: u32,
     /// `pageActivationDelay` — ms to wait after selecting a page (e.g. 10).
     pub page_activation_delay_ms: u32,
     /// `blockReadTimeout` — ms to wait for a block response (e.g. 2000). Seeds
     /// the transport [`read_timeout`](../opentune_transport/struct.SerialConfig.html).
+    /// Defaults to 2000 when the INI omits it.
     pub block_read_timeout_ms: u32,
     /// `interWriteDelay` — ms between consecutive writes (e.g. 10).
     pub inter_write_delay_ms: u32,

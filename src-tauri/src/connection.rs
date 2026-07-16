@@ -166,7 +166,36 @@ pub fn load_comms_from_str(ini: &str) -> Result<CommsSettings, String> {
 pub fn load_definition_from_path(path: &str) -> Result<Definition, String> {
     let expanded = expand_tilde(path);
     let text = read_text(&expanded).map_err(|e| format!("cannot read INI `{expanded}`: {e}"))?;
-    parse_definition(&text).map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
+    let symbols = project_symbols(&expanded);
+    opentune_ini::parse_definition_with_symbols(&text, &symbols)
+        .map_err(|e| format!("cannot parse INI `{expanded}`: {e}"))
+}
+
+/// Read the active `#if` symbol set for an INI from a sibling
+/// `project.properties`, if one exists.
+///
+/// TunerStudio persists the project's chosen INI settings there
+/// (`ecuSettings=NARROW_BAND_EGO|SPEED_DENSITY|`), NOT in the INI itself —
+/// MS1's `mapBins`/`tpsBins` are unreachable without them. A lone INI
+/// (no properties file) parses with the empty set, exactly as before.
+fn project_symbols(ini_path: &str) -> std::collections::HashSet<String> {
+    let props = match std::path::Path::new(ini_path).parent() {
+        Some(dir) => dir.join("project.properties"),
+        None => return Default::default(),
+    };
+    let Some(text) = props.to_str().and_then(|p| read_text(p).ok()) else {
+        return Default::default();
+    };
+    text.lines()
+        .find_map(|line| line.strip_prefix("ecuSettings="))
+        .map(|list| {
+            list.split('|')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Parse a full [`Definition`] from an in-memory string (bundled INI).
@@ -397,6 +426,49 @@ mod tests {
         let config = serial_config_from_comms(&comms);
         assert_eq!(config.read_timeout, std::time::Duration::from_millis(3_750));
         assert_eq!(config.write_timeout, SerialConfig::default().write_timeout);
+    }
+
+    #[test]
+    fn load_definition_reads_ecu_settings_symbols_from_sibling_project_properties() {
+        // TunerStudio persists the project's active `#if` symbol set in
+        // `projectCfg/project.properties` (`ecuSettings=A|B|`), next to
+        // `mainController.ini`. Without it MS1's `#if SPEED_DENSITY` mapBins
+        // never exists and the VE table's yBins dangles.
+        let ini = "[MegaTune]\n\
+                   signature = \"test ECU v1.0\"\n\
+                   queryCommand = \"Q\"\n\
+                   versionInfo = \"S\"\n\
+                   ochGetCommand = \"A\"\n\
+                   pageReadCommand = \"r\"\n\
+                   pageValueWrite = \"w\"\n\
+                   burnCommand = \"b\"\n\
+                   blockingFactor = 121\n\
+                   blockReadTimeout = 1000\n\
+                   \n\
+                   [Constants]\n\
+                   pageSize = 4\n\
+                   page = 1\n\
+                   #if SPEED_DENSITY\n\
+                   mapBins = array, U08, 0, [4], \"kPa\", 1.0, 0.0, 0.0, 255.0, 0\n\
+                   #endif\n";
+        let dir = std::env::temp_dir().join(format!("opentune-props-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create temp projectCfg");
+        let ini_path = dir.join("mainController.ini");
+        std::fs::write(&ini_path, ini).expect("write INI");
+        std::fs::write(
+            dir.join("project.properties"),
+            "#Project Attributes.\necuSettings=NARROW_BAND_EGO|SPEED_DENSITY|\n",
+        )
+        .expect("write project.properties");
+
+        let def = load_definition_from_path(ini_path.to_str().expect("utf8 path"))
+            .expect("definition must parse");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(
+            def.constant("mapBins").is_some(),
+            "SPEED_DENSITY from project.properties must activate the gated constant"
+        );
     }
 
     #[test]
