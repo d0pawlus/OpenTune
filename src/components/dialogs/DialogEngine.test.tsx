@@ -1,8 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { DialogEngine } from "./DialogEngine";
+import { useTuneStore } from "../../stores/tune";
+import * as ipc from "../../ipc/bindings";
 import type { ConstantDto, DefinitionDto, Value } from "../../ipc/bindings";
+
+// The embedded table/curve editors (panel = <tableName>) pull bins/cells over
+// IPC on mount; mock the module so embedding tests can run without Tauri.
+vi.mock("../../ipc/bindings", () => ({
+  commands: {
+    getValues: vi.fn(async () => ({ status: "ok", data: [] })),
+    setCells: vi.fn(),
+  },
+  events: {
+    tuneDirtyEvent: { listen: vi.fn(() => Promise.resolve(() => {})) },
+  },
+}));
 
 const reqFuel: ConstantDto = {
   name: "reqFuel",
@@ -77,6 +91,215 @@ const values: Record<string, Value> = {
 };
 
 describe("DialogEngine", () => {
+  beforeEach(() => {
+    useTuneStore.getState().reset();
+    vi.clearAllMocks();
+  });
+
+  it("embeds the table editor when a panel names a table (rusEFI veTableDialog)", async () => {
+    const def = definition();
+    def.tables = [
+      {
+        name: "veTableTbl",
+        map3d_id: "",
+        title: "VE Table",
+        page: 0,
+        x_bins: "veRpmBins",
+        x_channel: "",
+        y_bins: "veLoadBins",
+        y_channel: "",
+        z: "veTable",
+        xy_labels: [],
+        up_down_label: [],
+        help: "",
+      },
+    ];
+    def.constants = [
+      ...def.constants,
+      {
+        name: "veTable",
+        units: "%",
+        digits: 1,
+        low: 0,
+        high: 120,
+        kind: { Array: { rows: 2, cols: 2 } },
+      },
+      {
+        name: "veRpmBins",
+        units: "rpm",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+      {
+        name: "veLoadBins",
+        units: "kPa",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+    ];
+    def.dialogs.push({
+      name: "veTableDialog",
+      title: "",
+      fields: [{ kind: { Panel: "veTableTbl" }, visible: null, enable: null }],
+    });
+    vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [
+        { Array: [1000, 2000] },
+        { Array: [30, 60] },
+        { Array: [50, 51, 52, 53] },
+      ],
+    });
+    render(
+      <DialogEngine
+        definition={def}
+        dialogName="veTableDialog"
+        values={{}}
+        conditions={{}}
+        onEdit={() => {}}
+      />,
+    );
+    // The embedded editor renders its own titled section once values land.
+    expect(
+      await screen.findByRole("region", { name: "VE Table" }),
+    ).toBeTruthy();
+  });
+
+  it("embeds the table editor when a panel names the table's 3-D map id", async () => {
+    // Same resolution rule as menu items (resolveMenuTarget): a panel may
+    // reference the table by map3d_id, not just its editor name.
+    const def = definition();
+    def.tables = [
+      {
+        name: "veTableTbl",
+        map3d_id: "veTableMap",
+        title: "VE Table",
+        page: 0,
+        x_bins: "veRpmBins",
+        x_channel: "",
+        y_bins: "veLoadBins",
+        y_channel: "",
+        z: "veTable",
+        xy_labels: [],
+        up_down_label: [],
+        help: "",
+      },
+    ];
+    def.constants = [
+      ...def.constants,
+      {
+        name: "veTable",
+        units: "%",
+        digits: 1,
+        low: 0,
+        high: 120,
+        kind: { Array: { rows: 2, cols: 2 } },
+      },
+      {
+        name: "veRpmBins",
+        units: "rpm",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+      {
+        name: "veLoadBins",
+        units: "kPa",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+    ];
+    def.dialogs.push({
+      name: "veTableDialog3D",
+      title: "",
+      fields: [{ kind: { Panel: "veTableMap" }, visible: null, enable: null }],
+    });
+    vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [
+        { Array: [1000, 2000] },
+        { Array: [30, 60] },
+        { Array: [50, 51, 52, 53] },
+      ],
+    });
+    render(
+      <DialogEngine
+        definition={def}
+        dialogName="veTableDialog3D"
+        values={{}}
+        conditions={{}}
+        onEdit={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("region", { name: "VE Table" }),
+    ).toBeTruthy();
+  });
+
+  it("embeds the curve editor when a panel names a curve", async () => {
+    const def = definition();
+    def.curves = [
+      {
+        name: "dwellCurve",
+        title: "Dwell Curve",
+        column_labels: [],
+        x_axis: null,
+        y_axis: null,
+        x_bins: "dwellBins",
+        x_channel: "",
+        y_bins: "dwellValues",
+        gauge: "",
+      },
+    ];
+    def.constants = [
+      ...def.constants,
+      {
+        name: "dwellBins",
+        units: "rpm",
+        digits: 0,
+        low: null,
+        high: null,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+      {
+        name: "dwellValues",
+        units: "ms",
+        digits: 1,
+        low: 0,
+        high: 10,
+        kind: { Array: { rows: 1, cols: 2 } },
+      },
+    ];
+    def.dialogs.push({
+      name: "dwellDialog",
+      title: "",
+      fields: [{ kind: { Panel: "dwellCurve" }, visible: null, enable: null }],
+    });
+    vi.mocked(ipc.commands.getValues).mockResolvedValue({
+      status: "ok",
+      data: [{ Array: [1000, 2000] }, { Array: [3.5, 4.0] }],
+    });
+    render(
+      <DialogEngine
+        definition={def}
+        dialogName="dwellDialog"
+        values={{}}
+        conditions={{}}
+        onEdit={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole("region", { name: "Dwell Curve" }),
+    ).toBeTruthy();
+  });
+
   it("renders bound constant fields, labels, and the dialog title", () => {
     render(
       <DialogEngine

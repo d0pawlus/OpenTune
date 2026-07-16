@@ -208,11 +208,12 @@ pub(super) fn build_offline_session(ini_path: &str) -> Result<Session, String> {
 /// clean with an empty undo/redo history, exactly like `load_page`'s
 /// contract. A partial apply (`MsqReport.failed` non-empty) still returns
 /// `Ok` from `load_msq_into` — the tune is re-baselined to whatever landed;
-/// the report (surfaced separately) carries the per-constant failures.
+/// the returned report carries the per-constant outcomes and MUST reach the
+/// user (dropping it silently hid a 1731-constant partial load).
 pub(super) fn build_offline_session_from_msq(
     ini_path: &str,
     msq_path: &str,
-) -> Result<Session, String> {
+) -> Result<(Session, opentune_project::msq::MsqReport), String> {
     let mut session = build_offline_session(ini_path)?;
     let xml = crate::connection::read_text(msq_path)
         .map_err(|e| format!("cannot read `{msq_path}`: {e}"))?;
@@ -220,9 +221,9 @@ pub(super) fn build_offline_session_from_msq(
         .tune
         .as_mut()
         .ok_or_else(|| "internal error: offline session missing tune".to_string())?;
-    opentune_project::msq::load_msq_into(tune, &xml).map_err(|e| e.to_string())?;
+    let report = opentune_project::msq::load_msq_into(tune, &xml).map_err(|e| e.to_string())?;
     tune.mark_loaded();
-    Ok(session)
+    Ok((session, report))
 }
 
 /// Attach a live link to an existing offline session **without** reading the
@@ -294,6 +295,26 @@ mod offline_build_tests {
         }
     }
 
+    /// The `.msq` load report must reach the caller — dropping it silently
+    /// hid a 1731-constant partial load (rusEFI project, M7 diagnosis).
+    #[test]
+    fn reopen_surfaces_the_msq_load_report() {
+        let scratch = ScratchFile::new("report");
+
+        let mut session = build_offline_session(INI).unwrap();
+        let tune = session.tune.as_mut().unwrap();
+        let xml = opentune_project::msq::tune_to_msq(tune).replacen(
+            "  </page>",
+            "    <constant name=\"notInThisDef\">1</constant>\n  </page>",
+            1,
+        );
+        std::fs::write(&scratch.0, xml).unwrap();
+
+        let (_, report) = build_offline_session_from_msq(INI, scratch.0.to_str().unwrap()).unwrap();
+        assert!(report.applied > 0, "the good constants must still apply");
+        assert_eq!(report.skipped, vec!["notInThisDef".to_string()]);
+    }
+
     /// The point of the feature: an edit made offline survives a
     /// save (`tune_to_msq`) → reopen (`build_offline_session_from_msq`)
     /// round trip.
@@ -308,7 +329,8 @@ mod offline_build_tests {
         let xml = opentune_project::msq::tune_to_msq(tune);
         std::fs::write(&scratch.0, xml).unwrap();
 
-        let reopened = build_offline_session_from_msq(INI, scratch.0.to_str().unwrap()).unwrap();
+        let (reopened, _) =
+            build_offline_session_from_msq(INI, scratch.0.to_str().unwrap()).unwrap();
         assert!(reopened.conn.is_none());
         let reopened_tune = reopened.tune.as_ref().unwrap();
         // Round-trips through a scaled U16 raw encoding — compare with
@@ -339,7 +361,7 @@ mod offline_build_tests {
         let xml = opentune_project::msq::tune_to_msq(tune);
         std::fs::write(&scratch.0, xml).unwrap();
 
-        let mut reopened =
+        let (mut reopened, _) =
             build_offline_session_from_msq(INI, scratch.0.to_str().unwrap()).unwrap();
         let reopened_tune = reopened.tune.as_mut().unwrap();
         assert!(

@@ -39,6 +39,41 @@ pub struct DefinitionDto {
     pub analyze_tables: Vec<String>,
 }
 
+/// Result of opening a `.msq` offline: the parsed definition plus the load
+/// report. The report MUST reach the user — a partial load silently shown
+/// as INI defaults was the M7 rusEFI bug.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct OpenTuneDto {
+    pub definition: DefinitionDto,
+    pub report: MsqReportDto,
+}
+
+/// Per-constant outcome summary of a `.msq` load.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+pub struct MsqReportDto {
+    /// Constants applied (clamped ones included).
+    pub applied: u32,
+    /// Count of file constants the definition doesn't declare (rusEFI
+    /// files carry hundreds of `UNALLOCATED_SPACE_*` fillers — names would
+    /// be noise).
+    pub skipped: u32,
+    /// Constants whose value was clamped into the INI's `[low, high]`.
+    pub clamped: Vec<String>,
+    /// Constants that failed to apply, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+impl From<opentune_project::msq::MsqReport> for MsqReportDto {
+    fn from(r: opentune_project::msq::MsqReport) -> Self {
+        Self {
+            applied: r.applied as u32,
+            skipped: r.skipped.len() as u32,
+            clamped: r.clamped,
+            failed: r.failed,
+        }
+    }
+}
+
 /// A top-level menu.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct MenuDto {
@@ -115,6 +150,9 @@ pub enum ConstantKindDto {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct TableDto {
     pub name: String,
+    /// 3-D map id ("" when absent) — menu items may reference a table by
+    /// this id (`subMenu = veTableMap`) instead of its editor name.
+    pub map3d_id: String,
     pub title: String,
     pub page: u32,
     pub x_bins: String,
@@ -315,6 +353,7 @@ impl From<&TableDef> for TableDto {
     fn from(t: &TableDef) -> Self {
         Self {
             name: t.name.clone(),
+            map3d_id: t.map3d_id.clone(),
             title: t.title.clone(),
             page: t.page,
             x_bins: t.x_bins.clone(),

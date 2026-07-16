@@ -23,9 +23,13 @@ pub struct MsqReport {
     pub applied: usize,
     /// Constants in the file that the definition doesn't declare.
     pub skipped: Vec<String>,
-    /// Constants that parsed to a value the model rejected (out of range,
-    /// unknown bit label, unparseable number). `(name, reason)`.
+    /// Constants that parsed to a value the model rejected (unknown bit
+    /// label, unparseable number, storage overflow). `(name, reason)`.
     pub failed: Vec<(String, String)>,
+    /// Constants whose file value fell outside the INI's `[low, high]` and
+    /// was clamped into range (TunerStudio's load behavior). Counted in
+    /// `applied` too.
+    pub clamped: Vec<String>,
 }
 
 /// Serialize the whole tune to `.msq` XML.
@@ -90,14 +94,22 @@ pub fn load_msq_into(tune: &mut Tune, xml: &str) -> Result<MsqReport, MsqError> 
             .map(|c| text_to_value(&text, &c.kind));
         match resolved {
             None => report.skipped.push(name),
-            Some(Ok(value)) => match tune.set(&name, value) {
-                Ok(()) => report.applied += 1,
-                // `ModelError` has no `Display` impl (only `Debug`) — see the
-                // model crate's `tune::ModelError`. Debug-format the reason
-                // rather than pulling `thiserror`/`Display` into `model` just
-                // for this caller.
-                Err(e) => report.failed.push((name, format!("{e:?}"))),
-            },
+            Some(Ok(value)) => {
+                let (value, was_clamped) = clamp_to_bounds(tune, &name, value);
+                match tune.set(&name, value) {
+                    Ok(()) => {
+                        report.applied += 1;
+                        if was_clamped {
+                            report.clamped.push(name);
+                        }
+                    }
+                    // `ModelError` has no `Display` impl (only `Debug`) — see
+                    // the model crate's `tune::ModelError`. Debug-format the
+                    // reason rather than pulling `thiserror`/`Display` into
+                    // `model` just for this caller.
+                    Err(e) => report.failed.push((name, format!("{e:?}"))),
+                }
+            }
             // Per-constant failure is collected, never fatal — the rest of the
             // file still applies and the tune stays fully defined.
             Some(Err(detail)) => report.failed.push((name, detail)),
@@ -167,10 +179,43 @@ fn value_to_text(v: &Value, kind: &ConstantKind) -> String {
     }
 }
 
+/// TunerStudio clamps out-of-range numeric values into the constant's
+/// `[low, high]` on load rather than rejecting the file (rusEFI files
+/// routinely store 0 for constants whose INI minimum is 1). Mirror that on
+/// the load path only — interactive edits still validate strictly in
+/// `Tune::set`. Unresolvable or inverted bounds fall through to `set`,
+/// which reports its own error.
+fn clamp_to_bounds(tune: &Tune, name: &str, value: Value) -> (Value, bool) {
+    let Ok((low, high)) = tune.bounds(name) else {
+        return (value, false);
+    };
+    if low > high {
+        return (value, false);
+    }
+    let out_of_range = |x: &f64| *x < low || *x > high;
+    match value {
+        Value::Scalar(x) if out_of_range(&x) => (Value::Scalar(x.clamp(low, high)), true),
+        Value::Array(xs) if xs.iter().any(out_of_range) => (
+            Value::Array(xs.iter().map(|x| x.clamp(low, high)).collect()),
+            true,
+        ),
+        v => (v, false),
+    }
+}
+
+/// TunerStudio wraps enum labels and string values in double quotes on save;
+/// our own writer doesn't. Both forms must load.
+fn unquote(text: &str) -> &str {
+    text.strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(text)
+}
+
 fn text_to_value(text: &str, kind: &ConstantKind) -> Result<Value, String> {
     let text = text.trim();
     match kind {
         ConstantKind::Bits { options, .. } => {
+            let text = unquote(text);
             // ponytail: label→index; fall back to a numeric index if the file
             // stored one. Corruption risk lives here — covered by a unit test.
             if let Some(idx) = options.iter().position(|o| o == text) {
@@ -189,7 +234,7 @@ fn text_to_value(text: &str, kind: &ConstantKind) -> Result<Value, String> {
                 .map_err(|e| e.to_string())?;
             Ok(Value::Array(nums))
         }
-        ConstantKind::Text { .. } => Ok(Value::Text(text.to_string())),
+        ConstantKind::Text { .. } => Ok(Value::Text(unquote(text).to_string())),
         ConstantKind::Scalar(_) => text
             .parse::<f64>()
             .map(Value::Scalar)

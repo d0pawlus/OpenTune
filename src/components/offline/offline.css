@@ -29,3 +29,22 @@
   color: var(--color-danger);
   font-size: 0.85rem;
 }
+
+.offline-report {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.offline-report p {
+  margin: 0;
+}
+
+.offline-report-clamped {
+  color: color-mix(in oklch, var(--color-text) 70%, transparent);
+}
+
+.offline-report-failed {
+  color: var(--color-danger);
+}

@@ -64,6 +64,10 @@ const ORIGIN: Selection = {
   anchor: { row: 0, col: 0 },
   focus: { row: 0, col: 0 },
 };
+// Stable fallback for the analyze-tables selector: `?? []` inline would mint
+// a fresh array per store snapshot and loop useSyncExternalStore forever
+// whenever the store holds no definition (embedded-editor contexts).
+const NO_ANALYZE_TABLES: string[] = [];
 
 /**
  * Resolves the active table from the store and remounts the editor per table
@@ -77,7 +81,7 @@ export function TableEditor({ locale }: { locale: Locale }) {
     definition?.tables.find((tb) => tb.name === activeTable) ?? null;
   if (!table || !definition) return null;
   return (
-    <Editor
+    <TableEditorView
       key={table.name}
       table={table}
       constants={definition.constants}
@@ -92,9 +96,16 @@ interface EditorProps {
   locale: Locale;
 }
 
-function Editor({ table, constants, locale }: EditorProps) {
+/**
+ * The table editor bound to an explicit `table` — also embedded directly by
+ * `DialogEngine` when a dialog's `panel =` names a table (rusEFI embeds its
+ * VE/ignition tables in dialogs this way).
+ */
+export function TableEditorView({ table, constants, locale }: EditorProps) {
   const values = useTuneStore((s) => s.values);
-  const analyzeTables = useTuneStore((s) => s.definition?.analyze_tables ?? []);
+  const analyzeTables = useTuneStore(
+    (s) => s.definition?.analyze_tables ?? NO_ANALYZE_TABLES,
+  );
 
   const [selection, setSelection] = useState<Selection>(ORIGIN);
   const [draft, setDraft] = useState<{ cell: Cell; text: string } | null>(null);

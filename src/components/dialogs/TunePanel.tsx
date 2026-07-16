@@ -6,6 +6,7 @@ import { isLinkAlive, useConnectionStore } from "../../stores/connection";
 import { useTuneStore } from "../../stores/tune";
 import { t, type Locale } from "../../i18n";
 import { DialogEngine } from "./DialogEngine";
+import { resolveMenuTarget } from "./menuTarget";
 import { TableEditor } from "../table-editor/TableEditor";
 import { CurveEditor } from "../curve-editor/CurveEditor";
 import { TuneDiff } from "../diff/TuneDiff";
@@ -266,19 +267,37 @@ export function TunePanel({ locale }: { locale: Locale }) {
         <div className="tune-navs">
           <nav className="tune-menu" aria-label={t("tune.menu", locale)}>
             {definition.menus.flatMap((menu) =>
-              menu.items.map((item) => (
-                <button
-                  key={item.dialog}
-                  type="button"
-                  className="tune-menu-item"
-                  aria-current={activeDialog === item.dialog}
-                  onClick={() =>
-                    useTuneStore.getState().setActiveDialog(item.dialog)
-                  }
-                >
-                  {item.label}
-                </button>
-              )),
+              menu.items.map((item) => {
+                // A menu item may point at a dialog, a table editor (or its
+                // 3-D map id), or a curve — rusEFI menus do all four. The
+                // current-item marker must compare against whichever active
+                // slot the target routes to, not just activeDialog.
+                const target = resolveMenuTarget(definition, item.dialog);
+                const isCurrent =
+                  target.kind === "table"
+                    ? activeTable === target.name
+                    : target.kind === "curve"
+                      ? activeCurve === target.name
+                      : activeDialog === target.name;
+                return (
+                  <button
+                    key={item.dialog}
+                    type="button"
+                    className="tune-menu-item"
+                    aria-current={isCurrent}
+                    onClick={() => {
+                      const store = useTuneStore.getState();
+                      if (target.kind === "table")
+                        store.setActiveTable(target.name);
+                      else if (target.kind === "curve")
+                        store.setActiveCurve(target.name);
+                      else store.setActiveDialog(target.name);
+                    }}
+                  >
+                    {item.label}
+                  </button>
+                );
+              }),
             )}
           </nav>
 
@@ -333,6 +352,7 @@ export function TunePanel({ locale }: { locale: Locale }) {
               values={values}
               conditions={conditions}
               onEdit={onEdit}
+              locale={locale}
             />
           ) : (
             <p>{t("tune.noDialog", locale)}</p>

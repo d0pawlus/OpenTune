@@ -153,3 +153,29 @@ fn unclosed_preprocessor_block_produces_opener_diagnostic() {
             && diagnostic.detail.contains("missing #endif")
     }));
 }
+
+#[test]
+fn expands_dollar_reference_to_define_value_list() {
+    // rusEFI INIs define pin dictionaries once (`#define gpio_list="NONE",
+    // "PA0", ...`) and reference them from bits option lists as `$gpio_list`.
+    // The reference must expand to the define's value text.
+    let ini = "#define pin_list=\"NONE\", \"PA0\", \"PA1\"\nmainRelayPin = bits, U16, 48, [0:8], $pin_list\n";
+    let out = preprocess(ini, &symbols(&[]));
+    assert!(
+        out.contains("mainRelayPin = bits, U16, 48, [0:8], \"NONE\", \"PA0\", \"PA1\""),
+        "got: {out}"
+    );
+    assert!(!out.contains("$pin_list"));
+}
+
+#[test]
+fn chained_defines_expand_and_unknown_references_pass_through() {
+    let ini = "#define base_list=\"A\", \"B\"\n#define full_list=$base_list, \"C\"\npin = bits, U08, 0, [0:1], $full_list\nnote = \"$100 or $nothing\"\n";
+    let out = preprocess(ini, &symbols(&[]));
+    assert!(
+        out.contains("pin = bits, U08, 0, [0:1], \"A\", \"B\", \"C\""),
+        "got: {out}"
+    );
+    // No matching define → the text is left exactly as written.
+    assert!(out.contains("\"$100 or $nothing\""));
+}

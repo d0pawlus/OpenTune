@@ -34,6 +34,7 @@ vi.mock("../../ipc/bindings", () => ({
 // docs/notes/m4-decisions.md.
 const table: TableDto = {
   name: "veTable1Tbl",
+  map3d_id: "",
   title: "VE Table 1",
   page: 1,
   x_bins: "rpmBins",
