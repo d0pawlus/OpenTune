@@ -64,6 +64,7 @@ interface DatalogStore {
   setPlaying: (playing: boolean) => void;
   setSpeed: (speed: number) => void;
   stopPlayback: () => void;
+  setError: (message: string) => void;
   clearError: () => void;
   reset: () => void;
 }
@@ -122,8 +123,12 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
     const unloadsActiveReplay =
       priorState.replaying &&
       (priorState.logs.A ?? priorState.logs.B) === priorState.logs[slot];
+    // Only the unload branch above (via `stopPlayback`) stops playback.
+    // Loading the *other*, inactive slot must leave an active replay of the
+    // prioritized slot running — it stays the selector-priority dataset, so
+    // clearing `playing` here would freeze a replay the user never touched.
     if (unloadsActiveReplay) priorState.stopPlayback();
-    set({ loading: true, error: null, playing: false });
+    set({ loading: true, error: null });
     try {
       const opened = await commands.openLog(path.trim(), format);
       if (opened.status === "error") throw new Error(opened.error);
@@ -355,6 +360,7 @@ export const useDatalogStore = create<DatalogStore>((set, get) => ({
     useRealtimeStore.getState().clear();
     set({ playing: false, replaying: false, playbackRow: 0 });
   },
+  setError: (message) => set({ error: message }),
   clearError: () => set({ error: null }),
   reset: () => {
     useRealtimeStore.getState().clear();

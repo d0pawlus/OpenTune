@@ -97,6 +97,43 @@
   flex: 1 1 20rem;
 }
 
+/* Replay is a mode: while it is on, live gauges are frozen (App.tsx), so the
+ * indicator has to read as an active, attention-worthy state — a pulsing
+ * accent pill, not a muted note. */
+.dl-replay-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  width: 100%;
+  margin: 0.2rem 0 0;
+  padding: 0.3rem 0.65rem;
+  border: 1px solid color-mix(in oklch, var(--color-accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--color-accent) 12%, transparent);
+  color: color-mix(in oklch, var(--color-accent) 80%, var(--color-text));
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.dl-replay-indicator::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: dl-replay-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes dl-replay-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
 .dl-inline-list,
 .dl-findings {
   width: 100%;
@@ -171,5 +208,9 @@
 @media (prefers-reduced-motion: reduce) {
   .datalog * {
     scroll-behavior: auto;
+  }
+
+  .dl-replay-indicator::before {
+    animation: none;
   }
 }
