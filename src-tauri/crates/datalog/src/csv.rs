@@ -242,4 +242,27 @@ mod tests {
         );
         assert_eq!(rows[1].values[1], 1.5, "finite values are unaffected");
     }
+
+    /// Backward-compat pin (M5 review, deferred): v0.1.0 wrote non-finite
+    /// values as literal `inf`/`-inf` tokens before `write_csv` switched to
+    /// empty cells. Those older files must still read without error —
+    /// `f64::from_str` accepts the tokens as ±∞, and every downstream
+    /// consumer guards `is_finite()`, so they behave as the missing
+    /// representation. If this ever starts erroring, old logs stop opening.
+    #[test]
+    fn reads_legacy_inf_tokens_as_non_finite_without_error() {
+        let csv = "Time,a,b\n0,inf,-inf\n0.1,1.5,Infinity\n";
+        let log = read_csv(csv.as_bytes()).expect("legacy inf tokens must still parse");
+        let rows: Vec<_> = log.records().collect();
+        assert!(!rows[0].values[0].is_finite(), "`inf` parses as non-finite");
+        assert!(
+            !rows[0].values[1].is_finite(),
+            "`-inf` parses as non-finite"
+        );
+        assert_eq!(rows[1].values[0], 1.5, "finite values are unaffected");
+        assert!(
+            !rows[1].values[1].is_finite(),
+            "`Infinity` parses as non-finite"
+        );
+    }
 }

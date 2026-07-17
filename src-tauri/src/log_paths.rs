@@ -218,4 +218,33 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn extension_check_is_case_insensitive() {
+        // A `LOG.CSV`/`.MLG` from another tool (or a case-preserving
+        // filesystem) must be accepted — `require_log_extension` compares
+        // case-insensitively, so pin that for both read and write.
+        let read_path = std::env::temp_dir().join(format!(
+            "opentune-log-path-test-UPPER-{}.CSV",
+            std::process::id()
+        ));
+        std::fs::write(&read_path, b"Time\n").unwrap();
+        assert_eq!(
+            validate_log_read_path(read_path.to_str().unwrap()).unwrap(),
+            read_path.canonicalize().unwrap()
+        );
+        let _ = std::fs::remove_file(&read_path);
+
+        let write_dir = std::env::temp_dir().join(format!(
+            "opentune-log-path-test-UPPER-dir-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&write_dir).unwrap();
+        let write_path = write_dir.join("REC.MLG");
+        assert_eq!(
+            validate_log_write_path(write_path.to_str().unwrap()).unwrap(),
+            write_dir.canonicalize().unwrap().join("REC.MLG")
+        );
+        let _ = std::fs::remove_dir_all(&write_dir);
+    }
 }

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import type uPlot from "uplot";
 
-const MIN_PLOT_WIDTH = 320;
-const PLOT_HEIGHT = 320;
+/** Shared plot dimensions — imported by `DatalogCharts` so the builder and
+ * the resize handler can never drift apart. */
+export const MIN_PLOT_WIDTH = 320;
+export const PLOT_HEIGHT = 320;
 const SCATTER_POINT_SIZE = 3;
 
 export interface AxisBounds {

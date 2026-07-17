@@ -22,6 +22,44 @@ async function pickSaveLogPath(): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
+const dialogError = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/**
+ * The one Browse button used by every path field. Centralizes the native
+ * dialog call so its rejection is always caught and surfaced (the plugin can
+ * reject on an OS-level failure — cancelling just resolves to `null`) instead
+ * of becoming an unhandled promise rejection.
+ */
+function BrowseButton({
+  pick,
+  onPick,
+  disabled,
+  locale,
+}: {
+  pick: () => Promise<string | null>;
+  onPick: (path: string) => void;
+  disabled?: boolean;
+  locale: Locale;
+}) {
+  const setError = useDatalogStore((state) => state.setError);
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        pick()
+          .then((picked) => {
+            if (picked) onPick(picked);
+          })
+          .catch((error) => setError(dialogError(error)));
+      }}
+    >
+      {t("datalog.browse", locale)}
+    </button>
+  );
+}
+
 export function LogPathForm({
   slot,
   locale,
@@ -48,17 +86,12 @@ export function LogPathForm({
           placeholder="/path/to/log.csv"
         />
       </label>
-      <button
-        type="button"
+      <BrowseButton
+        pick={pickOpenLogPath}
+        onPick={setPath}
         disabled={loading}
-        onClick={() => {
-          void pickOpenLogPath().then((picked) => {
-            if (picked) setPath(picked);
-          });
-        }}
-      >
-        {t("datalog.browse", locale)}
-      </button>
+        locale={locale}
+      />
       <label>
         {t("datalog.format", locale)}
         <select
@@ -120,17 +153,12 @@ export function RecordingControls({ locale }: { locale: Locale }) {
           placeholder="/path/to/recording.csv"
         />
       </label>
-      <button
-        type="button"
+      <BrowseButton
+        pick={pickSaveLogPath}
+        onPick={setPath}
         disabled={recording?.active}
-        onClick={() => {
-          void pickSaveLogPath().then((picked) => {
-            if (picked) setPath(picked);
-          });
-        }}
-      >
-        {t("datalog.browse", locale)}
-      </button>
+        locale={locale}
+      />
       <label>
         {t("datalog.format", locale)}
         <select
@@ -188,6 +216,7 @@ export function RecordingControls({ locale }: { locale: Locale }) {
 export function ExportControls({ locale }: { locale: Locale }) {
   const exportLog = useDatalogStore((state) => state.exportLog);
   const logs = useDatalogStore((state) => state.logs);
+  const loading = useDatalogStore((state) => state.loading);
   const [slot, setSlot] = useState<LogSlot>("A");
   const [path, setPath] = useState("");
   const [format, setFormat] = useState<LogFormatDto>("Csv");
@@ -208,16 +237,7 @@ export function ExportControls({ locale }: { locale: Locale }) {
         {t("datalog.path", locale)}
         <input value={path} onChange={(event) => setPath(event.target.value)} />
       </label>
-      <button
-        type="button"
-        onClick={() => {
-          void pickSaveLogPath().then((picked) => {
-            if (picked) setPath(picked);
-          });
-        }}
-      >
-        {t("datalog.browse", locale)}
-      </button>
+      <BrowseButton pick={pickSaveLogPath} onPick={setPath} locale={locale} />
       <label>
         {t("datalog.format", locale)}
         <select
@@ -233,7 +253,7 @@ export function ExportControls({ locale }: { locale: Locale }) {
       </label>
       <button
         type="button"
-        disabled={!logs[slot] || !path.trim()}
+        disabled={!logs[slot] || !path.trim() || loading}
         onClick={() => void exportLog(slot, path, format)}
       >
         {t("datalog.export", locale)}

@@ -265,15 +265,18 @@ describe("datalog store", () => {
       expect(useDatalogStore.getState().logs.A?.path).toBe("/tmp/a2.csv");
     });
 
-    it("opening a different, inactive slot does not disturb an active replay", async () => {
+    it("opening a different, inactive slot does not pause an active replay", async () => {
       await useDatalogStore.getState().openLog("A", "/tmp/a.csv", "Csv");
-      useDatalogStore.getState().setPlaybackRow(1);
+      useDatalogStore.getState().setPlaying(true);
+      expect(useDatalogStore.getState().playing).toBe(true);
       expect(useDatalogStore.getState().replaying).toBe(true);
 
       // A/B slots exist for side-by-side comparison — loading B must not
-      // kill A's replay, since A still takes selector priority.
+      // kill *or pause* A's replay, since A still takes selector priority.
+      // (`openLog` used to clear `playing` unconditionally, freezing it.)
       await useDatalogStore.getState().openLog("B", "/tmp/b.csv", "Csv");
 
+      expect(useDatalogStore.getState().playing).toBe(true);
       expect(useDatalogStore.getState().replaying).toBe(true);
     });
   });

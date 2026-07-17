@@ -7,6 +7,8 @@ import type { LogDataset } from "../../stores/datalog";
 import { t, type Locale } from "../../i18n";
 import {
   buildFacetedPlot,
+  MIN_PLOT_WIDTH,
+  PLOT_HEIGHT,
   type AxisBounds,
   type FacetedSeries,
 } from "./facetedPlotConfig";
@@ -23,9 +25,6 @@ interface DatalogChartsProps {
 }
 
 const palette = ["#2374e1", "#e15554", "#3a9d5d", "#8c5bd6", "#e58b22"];
-
-const MIN_PLOT_WIDTH = 320;
-const PLOT_HEIGHT = 320;
 
 function useFacetedPlot(
   series: FacetedSeries[],
