@@ -1,3 +1,9 @@
+---
+layout: page
+title: Firmware definition format
+permalink: /ini-format/
+---
+
 # Firmware definition format (the `.ini` file)
 
 This document explains the role of the firmware **INI definition file** in

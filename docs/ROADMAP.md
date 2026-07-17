@@ -1,3 +1,9 @@
+---
+layout: page
+title: Roadmap
+permalink: /roadmap/
+---
+
 # Roadmap
 
 This roadmap turns the [architecture](ARCHITECTURE.md) into an ordered sequence of
@@ -182,17 +188,30 @@ playback, GUI-derived channels, markers/export, log statistics, anomaly detectio
 and an auditable virtual dyno. The 100k-record path is test-pinned; see
 [`docs/notes/m5-decisions.md`](notes/m5-decisions.md).
 
-## M6 — Interop, polish & first release ⬜
+## M6 — Interop, polish & first release 🟦
 
-Goal: a real 1.0 people can use instead of TunerStudio for common workflows.
+Goal: the first public OpenTune release that people can evaluate against
+TunerStudio-compatible projects and common offline workflows.
 
-- ⬜ `.msq` import/export verified against TunerStudio.
-- ⬜ Validate against multiple firmwares (Speeduino, rusEFI, an MS family member).
-- ⬜ Signed, notarized macOS builds; signed Windows builds; Linux AppImage/deb.
-- ⬜ Auto-update; first-run/onboarding; documentation site.
-- ⬜ Accessibility & i18n pass (Polish + English).
+- 🟦 `.msq` import/export verified against real TunerStudio-produced MS3 and
+  rusEFI projects plus focused serialization round trips. The disposable
+  OpenTune → TunerStudio GUI re-save check remains the final manual gate.
+- ✅ Validated against Speeduino, rusEFI, and MegaSquirt MS3; see the
+  [M6 compatibility evidence](compatibility/m6.md).
+- ✅ Cross-platform packaging for macOS arm64/x64, Windows x64, and Linux x64.
+  Apple notarization and Windows publisher signing are explicitly deferred until
+  the project owner obtains the required account/certificate; packages disclose
+  the OS warnings.
+- ✅ Cryptographically signed, user-controlled Tauri updates; first-run guide;
+  preference persistence; and GitHub Pages documentation workflow.
+- 🟦 Automated accessibility checks and Polish/English coverage pass. Manual
+  keyboard/VoiceOver acceptance remains the final UI gate; see the
+  [M6 accessibility report](accessibility/m6.md).
 
-**Demo:** download a signed build, open an existing tune/log, and work end-to-end.
+**Demo:** download `v0.2.0`, acknowledge the documented unsigned-publisher OS
+warning, open an existing TunerStudio project, work offline or with the
+simulator, and install a later cryptographically verified update only after
+explicit confirmation.
 
 ## M7 — AI assistant & MCP server ⬜
 

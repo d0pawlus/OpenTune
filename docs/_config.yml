@@ -1,0 +1,15 @@
+title: OpenTune
+description: Open-source, cross-platform engine tuning software
+url: https://d0pawlus.github.io
+baseurl: /OpenTune
+repository: d0pawlus/OpenTune
+theme: minima
+header_pages:
+  - quick-start.md
+  - compatibility/m6.md
+  - accessibility/m6.md
+  - ARCHITECTURE.md
+  - ROADMAP.md
+  - updates.md
+exclude:
+  - superpowers

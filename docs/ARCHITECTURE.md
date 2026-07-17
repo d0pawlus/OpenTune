@@ -1,3 +1,9 @@
+---
+layout: page
+title: Architecture
+permalink: /architecture/
+---
+
 # Architecture
 
 This document describes the architecture of OpenTune — a cross-platform,
