@@ -9,15 +9,28 @@ import { Dashboard } from "./components/dashboard/Dashboard";
 import { OfflinePanel } from "./components/offline/OfflinePanel";
 import { TunePanel } from "./components/dialogs/TunePanel";
 import { DatalogPanel } from "./components/datalog/DatalogPanel";
+import { Onboarding } from "./components/onboarding/Onboarding";
+import { UpdateNotice } from "./components/update/UpdateNotice";
 import type { Theme } from "./components/gauges/GaugeCanvas";
 import { t, type Locale } from "./i18n";
+import {
+  completeOnboarding,
+  initialLocale,
+  initialTheme,
+  isOnboardingComplete,
+  saveLocale,
+  saveTheme,
+} from "./preferences";
 
 function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoFailed, setInfoFailed] = useState(false);
   const lastSeq = useConnectionStore((s) => s.lastSeq);
-  const [locale, setLocale] = useState<Locale>("en");
-  const [theme, setTheme] = useState<Theme>("default");
+  const [locale, setLocale] = useState<Locale>(initialLocale);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [onboardingOpen, setOnboardingOpen] = useState(
+    () => !isOnboardingComplete(),
+  );
 
   useEffect(() => {
     commands
@@ -72,39 +85,68 @@ function App() {
       theme === "high-contrast" ? "high-contrast" : "";
   }, [theme]);
 
-  const toggleLocale = () => setLocale((prev) => (prev === "en" ? "pl" : "en"));
+  const changeLocale = (next: Locale) => {
+    setLocale(next);
+    saveLocale(next);
+  };
+  const changeTheme = (next: Theme) => {
+    setTheme(next);
+    saveTheme(next);
+  };
+  const toggleLocale = () => changeLocale(locale === "en" ? "pl" : "en");
   const toggleTheme = () =>
-    setTheme((prev) =>
-      prev === "high-contrast" ? "default" : "high-contrast",
-    );
+    changeTheme(theme === "high-contrast" ? "default" : "high-contrast");
+  const finishOnboarding = () => {
+    completeOnboarding();
+    setOnboardingOpen(false);
+  };
 
   return (
-    <main>
-      <h1>{t("app.title", locale)}</h1>
-      {info ? `${info.name} v${info.version}` : infoFailed ? "—" : "…"}
-      <p>heartbeat: {lastSeq ?? "—"}</p>
+    <>
+      <main inert={onboardingOpen ? true : undefined}>
+        <h1>{t("app.title", locale)}</h1>
+        {info ? `${info.name} v${info.version}` : infoFailed ? "—" : "…"}
+        <p>
+          {t("app.heartbeat", locale)}: {lastSeq ?? "—"}
+        </p>
 
-      <Connect locale={locale} />
+        <UpdateNotice locale={locale} />
 
-      <OfflinePanel locale={locale} />
+        <Connect locale={locale} />
 
-      <Dashboard locale={locale} theme={theme} />
+        <OfflinePanel locale={locale} />
 
-      <TunePanel locale={locale} />
+        <Dashboard locale={locale} theme={theme} />
 
-      <DatalogPanel locale={locale} />
+        <TunePanel locale={locale} />
 
-      <div style={{ marginTop: "2rem" }}>
-        <button onClick={toggleLocale}>
-          {locale === "en" ? "Switch to Polish" : "Przełącz na angielski"}
-        </button>
-        <button onClick={toggleTheme}>
-          {theme === "high-contrast"
-            ? t("theme.default", locale)
-            : t("theme.highContrast", locale)}
-        </button>
-      </div>
-    </main>
+        <DatalogPanel locale={locale} />
+
+        <footer className="app-footer" aria-label={t("app.controls", locale)}>
+          <button type="button" onClick={toggleLocale}>
+            {locale === "en"
+              ? t("app.switchToPolish", locale)
+              : t("app.switchToEnglish", locale)}
+          </button>
+          <button type="button" onClick={toggleTheme}>
+            {theme === "high-contrast"
+              ? t("theme.default", locale)
+              : t("theme.highContrast", locale)}
+          </button>
+          <button type="button" onClick={() => setOnboardingOpen(true)}>
+            {t("onboarding.reopen", locale)}
+          </button>
+        </footer>
+      </main>
+      <Onboarding
+        open={onboardingOpen}
+        locale={locale}
+        theme={theme}
+        onLocaleChange={changeLocale}
+        onThemeChange={changeTheme}
+        onComplete={finishOnboarding}
+      />
+    </>
   );
 }
 
