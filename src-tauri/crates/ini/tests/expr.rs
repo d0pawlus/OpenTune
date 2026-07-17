@@ -530,13 +530,8 @@ fn ternary_missing_colon_is_a_syntax_error() {
     assert!(eval("1 ? 2", &no_vars).is_err());
 }
 
-#[test]
-fn ternary_evaluates_eagerly_like_and_or() {
-    // Same contract as `&&`/`||`: a typo'd variable fails loudly even in
-    // the branch not taken.
-    let err = eval("1 ? 2 : bogusVar", &no_vars).unwrap_err();
-    assert_eq!(err, ExprError::UnknownVar("bogusVar".to_string()));
-}
+// (Ternary branch resolution is LAZY, unlike `&&`/`||` — see the
+// "PR #22 review findings" section at the end of this file.)
 
 // ---------------------------------------------------------------------
 // Function calls — `eval_with_functions` resolves TunerStudio builtins
@@ -612,4 +607,46 @@ fn function_call_inside_ternary_matches_ms3_pwm_scale_shape() {
         .unwrap(),
         0.1
     );
+}
+
+// ---------------------------------------------------------------------
+// PR #22 review findings — ternary depth guard + lazy branch evaluation
+// ---------------------------------------------------------------------
+
+#[test]
+fn deeply_nested_ternary_is_too_deep_not_a_stack_overflow() {
+    // Review finding: ternary branches recursed without the MAX_DEPTH
+    // guard, so a corrupt INI could overflow the stack. A nesting bomb
+    // must degrade to TooDeep like pathological parentheses do.
+    let bomb = format!("{}1{}", "1?".repeat(20_000), ":1".repeat(20_000));
+    assert_eq!(eval(&bomb, &no_vars).unwrap_err(), ExprError::TooDeep);
+}
+
+#[test]
+fn ternary_takes_only_the_selected_branch_like_tunerstudio() {
+    // Review finding: eager `?:` diverged from TunerStudio — a tune with
+    // an unconfigured PWM slot (`curve == 0 ? 1 : getChannelScaleByOffset(
+    // badOffset)`) must resolve to 1, not fail the whole constant.
+    assert_eq!(eval("1 ? 2 : bogusVar", &no_vars).unwrap(), 2.0);
+    assert_eq!(eval("0 ? bogusVar : 3", &no_vars).unwrap(), 3.0);
+    assert_eq!(eval("0 ? mystery(1) : 3", &no_vars).unwrap(), 3.0);
+}
+
+#[test]
+fn ternary_condition_errors_still_propagate() {
+    let err = eval("bogusVar ? 1 : 2", &no_vars).unwrap_err();
+    assert_eq!(err, ExprError::UnknownVar("bogusVar".to_string()));
+}
+
+#[test]
+fn taken_ternary_branch_errors_still_propagate() {
+    let err = eval("1 ? bogusVar : 2", &no_vars).unwrap_err();
+    assert_eq!(err, ExprError::UnknownVar("bogusVar".to_string()));
+}
+
+#[test]
+fn untaken_branch_syntax_errors_still_surface() {
+    // Laziness mutes RESOLUTION (names, functions), not grammar — the
+    // untaken branch must still lex, or the parser cannot find its end.
+    assert!(eval("1 ? 2 : )", &no_vars).is_err());
 }
