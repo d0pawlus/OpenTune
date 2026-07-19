@@ -209,4 +209,17 @@ export const en = {
   "datalog.load": "Load",
   "datalog.knock": "Knock",
   "datalog.dragCoefficient": "Cd",
+  "ai.title": "AI assistant",
+  "ai.enable": "Enable AI (opt-in)",
+  "ai.consent":
+    "When enabled, tuning data is sent to the selected AI provider. Off by default.",
+  "ai.provider": "Provider",
+  "ai.model": "Model",
+  "ai.saveSettings": "Save settings",
+  "ai.apiKey": "API key",
+  "ai.saveKey": "Save key",
+  "ai.clearKey": "Clear key",
+  "ai.keyPresent": "API key saved",
+  "ai.keyMissing": "No API key saved",
+  "ai.saved": "Saved",
 } as const;
