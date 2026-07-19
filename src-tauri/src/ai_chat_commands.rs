@@ -8,8 +8,10 @@
 //! `AiChatState`'s fields are `Arc`-wrapped `std::sync::Mutex`es /
 //! `AtomicBool`s, not `tokio::sync::Mutex`. Every lock this module takes is
 //! held for a short, synchronous span — `mem::take`/replace on the history,
-//! or a `get_or_insert_with` on the executor slot — and is always released
-//! before the next `.await`. `run_chat_turn` itself never sees a lock: its
+//! or a `get_or_insert_with` on [`crate::ai_tools::AiExecutorState`]'s
+//! executor slot (app-wide now, not a field of `AiChatState` — see that
+//! type's doc comment) — and is always released before the next `.await`.
+//! `run_chat_turn` itself never sees a lock: its
 //! `history: &mut ChatHistory` argument is a plain owned value that
 //! `ai_send`'s spawned task takes out of the `Mutex` before calling it and
 //! puts back after. A `tokio::Mutex` would remove the "never hold across
@@ -48,7 +50,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 use tauri_specta::Event as _;
 
-use opentune_ai::{AuditChannel, GuardrailLimits, PermissionPolicy};
+use opentune_ai::PermissionPolicy;
 
 use crate::ai_anthropic::AnthropicProvider;
 use crate::ai_chat::{run_chat_turn, system_prompt, ChatEvent, ChatHistory};
@@ -56,7 +58,7 @@ use crate::ai_commands::{config_dir, AiKeyStoreState};
 use crate::ai_openai::OpenAiProvider;
 use crate::ai_provider::{Provider, ToolDef};
 use crate::ai_settings::{load_ai_settings_in, AiSettings};
-use crate::ai_tools::{AiToolExecutor, FileAuditSink};
+use crate::ai_tools::AiExecutorState;
 use crate::dto::AiProposalDto;
 use crate::events::AiStreamEvent;
 use crate::owner::OwnerHandle;
@@ -67,10 +69,6 @@ use crate::owner::OwnerHandle;
 /// `ai_chat::system_prompt`'s "be concise" rule), and a hard cap keeps a
 /// single runaway response from dominating the turn's token budget.
 pub const CHAT_MAX_TOKENS: u32 = 4096;
-
-/// Audit log filename inside `app_config_dir`, alongside
-/// `ai_settings::AI_SETTINGS_FILE`.
-const AI_AUDIT_FILE: &str = "ai-audit.jsonl";
 
 /// Shared error string for "a turn is already running" — used by both
 /// `validate_send` (pre-flight, before any lock is touched) and the
@@ -99,13 +97,13 @@ pub struct AiChatState {
     /// first, for a clean error, by `validate_send`) and always cleared by
     /// [`RunningGuard`].
     running: Arc<AtomicBool>,
-    /// Lazily built on the first `ai_send` — it needs the owner handle and
-    /// the audit file path, both only available inside the command, not at
-    /// `AiChatState::default()` time. `ai_reset` replaces this with `None`
-    /// so old proposals — which live in the executor's in-memory log, not
-    /// in `AiChatState` — drop along with the executor; the next `ai_send`
-    /// lazily builds a fresh executor, whose proposal ids restart at 1.
-    executor: Mutex<Option<Arc<AiToolExecutor>>>,
+    // Note: the tool executor used to live here (`Mutex<Option<Arc<AiToolExecutor>>>`,
+    // lazily built by `ai_send`). M7 slice 4 task 2 (issue #29) moved it out
+    // to the app-wide `AiExecutorState` (`ai_tools.rs`), shared with the MCP
+    // server, so the assistant and MCP draw from ONE rate-limit budget and
+    // ONE proposal-id space instead of one executor each. `ai_send` and
+    // `ai_proposals` now take `State<'_, AiExecutorState>` directly instead
+    // of reaching into this struct.
 }
 
 /// RAII guard that (1) clears `running` when the chat turn ends and (2)
@@ -222,6 +220,7 @@ pub async fn ai_send(
     owner: State<'_, OwnerHandle>,
     keys: State<'_, AiKeyStoreState>,
     chat: State<'_, AiChatState>,
+    executor_state: State<'_, AiExecutorState>,
 ) -> Result<(), String> {
     let dir = config_dir(&app)?;
     let settings = load_ai_settings_in(&dir)?;
@@ -256,24 +255,16 @@ pub async fn ai_send(
     chat.cancel.store(false, Ordering::SeqCst);
 
     // Advisory is the only authority level any UI can reach (ADR-0008):
-    // shared by the executor's policy gate and by the tool list/system
-    // prompt built below.
+    // shared by the executor's policy gate (baked in by `get_or_build`) and
+    // by the tool list/system prompt built below.
     let policy = PermissionPolicy::advisory();
 
-    let executor = {
-        let mut guard = chat.executor.lock().unwrap();
-        let exec = guard.get_or_insert_with(|| {
-            let sink = FileAuditSink::new(dir.join(AI_AUDIT_FILE));
-            Arc::new(AiToolExecutor::new(
-                owner.inner().clone(),
-                policy,
-                GuardrailLimits::default(),
-                AuditChannel::Assistant,
-                Box::new(sink),
-            ))
-        });
-        Arc::clone(exec)
-    };
+    // M7 slice 4 task 2 (issue #29): the executor is app-wide now, shared
+    // with the MCP server — ONE rate-limit budget, ONE proposal-id space.
+    // `run_chat_turn` below still calls `executor.execute(..)`, the
+    // `AuditChannel::Assistant` shim, so this call site's audit trail is
+    // unchanged even though the executor itself is no longer assistant-only.
+    let executor = executor_state.get_or_build(owner.inner(), &dir)?;
 
     let specs = opentune_ai::available_tools(&policy);
     let system = system_prompt(&specs);
@@ -348,27 +339,37 @@ pub async fn ai_cancel(chat: State<'_, AiChatState>) -> Result<(), String> {
 
 /// Clear the conversation and drop any recorded proposals. Errors while a
 /// turn is running rather than racing `ai_send`'s task for the history
-/// slot. Proposals are not stored in `AiChatState` directly — they live in
-/// the executor's in-memory log — so clearing them means replacing the
-/// executor itself with `None`; `ai_send` lazily rebuilds one on the next
-/// turn (see `AiChatState::executor`'s doc comment).
+/// slot. Proposals are not stored in `AiChatState` — they live in the
+/// shared `AiExecutorState`'s executor's in-memory log (M7 slice 4 task 2:
+/// that executor is now app-wide, shared with the MCP server) — so clearing
+/// them means replacing the executor itself with `None`. That drops ANY
+/// proposal recorded so far, MCP-made ones included, not just this chat
+/// session's; the next call on either channel — `ai_send` or an MCP tool
+/// call — lazily rebuilds a fresh executor, whose proposal ids restart at 1.
 #[tauri::command]
 #[specta::specta]
-pub async fn ai_reset(chat: State<'_, AiChatState>) -> Result<(), String> {
+pub async fn ai_reset(
+    chat: State<'_, AiChatState>,
+    executor_state: State<'_, AiExecutorState>,
+) -> Result<(), String> {
     if chat.running.load(Ordering::SeqCst) {
         return Err("cannot reset while a chat turn is running — cancel it first".into());
     }
     *chat.history.lock().unwrap() = ChatHistory::new();
-    *chat.executor.lock().unwrap() = None;
+    *executor_state.0.lock().unwrap() = None;
     Ok(())
 }
 
-/// The proposals recorded so far this session (empty before the first
-/// `ai_send`, since the executor is lazily created).
+/// The proposals recorded so far this session (empty before the first tool
+/// call on either channel, since the shared executor is lazily created) —
+/// assistant- and MCP-made proposals both, since they share one executor
+/// and one proposal-id space (M7 slice 4 task 2).
 #[tauri::command]
 #[specta::specta]
-pub async fn ai_proposals(chat: State<'_, AiChatState>) -> Result<Vec<AiProposalDto>, String> {
-    let executor = chat.executor.lock().unwrap().clone();
+pub async fn ai_proposals(
+    executor_state: State<'_, AiExecutorState>,
+) -> Result<Vec<AiProposalDto>, String> {
+    let executor = executor_state.0.lock().unwrap().clone();
     Ok(executor
         .map(|exec| {
             exec.proposals()
@@ -471,12 +472,20 @@ mod state_tests {
     use super::*;
 
     #[test]
-    fn default_chat_state_is_idle_with_no_executor() {
+    fn default_chat_state_is_idle() {
         let state = AiChatState::default();
         assert!(!state.running.load(Ordering::SeqCst));
         assert!(!state.cancel.load(Ordering::SeqCst));
-        assert!(state.executor.lock().unwrap().is_none());
         assert!(state.history.lock().unwrap().is_empty());
+    }
+
+    // M7 slice 4 task 2 (issue #29): the executor slot moved out of
+    // `AiChatState` into the app-wide `AiExecutorState` — this is that same
+    // "no executor until first use" assertion, just against its new home.
+    #[test]
+    fn default_executor_state_has_no_executor() {
+        let state = AiExecutorState::default();
+        assert!(state.0.lock().unwrap().is_none());
     }
 
     #[test]

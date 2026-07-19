@@ -55,15 +55,20 @@ export const commands = {
 	/**
 	 *  Clear the conversation and drop any recorded proposals. Errors while a
 	 *  turn is running rather than racing `ai_send`'s task for the history
-	 *  slot. Proposals are not stored in `AiChatState` directly — they live in
-	 *  the executor's in-memory log — so clearing them means replacing the
-	 *  executor itself with `None`; `ai_send` lazily rebuilds one on the next
-	 *  turn (see `AiChatState::executor`'s doc comment).
+	 *  slot. Proposals are not stored in `AiChatState` — they live in the
+	 *  shared `AiExecutorState`'s executor's in-memory log (M7 slice 4 task 2:
+	 *  that executor is now app-wide, shared with the MCP server) — so clearing
+	 *  them means replacing the executor itself with `None`. That drops ANY
+	 *  proposal recorded so far, MCP-made ones included, not just this chat
+	 *  session's; the next call on either channel — `ai_send` or an MCP tool
+	 *  call — lazily rebuilds a fresh executor, whose proposal ids restart at 1.
 	 */
 	aiReset: () => typedError<null, string>(__TAURI_INVOKE("ai_reset")),
 	/**
-	 *  The proposals recorded so far this session (empty before the first
-	 *  `ai_send`, since the executor is lazily created).
+	 *  The proposals recorded so far this session (empty before the first tool
+	 *  call on either channel, since the shared executor is lazily created) —
+	 *  assistant- and MCP-made proposals both, since they share one executor
+	 *  and one proposal-id space (M7 slice 4 task 2).
 	 */
 	aiProposals: () => typedError<AiProposalDto[], string>(__TAURI_INVOKE("ai_proposals")),
 	/**

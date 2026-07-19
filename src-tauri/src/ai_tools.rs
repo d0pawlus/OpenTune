@@ -5,7 +5,8 @@
 //! embedded assistant (slice 3) and the MCP server (slice 4).
 
 use std::io::Write;
-use std::sync::Mutex;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -141,12 +142,18 @@ struct ProposalLog {
     items: Vec<ProposalDto>,
 }
 
-/// The executor: policy gate → dispatch → audit, for every call.
+/// The executor: policy gate → dispatch → audit, for every call. ONE
+/// instance is shared app-wide across every access channel (M7 slice 4
+/// task 2, issue #29): the rate limiter and proposal log below are
+/// per-executor, not per-channel, so the embedded assistant and the MCP
+/// server draw from the SAME rate-limit budget and the SAME proposal-id
+/// space. `channel` moved from a construction-time field to a per-call
+/// argument on [`Self::execute_as`] so one executor can audit calls from
+/// multiple channels correctly.
 pub struct AiToolExecutor {
     owner: OwnerHandle,
     policy: PermissionPolicy,
     limits: GuardrailLimits,
-    channel: AuditChannel,
     audit: Box<dyn AuditSink>,
     rate: Mutex<RateLimiter>,
     proposals: Mutex<ProposalLog>,
@@ -157,14 +164,12 @@ impl AiToolExecutor {
         owner: OwnerHandle,
         policy: PermissionPolicy,
         limits: GuardrailLimits,
-        channel: AuditChannel,
         audit: Box<dyn AuditSink>,
     ) -> Self {
         Self {
             owner,
             policy,
             limits,
-            channel,
             audit,
             rate: Mutex::new(RateLimiter::default()),
             proposals: Mutex::new(ProposalLog::default()),
@@ -176,9 +181,18 @@ impl AiToolExecutor {
         self.proposals.lock().unwrap().items.clone()
     }
 
-    /// Execute one tool call. Every call — allowed, denied, or failed — is
-    /// audited before this returns.
-    pub async fn execute(&self, name: &str, input: Json) -> Result<Json, ToolError> {
+    /// Execute one tool call, audited under `channel`. Every call —
+    /// allowed, denied, or failed — is audited before this returns, and the
+    /// audit record carries whichever channel THIS call passed in — not a
+    /// fixed value baked into the executor — so a single shared executor
+    /// (assistant + MCP, see the struct doc) still produces a correct
+    /// per-call audit trail.
+    pub async fn execute_as(
+        &self,
+        channel: AuditChannel,
+        name: &str,
+        input: Json,
+    ) -> Result<Json, ToolError> {
         let started = Instant::now();
         let result = self.dispatch(name, &input).await;
         let outcome = match &result {
@@ -195,7 +209,7 @@ impl AiToolExecutor {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
-            channel: self.channel,
+            channel,
             tool: name.to_owned(),
             input,
             outcome,
@@ -203,6 +217,14 @@ impl AiToolExecutor {
         };
         self.audit.append(&record.to_jsonl_line());
         result
+    }
+
+    /// Thin shim over [`Self::execute_as`] for the embedded chat loop
+    /// (`ai_chat.rs`): every call the chat loop makes IS an assistant call,
+    /// so it keeps calling this unchanged rather than naming the channel at
+    /// every call site.
+    pub async fn execute(&self, name: &str, input: Json) -> Result<Json, ToolError> {
+        self.execute_as(AuditChannel::Assistant, name, input).await
     }
 
     async fn dispatch(&self, name: &str, input: &Json) -> Result<Json, ToolError> {
@@ -366,6 +388,50 @@ impl AiToolExecutor {
     }
 }
 
+/// Audit log filename inside `app_config_dir`, alongside
+/// `ai_settings::AI_SETTINGS_FILE`. Shared by every [`AiExecutorState::get_or_build`]
+/// caller so the assistant and the MCP server always write the same file.
+const AI_AUDIT_FILE: &str = "ai-audit.jsonl";
+
+/// The app-wide shared executor slot (M7 slice 4 task 2, issue #29): ONE
+/// [`AiToolExecutor`] — one rate-limit budget, one proposal-id space — used
+/// by both the embedded assistant (`ai_chat_commands::ai_send`) and the MCP
+/// server (slice 4 task 3), each tagging its own calls with its own
+/// [`AuditChannel`] via [`AiToolExecutor::execute_as`]. Managed app-wide in
+/// `lib.rs`'s setup (moved out of `AiChatState`, which used to own an
+/// assistant-only executor slot with the same lazy-build shape).
+#[derive(Default)]
+pub struct AiExecutorState(pub Mutex<Option<Arc<AiToolExecutor>>>);
+
+impl AiExecutorState {
+    /// Return the shared executor, building it on first use — by whichever
+    /// channel reaches it first — with a [`FileAuditSink`] at
+    /// `dir/ai-audit.jsonl`, the advisory policy, and default guardrail
+    /// limits (the same defaults `ai_send` used to build inline before this
+    /// slot moved app-wide). Subsequent callers, on either channel, get the
+    /// same `Arc`.
+    pub fn get_or_build(
+        &self,
+        owner: &OwnerHandle,
+        dir: &Path,
+    ) -> Result<Arc<AiToolExecutor>, String> {
+        let mut guard = self
+            .0
+            .lock()
+            .map_err(|_| "AI executor state lock poisoned".to_owned())?;
+        let exec = guard.get_or_insert_with(|| {
+            let sink = FileAuditSink::new(dir.join(AI_AUDIT_FILE));
+            Arc::new(AiToolExecutor::new(
+                owner.clone(),
+                PermissionPolicy::advisory(),
+                GuardrailLimits::default(),
+                Box::new(sink),
+            ))
+        });
+        Ok(Arc::clone(exec))
+    }
+}
+
 fn parse<T: serde::de::DeserializeOwned>(input: &Json) -> Result<T, ToolError> {
     serde_json::from_value(input.clone()).map_err(|e| ToolError::invalid(e.to_string()))
 }
@@ -376,8 +442,6 @@ fn to_json<T: Serialize>(value: &T) -> Result<Json, ToolError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
     use crate::connection::ConnectSource;
     use crate::owner::{spawn_owner_with_emitter, Emitter};
@@ -393,6 +457,11 @@ mod tests {
         }
     }
 
+    /// A simulator-backed executor with a connected owner and a loaded
+    /// tune. `channel` is no longer a construction-time concept (M7 slice 4
+    /// task 2) — callers that need a specific channel pass it to
+    /// `execute_as` per call; `execute` (used by most existing tests here)
+    /// is the `AuditChannel::Assistant` shim.
     async fn connected_executor(limits: GuardrailLimits) -> (AiToolExecutor, VecSink) {
         let emit: Emitter = Arc::new(|_| {});
         let owner = spawn_owner_with_emitter(emit);
@@ -410,7 +479,6 @@ mod tests {
             owner,
             PermissionPolicy::advisory(),
             limits,
-            AuditChannel::Assistant,
             Box::new(sink.clone()),
         );
         (exec, sink)
@@ -518,5 +586,108 @@ mod tests {
         let err = exec.execute("propose_change", body).await.unwrap_err();
         assert_eq!(err.kind, ToolErrorKind::Denied);
         assert!(err.message.contains("rate limited"));
+    }
+
+    // M7 slice 4 task 2 (issue #29): one shared executor, one audit
+    // channel per CALL rather than per executor. The three tests below pin
+    // the contract Task 3 (MCP handler) and Task 4 (MCP lifecycle) build
+    // on: audit lines tag the calling channel, the rate-limit budget is
+    // shared across channels, and proposal ids are monotonic across
+    // channels.
+
+    #[tokio::test]
+    async fn execute_as_tags_the_audit_record_with_the_call_site_channel() {
+        let (exec, sink) = connected_executor(GuardrailLimits::default()).await;
+        let body = serde_json::json!({ "names": ["reqFuel"] });
+
+        exec.execute_as(AuditChannel::Assistant, "read_tune", body.clone())
+            .await
+            .expect("read_tune as Assistant succeeds");
+        exec.execute_as(AuditChannel::Mcp, "read_tune", body)
+            .await
+            .expect("read_tune as Mcp succeeds");
+
+        let lines = sink.0.lock().unwrap();
+        assert_eq!(lines.len(), 2, "one audit line per call: {lines:?}");
+        let assistant_record: Json = serde_json::from_str(&lines[0]).unwrap();
+        let mcp_record: Json = serde_json::from_str(&lines[1]).unwrap();
+
+        assert_eq!(assistant_record["channel"], "assistant");
+        assert_eq!(mcp_record["channel"], "mcp");
+        // Same tool, same input, same outcome on ONE shared executor —
+        // channel (and timing) is the only thing that differs.
+        for field in ["tool", "input", "outcome"] {
+            assert_eq!(
+                assistant_record[field], mcp_record[field],
+                "{field} must match across channels: {assistant_record} vs {mcp_record}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn propose_change_rate_limit_budget_is_shared_across_channels() {
+        // ONE executor, ONE RateLimiter (not one per channel): an Assistant
+        // propose_change followed immediately by an Mcp propose_change must
+        // hit the SAME budget and be denied, proving the two channels do
+        // not each get their own quota.
+        let (exec, _) = connected_executor(GuardrailLimits {
+            min_interval_ms: 60_000,
+            ..GuardrailLimits::default()
+        })
+        .await;
+        let body = serde_json::json!({
+            "constant": "reqFuel",
+            "edits": [{ "index": 0, "value": 13.0 }],
+            "reason": "first"
+        });
+        exec.execute_as(AuditChannel::Assistant, "propose_change", body.clone())
+            .await
+            .expect("first call (Assistant) passes");
+        let err = exec
+            .execute_as(AuditChannel::Mcp, "propose_change", body)
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ToolErrorKind::Denied);
+        assert!(
+            err.message.contains("rate limited"),
+            "Mcp call denied by the budget the Assistant call just consumed: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn proposal_ids_are_monotonic_across_channels() {
+        // ONE executor, ONE ProposalLog: ids keep counting up regardless of
+        // which channel made the call, so the assistant and MCP never
+        // collide on a proposal id.
+        let limits = GuardrailLimits {
+            min_interval_ms: 0,
+            ..GuardrailLimits::default()
+        };
+        let (exec, _) = connected_executor(limits).await;
+        let body = |reason: &str| {
+            serde_json::json!({
+                "constant": "reqFuel",
+                "edits": [{ "index": 0, "value": 13.0 }],
+                "reason": reason
+            })
+        };
+
+        let first = exec
+            .execute_as(AuditChannel::Assistant, "propose_change", body("assistant"))
+            .await
+            .expect("first proposal recorded");
+        let second = exec
+            .execute_as(AuditChannel::Mcp, "propose_change", body("mcp"))
+            .await
+            .expect("second proposal recorded");
+
+        assert_eq!(first["id"], 1);
+        assert_eq!(second["id"], 2);
+
+        let proposals = exec.proposals();
+        assert_eq!(proposals.len(), 2);
+        assert_eq!(proposals[0].id, 1);
+        assert_eq!(proposals[1].id, 2);
     }
 }

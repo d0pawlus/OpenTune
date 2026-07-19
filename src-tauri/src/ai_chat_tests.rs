@@ -14,7 +14,7 @@ use crate::ai_provider::{
 use crate::ai_tools::{AiToolExecutor, AuditSink};
 use crate::connection::ConnectSource;
 use crate::owner::{request, spawn_owner_with_emitter, Command, Emitter};
-use opentune_ai::{available_tools, AuditChannel, GuardrailLimits, PermissionPolicy};
+use opentune_ai::{available_tools, GuardrailLimits, PermissionPolicy};
 
 /// Audit sink that collects lines for assertions — copied from
 /// `ai_tools.rs`'s `VecSink` test helper.
@@ -47,7 +47,6 @@ async fn connected_executor() -> (AiToolExecutor, VecSink) {
         owner,
         PermissionPolicy::advisory(),
         GuardrailLimits::default(),
-        AuditChannel::Assistant,
         Box::new(sink.clone()),
     );
     (exec, sink)

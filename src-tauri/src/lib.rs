@@ -205,6 +205,12 @@ pub fn run() {
             // M7 slice 3: one shared assistant chat session per app run.
             app.manage(crate::ai_chat_commands::AiChatState::default());
 
+            // M7 slice 4 task 2 (issue #29): ONE tool executor app-wide,
+            // shared by the embedded assistant and the MCP server — one
+            // rate-limit budget, one proposal-id space, each call tagged
+            // with its own audit channel via `AiToolExecutor::execute_as`.
+            app.manage(crate::ai_tools::AiExecutorState::default());
+
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let mut seq = 0u32;
