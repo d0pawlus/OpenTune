@@ -113,7 +113,7 @@ pub type OnDelta<'a> = &'a mut (dyn FnMut(&str) + Send);
 pub enum Provider {
     Fake(FakeProvider),
     Anthropic(crate::ai_anthropic::AnthropicProvider),
-    // Task 5 adds an OpenAi variant
+    OpenAi(crate::ai_openai::OpenAiProvider),
 }
 
 impl Provider {
@@ -126,6 +126,7 @@ impl Provider {
         match self {
             Provider::Fake(fake) => fake.chat(req, on_delta).await,
             Provider::Anthropic(anthropic) => anthropic.chat(req, on_delta).await,
+            Provider::OpenAi(openai) => openai.chat(req, on_delta).await,
         }
     }
 }
