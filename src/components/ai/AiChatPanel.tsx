@@ -11,11 +11,22 @@
 // events (`done`/`cancelled`/`error`) flush the remainder immediately so no
 // text is lost when the interval stops.
 //
-// Proposal cards are out of scope here — `proposalReady` is acknowledged
-// but not rendered; task 6 owns that surface.
+// Proposal cards: on `proposalReady{id}` we re-fetch the full proposal list
+// (`ai_proposals` is a snapshot read, not a diff) and render a card for any
+// id not already shown — `seenProposalIds` is the de-dupe so a later
+// `proposalReady` for the same id (there isn't one today, but the event
+// carries no guarantee) never renders a duplicate card. Cards own their own
+// Apply/Dismiss lifecycle (see `ProposalCard`); this panel only decides
+// which ones to mount.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type AiStreamEvent } from "../../ipc/bindings";
+import {
+  commands,
+  events,
+  type AiProposalDto,
+  type AiStreamEvent,
+} from "../../ipc/bindings";
 import { t, type Locale } from "../../i18n";
+import { ProposalCard } from "./ProposalCard";
 import "./ai.css";
 
 export const DELTA_FLUSH_MS = 100;
@@ -51,7 +62,20 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [proposals, setProposals] = useState<AiProposalDto[]>([]);
   const deltaBuffer = useRef("");
+  const seenProposalIds = useRef<Set<number>>(new Set());
+
+  const loadNewProposals = useCallback(async () => {
+    const result = await commands.aiProposals();
+    if (result.status === "error") return;
+    const unseen = result.data.filter(
+      (p) => !seenProposalIds.current.has(p.id),
+    );
+    if (unseen.length === 0) return;
+    for (const p of unseen) seenProposalIds.current.add(p.id);
+    setProposals((prev) => [...prev, ...unseen]);
+  }, []);
 
   const flushBuffer = useCallback(() => {
     const buffered = deltaBuffer.current;
@@ -96,7 +120,7 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
           ]);
           break;
         case "proposalReady":
-          // Task 6 renders proposals
+          void loadNewProposals();
           break;
         case "done":
           flushBuffer();
@@ -113,7 +137,7 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
           break;
       }
     },
-    [flushBuffer],
+    [flushBuffer, loadNewProposals],
   );
 
   useEffect(() => {
@@ -155,6 +179,8 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
     deltaBuffer.current = "";
     setEntries([]);
     setError(null);
+    seenProposalIds.current = new Set();
+    setProposals([]);
   };
 
   return (
@@ -202,6 +228,23 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
           ),
         )}
       </div>
+
+      {proposals.length > 0 && (
+        <div className="ai-proposals">
+          {proposals.map((proposal) => (
+            <ProposalCard
+              key={proposal.id}
+              proposal={proposal}
+              locale={locale}
+              // The card already shows its own "Applied" status and the
+              // dirty badge comes from the backend's `tune_dirty` event via
+              // `setCells` — nothing left for the panel to do here. M8 is
+              // the UX milestone; keep this minimal until then.
+              onApplied={() => {}}
+            />
+          ))}
+        </div>
+      )}
 
       {running && (
         <p role="status" className="ai-chat-status">

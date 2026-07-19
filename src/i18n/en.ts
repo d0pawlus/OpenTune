@@ -231,4 +231,9 @@ export const en = {
   "ai.chat.toolOk": "tool",
   "ai.chat.toolFailed": "tool failed",
   "ai.chat.you": "You",
+  "ai.proposal.title": "Proposed change",
+  "ai.proposal.apply": "Apply",
+  "ai.proposal.dismiss": "Dismiss",
+  "ai.proposal.applied": "Applied",
+  "ai.proposal.invalid": "Not applicable — failed validation",
 } as const;

@@ -233,4 +233,9 @@ export const pl: Record<keyof typeof en, string> = {
   "ai.chat.toolOk": "narzędzie",
   "ai.chat.toolFailed": "narzędzie zawiodło",
   "ai.chat.you": "Ty",
+  "ai.proposal.title": "Proponowana zmiana",
+  "ai.proposal.apply": "Zastosuj",
+  "ai.proposal.dismiss": "Odrzuć",
+  "ai.proposal.applied": "Zastosowano",
+  "ai.proposal.invalid": "Nie do zastosowania — nie przeszła walidacji",
 };
