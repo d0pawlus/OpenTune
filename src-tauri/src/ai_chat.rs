@@ -5,7 +5,12 @@
 //! apply path is the user clicking Apply in the UI, which uses the same
 //! `set_cells` path as AutoTune.
 
-use crate::ai_provider::ChatMessage;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::ai_provider::{
+    AssistantBlock, ChatMessage, ChatRequest, Provider, StopReason, ToolDef, ToolResultMsg,
+};
+use crate::ai_tools::AiToolExecutor;
 
 /// Hard cap on tool round-trips within one user turn (runaway-loop guard).
 pub const MAX_TOOL_ITERATIONS: usize = 8;
@@ -72,8 +77,8 @@ pub fn system_prompt(tools: &[opentune_ai::ToolSpec]) -> String {
            propose_change; the user reviews and applies it manually. Never \
            claim a change was applied.\n\
          - read_realtime results include ageMs (snapshot age in \
-           milliseconds). If a result is marked stale or ageMs is large, \
-           say so and do not treat it as current.\n\
+           milliseconds). If a result is marked stale, or ageMs is older \
+           than about 2 seconds, say so and do not treat it as current.\n\
          - If a tool returns an error or a proposal comes back not-ok, \
            report the reason honestly.\n\
          - Be concise; the user may be tuning a running engine."
@@ -90,6 +95,192 @@ pub fn annotate_realtime_staleness(result: &mut serde_json::Value) {
     if age > REALTIME_STALE_MS {
         result["stale"] = serde_json::Value::Bool(true);
     }
+}
+
+/// Progress events the chat loop emits as it runs. Plain Rust — Task 4
+/// wires the specta event DTO that carries these over IPC.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatEvent {
+    Delta {
+        text: String,
+    },
+    ToolStart {
+        name: String,
+    },
+    ToolEnd {
+        name: String,
+        ok: bool,
+        summary: String,
+    },
+    ProposalReady {
+        id: u32,
+    },
+    Done,
+    Cancelled,
+    Error {
+        message: String,
+    },
+}
+
+/// Run one user turn to completion: push the user message, then loop
+/// provider calls and tool round-trips (bounded by [`MAX_TOOL_ITERATIONS`])
+/// until the model ends its turn, errors, or the cap is hit. The assistant
+/// NEVER writes to the ECU here — every tool call goes through
+/// `executor.execute`, which is gated by the same policy/guardrail/audit
+/// path as every other AI entry point (ADR-0008).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_chat_turn(
+    provider: &Provider,
+    executor: &AiToolExecutor,
+    history: &mut ChatHistory,
+    tools: &[ToolDef],
+    system: &str,
+    model: &str,
+    max_tokens: u32,
+    user_text: String,
+    cancel: &AtomicBool,
+    emit: &(dyn Fn(ChatEvent) + Send + Sync),
+) -> Result<(), String> {
+    history.push(ChatMessage::User { text: user_text });
+
+    for _ in 0..MAX_TOOL_ITERATIONS {
+        // ponytail: flag checks between steps — mid-stream cancel needs
+        // select!; add if users ask.
+        if cancel.load(Ordering::SeqCst) {
+            emit(ChatEvent::Cancelled);
+            return Ok(());
+        }
+
+        let req = ChatRequest {
+            system: system.to_owned(),
+            messages: history.messages().to_vec(),
+            tools: tools.to_vec(),
+            model: model.to_owned(),
+            max_tokens,
+        };
+        let mut on_delta = |text: &str| {
+            emit(ChatEvent::Delta {
+                text: text.to_owned(),
+            })
+        };
+        let turn = match provider.chat(&req, &mut on_delta).await {
+            Ok(turn) => turn,
+            Err(err) => {
+                emit(ChatEvent::Error {
+                    message: err.to_string(),
+                });
+                return Err(err.to_string());
+            }
+        };
+
+        history.push(ChatMessage::Assistant {
+            blocks: turn.blocks.clone(),
+        });
+
+        match &turn.stop_reason {
+            StopReason::EndTurn => {
+                emit(ChatEvent::Done);
+                return Ok(());
+            }
+            StopReason::MaxTokens => {
+                emit(ChatEvent::Error {
+                    message: "stopped: the model hit its max-tokens limit".into(),
+                });
+                return Ok(());
+            }
+            StopReason::Other(reason) => {
+                emit(ChatEvent::Error {
+                    message: format!("stopped: {reason}"),
+                });
+                return Ok(());
+            }
+            StopReason::ToolUse => {
+                let mut results = Vec::with_capacity(turn.blocks.len());
+                for block in &turn.blocks {
+                    let AssistantBlock::ToolUse { id, name, input } = block else {
+                        continue;
+                    };
+                    if cancel.load(Ordering::SeqCst) {
+                        emit(ChatEvent::Cancelled);
+                        return Ok(());
+                    }
+                    results.push(execute_tool_block(executor, id, name, input, emit).await);
+                }
+                history.push(ChatMessage::ToolResults { results });
+            }
+        }
+    }
+
+    emit(ChatEvent::Error {
+        message: format!(
+            "stopped: exceeded the {MAX_TOOL_ITERATIONS}-iteration tool-call cap for one turn"
+        ),
+    });
+    Ok(())
+}
+
+/// Execute one `ToolUse` block: emits `ToolStart`/`ToolEnd`, annotates
+/// `read_realtime` results for staleness before they go back to the model,
+/// and surfaces `propose_change` proposals via `ProposalReady`. Tool errors
+/// become `is_error: true` results — they are returned to the model, never
+/// used to abort the loop.
+async fn execute_tool_block(
+    executor: &AiToolExecutor,
+    tool_use_id: &str,
+    name: &str,
+    input: &serde_json::Value,
+    emit: &(dyn Fn(ChatEvent) + Send + Sync),
+) -> ToolResultMsg {
+    emit(ChatEvent::ToolStart {
+        name: name.to_owned(),
+    });
+    match executor.execute(name, input.clone()).await {
+        Ok(mut result) => {
+            if name == "read_realtime" {
+                annotate_realtime_staleness(&mut result);
+            }
+            if name == "propose_change" {
+                if let Some(proposal_id) = result.get("id").and_then(|v| v.as_u64()) {
+                    emit(ChatEvent::ProposalReady {
+                        id: proposal_id as u32,
+                    });
+                }
+            }
+            emit(ChatEvent::ToolEnd {
+                name: name.to_owned(),
+                ok: true,
+                summary: tool_ok_summary(name, &result),
+            });
+            ToolResultMsg {
+                tool_use_id: tool_use_id.to_owned(),
+                content: result.to_string(),
+                is_error: false,
+            }
+        }
+        Err(err) => {
+            emit(ChatEvent::ToolEnd {
+                name: name.to_owned(),
+                ok: false,
+                summary: err.message.clone(),
+            });
+            ToolResultMsg {
+                tool_use_id: tool_use_id.to_owned(),
+                content: err.message,
+                is_error: true,
+            }
+        }
+    }
+}
+
+/// A compact one-line summary for a successful tool call's `ToolEnd` event.
+/// `propose_change` names the proposal id/verdict; everything else is `"ok"`.
+fn tool_ok_summary(name: &str, result: &serde_json::Value) -> String {
+    if name != "propose_change" {
+        return "ok".to_owned();
+    }
+    let id = result.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let ok = result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+    format!("proposal #{id} ok={ok}")
 }
 
 #[cfg(test)]
@@ -145,3 +336,7 @@ mod core_tests {
         assert!(none.get("stale").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "ai_chat_tests.rs"]
+mod loop_tests;

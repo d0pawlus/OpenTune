@@ -133,7 +133,9 @@ impl Provider {
 
 /// Fake provider for testing — pops scripted turns in order.
 pub struct FakeProvider {
-    turns: std::sync::Mutex<Vec<ChatTurn>>,
+    /// `pub` so tests can assert how many scripted turns went unconsumed
+    /// (e.g. proving a cancelled loop never made a second provider call).
+    pub turns: std::sync::Mutex<Vec<ChatTurn>>,
 }
 
 impl FakeProvider {
