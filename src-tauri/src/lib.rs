@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pub mod ai_commands;
 pub mod ai_settings;
 pub mod ai_tools;
 mod analysis_bridge;
@@ -38,6 +39,11 @@ fn build_specta() -> Builder<tauri::Wry> {
             commands::connect,
             commands::disconnect,
             commands::simulate_link_drop,
+            ai_commands::get_ai_settings,
+            ai_commands::set_ai_settings,
+            ai_commands::set_ai_key,
+            ai_commands::clear_ai_key,
+            ai_commands::ai_key_present,
             tune_commands::get_definition,
             tune_commands::load_tune,
             tune_commands::get_values,
@@ -179,6 +185,11 @@ pub fn run() {
             // §9: spawn the single wire-owner task; commands talk to it
             // through the managed sender.
             app.manage(owner::spawn_owner(app.handle().clone()));
+
+            // M7 slice 2: manage the AI key store (OsKeyStore in production).
+            app.manage(crate::ai_commands::AiKeyStoreState(std::sync::Arc::new(
+                crate::ai_settings::OsKeyStore,
+            )));
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {

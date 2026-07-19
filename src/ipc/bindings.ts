@@ -23,6 +23,11 @@ export const commands = {
 	 *  re-reads the tune when the reconnect detected an ECU reboot.
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
+	getAiSettings: () => typedError<AiSettingsDto, string>(__TAURI_INVOKE("get_ai_settings")),
+	setAiSettings: (settings: AiSettingsDto) => typedError<null, string>(__TAURI_INVOKE("set_ai_settings", { settings })),
+	setAiKey: (provider: string, key: string) => typedError<null, string>(__TAURI_INVOKE("set_ai_key", { provider, key })),
+	clearAiKey: (provider: string) => typedError<null, string>(__TAURI_INVOKE("clear_ai_key", { provider })),
+	aiKeyPresent: (provider: string) => typedError<boolean, string>(__TAURI_INVOKE("ai_key_present", { provider })),
 	/**
 	 *  Return the parsed firmware definition (menus, dialogs, constants, …) for
 	 *  the frontend to render the data-driven UI against.
@@ -145,6 +150,13 @@ export const events = {
 };
 
 /* Types */
+/**  AI settings as exposed over IPC (M7). Never carries key material. */
+export type AiSettingsDto = {
+	enabled: boolean,
+	provider: string,
+	model: string,
+};
+
 export type AnomalyDto = {
 	row: number,
 	t_ms: number | null,

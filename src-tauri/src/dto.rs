@@ -15,6 +15,8 @@ use opentune_ini::{
 };
 use opentune_model::{CellDiff, FieldDiff, MergePick, Value};
 
+use crate::ai_settings::AiSettings;
+
 /// The UI-facing projection of a [`Definition`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct DefinitionDto {
@@ -809,6 +811,35 @@ pub struct VirtualDynoReportDto {
     pub points: Vec<DynoPointDto>,
     pub conditions: Vec<DynoConditionDto>,
     pub assumptions: Vec<String>,
+}
+
+/// AI settings as exposed over IPC (M7). Never carries key material.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettingsDto {
+    pub enabled: bool,
+    pub provider: String,
+    pub model: String,
+}
+
+impl From<AiSettings> for AiSettingsDto {
+    fn from(s: AiSettings) -> Self {
+        Self {
+            enabled: s.enabled,
+            provider: s.provider,
+            model: s.model,
+        }
+    }
+}
+
+impl From<AiSettingsDto> for AiSettings {
+    fn from(s: AiSettingsDto) -> Self {
+        Self {
+            enabled: s.enabled,
+            provider: s.provider,
+            model: s.model,
+        }
+    }
 }
 
 #[cfg(test)]
