@@ -183,7 +183,7 @@ impl AiToolExecutor {
         let outcome = match &result {
             Ok(_) => AuditOutcome::Ok,
             Err(e) if e.kind == ToolErrorKind::Denied => AuditOutcome::Denied {
-                reason: format!("denied: {}", e.message),
+                reason: e.message.clone(),
             },
             Err(e) => AuditOutcome::Error {
                 message: e.message.clone(),
@@ -294,7 +294,7 @@ impl AiToolExecutor {
             // Policy already denied these below `assisted`/`autonomous`;
             // their real implementations arrive with those levels.
             "apply_change" | "burn_now" => Err(ToolError::denied(format!(
-                "tool {name} is not implemented at the advisory level"
+                "tool {name} is not implemented in this build"
             ))),
             other => Err(ToolError::failed(format!("unknown tool: {other}"))),
         }
@@ -334,9 +334,11 @@ impl AiToolExecutor {
             edits: args.edits.iter().map(|e| (e.index, e.value)).collect(),
             reason: args.reason.clone(),
         };
-        // Advisory never writes, so link health is a formality here — but
+        // Advisory never writes, so link health is not enforced here —
         // validate_change keeps the same contract the assisted level will
-        // enforce for real. A loaded session implies a live sim/serial link.
+        // enforce for real. `true` is a placeholder, not a fact: offline
+        // sessions (conn: None) load tunes too and reach this path, so the
+        // assisted-level implementer must wire a real link-health input.
         let validated = validate_change(&req, bounds, &current, &self.limits, true)
             .map_err(|v| ToolError::denied(v.to_string()))?;
         let proposal = {

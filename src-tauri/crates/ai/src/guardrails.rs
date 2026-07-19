@@ -63,9 +63,22 @@ impl std::fmt::Display for GuardrailViolation {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CellCheck {
     Ok,
-    UnknownIndex { len: usize },
-    OutOfRange { low: f64, high: f64 },
-    DeltaTooLarge { delta_pct: f64, max: f64 },
+    UnknownIndex {
+        len: usize,
+    },
+    OutOfRange {
+        low: f64,
+        high: f64,
+    },
+    /// The current value read back non-finite (e.g. `Session::read_values`'s
+    /// NaN sentinel for an unresolvable constant). Delta magnitude is
+    /// meaningless against a value we don't actually know, so this is
+    /// checked before the delta computation and never reads back as `Ok`.
+    UnknownCurrent,
+    DeltaTooLarge {
+        delta_pct: f64,
+        max: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -112,6 +125,7 @@ pub fn validate_change(
             let check = match current.get(index as usize) {
                 None => CellCheck::UnknownIndex { len: current.len() },
                 Some(_) if !(low..=high).contains(&value) => CellCheck::OutOfRange { low, high },
+                Some(&cur) if !cur.is_finite() => CellCheck::UnknownCurrent,
                 Some(&cur) if cur != 0.0 => {
                     let delta_pct = ((value - cur) / cur).abs() * 100.0;
                     if delta_pct > limits.max_delta_pct {
@@ -135,7 +149,9 @@ pub fn validate_change(
             }
         })
         .collect();
-    let ok = cells.iter().all(|c| c.check == CellCheck::Ok);
+    // Empty edits are not a validated no-op change: an AI call that touches
+    // nothing must not read back as ok.
+    let ok = !cells.is_empty() && cells.iter().all(|c| c.check == CellCheck::Ok);
     Ok(ValidatedChange { cells, ok })
 }
 
@@ -254,6 +270,36 @@ mod tests {
         .expect("verdicts");
         assert!(!v.ok);
         assert_eq!(v.cells[0].check, CellCheck::UnknownIndex { len: 1 });
+    }
+
+    #[test]
+    fn nan_current_value_is_flagged_not_ok() {
+        // Session::read_values fails open with a NaN sentinel for
+        // unresolvable constants; that must never read back as Ok.
+        let v = validate_change(
+            &req(vec![(0, 13.0)]),
+            (0.0, 25.5),
+            &[f64::NAN],
+            &GuardrailLimits::default(),
+            true,
+        )
+        .expect("verdicts, not a request-level violation");
+        assert!(!v.ok);
+        assert_eq!(v.cells[0].check, CellCheck::UnknownCurrent);
+    }
+
+    #[test]
+    fn empty_edits_do_not_validate_as_ok() {
+        let v = validate_change(
+            &req(vec![]),
+            (0.0, 25.5),
+            &[12.5],
+            &GuardrailLimits::default(),
+            true,
+        )
+        .expect("empty edits do not violate request-level limits");
+        assert!(v.cells.is_empty());
+        assert!(!v.ok, "empty edits must not validate as ok");
     }
 
     #[test]

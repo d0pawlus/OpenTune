@@ -57,7 +57,7 @@ pub fn registry() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "get_log_stats",
-            description: "Per-channel summary statistics (min/max/mean/stddev) over an opened datalog, with auditable row-rejection filters.",
+            description: "Per-channel summary statistics (min/max/mean/stddev) over an opened datalog.",
             kind: ToolKind::ReadOnly,
             input_schema: json!({
                 "type": "object",
@@ -72,6 +72,8 @@ pub fn registry() -> Vec<ToolSpec> {
                 "required": ["log_id"]
             }),
         },
+        // Field names mirror the DTOs in src-tauri/src/dto.rs (snake_case)
+        // — the DTOs are the source of truth.
         ToolSpec {
             name: "detect_anomaly",
             description: "Scan an opened datalog for sensor dropouts, lean spikes, and knock using explicit thresholds. Every finding carries row, time, channel, and the rule that fired.",
@@ -82,7 +84,43 @@ pub fn registry() -> Vec<ToolSpec> {
                     "log_id": { "type": "integer" },
                     "thresholds": {
                         "type": "object",
-                        "description": "AnomalyThresholds fields (afrChannel, leanAfr, rpmChannel, knockChannel, ...) exactly as the detect_anomaly IPC command takes them"
+                        "description": "AnomalyThresholdsDto fields exactly as the detect_anomaly IPC command takes them",
+                        "properties": {
+                            "sensors": {
+                                "type": "array",
+                                "description": "Per-channel [min, max] dropout bounds",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "channel": { "type": "string" },
+                                        "min": { "type": "number" },
+                                        "max": { "type": "number" }
+                                    },
+                                    "required": ["channel", "min", "max"]
+                                }
+                            },
+                            "afr_channel": { "type": "string" },
+                            "lean_afr": { "type": "number" },
+                            "lean_min_rpm": { "type": "number" },
+                            "rpm_channel": { "type": "string" },
+                            "load_channel": { "type": "string" },
+                            "lean_min_load": { "type": "number" },
+                            "knock_channel": { "type": "string" },
+                            "knock_threshold": { "type": "number" },
+                            "knock_min_rpm": { "type": "number" }
+                        },
+                        "required": [
+                            "sensors",
+                            "afr_channel",
+                            "lean_afr",
+                            "lean_min_rpm",
+                            "rpm_channel",
+                            "load_channel",
+                            "lean_min_load",
+                            "knock_channel",
+                            "knock_threshold",
+                            "knock_min_rpm"
+                        ]
                     }
                 },
                 "required": ["log_id", "thresholds"]
@@ -98,7 +136,29 @@ pub fn registry() -> Vec<ToolSpec> {
                     "log_id": { "type": "integer" },
                     "params": {
                         "type": "object",
-                        "description": "VirtualDynoParams fields (speedChannel, rpmChannel, massKg, ...) exactly as the virtual_dyno IPC command takes them"
+                        "description": "VirtualDynoParamsDto fields exactly as the virtual_dyno IPC command takes them",
+                        "properties": {
+                            "speed_channel": { "type": "string" },
+                            "rpm_channel": { "type": "string" },
+                            "mass_kg": { "type": "number" },
+                            "drag_coefficient": { "type": "number" },
+                            "frontal_area_m2": { "type": "number" },
+                            "rolling_resistance": { "type": "number" },
+                            "drivetrain_loss": { "type": "number" },
+                            "smoothing_window": { "type": "integer" },
+                            "air_density_kg_m3": { "type": "number" }
+                        },
+                        "required": [
+                            "speed_channel",
+                            "rpm_channel",
+                            "mass_kg",
+                            "drag_coefficient",
+                            "frontal_area_m2",
+                            "rolling_resistance",
+                            "drivetrain_loss",
+                            "smoothing_window",
+                            "air_density_kg_m3"
+                        ]
                     }
                 },
                 "required": ["log_id", "params"]
