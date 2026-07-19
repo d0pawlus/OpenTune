@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod ai_anthropic;
 pub mod ai_chat;
+pub mod ai_chat_commands;
 pub mod ai_commands;
 pub mod ai_openai;
 pub mod ai_provider;
@@ -48,6 +49,10 @@ fn build_specta() -> Builder<tauri::Wry> {
             ai_commands::set_ai_key,
             ai_commands::clear_ai_key,
             ai_commands::ai_key_present,
+            ai_chat_commands::ai_send,
+            ai_chat_commands::ai_cancel,
+            ai_chat_commands::ai_reset,
+            ai_chat_commands::ai_proposals,
             tune_commands::get_definition,
             tune_commands::load_tune,
             tune_commands::get_values,
@@ -89,6 +94,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             events::ConnectionStateEvent,
             events::TuneDirtyEvent,
             events::RealtimeFrameEvent,
+            events::AiStreamEvent,
         ])
 }
 
@@ -194,6 +200,9 @@ pub fn run() {
             app.manage(crate::ai_commands::AiKeyStoreState(std::sync::Arc::new(
                 crate::ai_settings::OsKeyStore,
             )));
+
+            // M7 slice 3: one shared assistant chat session per app run.
+            app.manage(crate::ai_chat_commands::AiChatState::default());
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -435,6 +444,25 @@ mod binding_gen {
             "GaugeDto",
             "FrontPageDto",
             "IndicatorDto",
+        ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_ai_chat_commands_and_event() {
+        let contents = export_and_read();
+        for needle in [
+            "aiSend",
+            "aiCancel",
+            "aiReset",
+            "aiProposals",
+            "AiStreamEvent",
+            "AiProposalDto",
+            "AiCellVerdictDto",
         ] {
             assert!(
                 contents.contains(needle),
