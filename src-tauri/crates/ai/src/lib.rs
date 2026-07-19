@@ -61,6 +61,9 @@ pub use guardrails::{
     RateLimiter, ValidatedChange,
 };
 
+mod audit;
+pub use audit::{AuditChannel, AuditOutcome, AuditRecord};
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
