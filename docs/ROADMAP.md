@@ -188,14 +188,15 @@ playback, GUI-derived channels, markers/export, log statistics, anomaly detectio
 and an auditable virtual dyno. The 100k-record path is test-pinned; see
 [`docs/notes/m5-decisions.md`](notes/m5-decisions.md).
 
-## M6 — Interop, polish & first release 🟦
+## M6 — Interop, polish & first release ✅
 
 Goal: the first public OpenTune release that people can evaluate against
 TunerStudio-compatible projects and common offline workflows.
 
-- 🟦 `.msq` import/export verified against real TunerStudio-produced MS3 and
-  rusEFI projects plus focused serialization round trips. The disposable
-  OpenTune → TunerStudio GUI re-save check remains the final manual gate.
+- ✅ `.msq` import/export verified against real TunerStudio-produced MS3 and
+  rusEFI projects plus focused serialization round trips. A disposable
+  OpenTune → TunerStudio → OpenTune re-save preserved the selected scalar,
+  choice, and table cell; see the [M6 compatibility evidence](compatibility/m6.md).
 - ✅ Validated against Speeduino, rusEFI, and MegaSquirt MS3; see the
   [M6 compatibility evidence](compatibility/m6.md).
 - ✅ Cross-platform packaging for macOS arm64/x64, Windows x64, and Linux x64.
@@ -204,9 +205,9 @@ TunerStudio-compatible projects and common offline workflows.
   the OS warnings.
 - ✅ Cryptographically signed, user-controlled Tauri updates; first-run guide;
   preference persistence; and GitHub Pages documentation workflow.
-- 🟦 Automated accessibility checks and Polish/English coverage pass. Manual
-  keyboard/VoiceOver acceptance remains the final UI gate; see the
-  [M6 accessibility report](accessibility/m6.md).
+- ✅ Automated accessibility checks and Polish/English coverage pass. Manual
+  keyboard, contrast, reduced-motion, and VoiceOver acceptance also passes; see
+  the [M6 accessibility report](accessibility/m6.md).
 
 **Demo:** download `v0.2.0`, acknowledge the documented unsigned-publisher OS
 warning, open an existing TunerStudio project, work offline or with the

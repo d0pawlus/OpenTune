@@ -478,8 +478,9 @@ existing INIs, tunes, and logs, and take them elsewhere.
 (Through M5 the full backend is implemented: all domain crates — `ini`, `model`,
 `protocol`, `transport`, `realtime`, `datalog`, `analysis`, `project`, `simulator` —
 plus the app shell, typed IPC, CI, table/curve/3D editors, deterministic auto-tune,
-and datalog capture with analysis. M6 — interop hardening, packaging, signed builds,
-and the first public release — is in progress; see the [roadmap](ROADMAP.md). The
+and datalog capture with analysis. M6 — interop hardening, packaging, signed
+updates, onboarding/accessibility, and the first public release — is complete;
+Apple/Windows publisher signing remains deferred. See the [roadmap](ROADMAP.md). The
 `ai` crate (§5.10) is planned for M7.)
 
 ## 15. Risks and open questions

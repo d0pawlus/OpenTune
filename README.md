@@ -101,11 +101,11 @@ See [`docs/protocol.md`](docs/protocol.md) and
 
 ## Project status
 
-🚧 **Pre-1.0 — active implementation.** Milestones M0–M5 are implemented:
+🚧 **Pre-1.0 — active implementation.** Milestones M0–M6 are implemented:
 the Tauri application can parse firmware INIs, identify the simulator or a
 serial ECU, and run the end-to-end flow on the hardware-free simulator —
 read/edit/burn, realtime dashboard, table/curve/3D editors, deterministic
-auto-tune, and datalog capture with analysis. The M6 release candidate adds
+auto-tune, and datalog capture with analysis. The M6 release adds
 interop evidence, signed in-app updates, onboarding, Polish/English preferences,
 an accessibility baseline, cross-platform packaging, and public documentation.
 Publisher signing for macOS/Windows is explicitly deferred; see

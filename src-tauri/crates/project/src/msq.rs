@@ -2,8 +2,8 @@
 //! `.msq` (TunerStudio tune XML) read/write against a `Definition` + `Tune`.
 //!
 //! ponytail: round-trips `<constant name→value>` pairs + `<versionInfo signature>`
-//! only. Settings groups, comments, CRC, and bibliography metadata are skipped —
-//! full `.msq` fidelity is the M6 `project` goal.
+//! with TunerStudio-compatible quoting and array rows. Settings groups, comments,
+//! CRC, bibliography metadata, and PC variables are intentionally skipped.
 
 use opentune_ini::ConstantKind;
 use opentune_model::{Tune, Value};
@@ -36,7 +36,7 @@ pub struct MsqReport {
 pub fn tune_to_msq(tune: &Tune) -> String {
     let def = tune.definition();
     let mut out = String::new();
-    out.push_str("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n");
+    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<msq xmlns=\"http://www.msefi.com/:msq\">\n");
     out.push_str(&format!(
         "  <versionInfo fileFormat=\"5.0\" signature=\"{}\"/>\n",
@@ -45,15 +45,44 @@ pub fn tune_to_msq(tune: &Tune) -> String {
     for page in &def.pages {
         out.push_str("  <page>\n");
         for c in def.constants.iter().filter(|c| c.page == page.number) {
-            let value_text = match tune.get(&c.name) {
-                Ok(v) => value_to_text(&v, &c.kind),
+            let value = match tune.get(&c.name) {
+                Ok(v) => v,
                 Err(_) => continue, // ponytail: constant unreadable → omit, not fatal on save
             };
-            out.push_str(&format!(
-                "    <constant name=\"{}\">{}</constant>\n",
-                xml_escape(&c.name),
-                xml_escape(&value_text)
-            ));
+            match (&value, &c.kind) {
+                (Value::Array(values), ConstantKind::Array { shape, .. }) => {
+                    let units = if c.units.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" units=\"{}\"", xml_escape(&c.units))
+                    };
+                    out.push_str(&format!(
+                        "    <constant name=\"{}\" cols=\"{}\" rows=\"{}\" digits=\"{}\"{}>\n",
+                        xml_escape(&c.name),
+                        shape.cols,
+                        shape.rows,
+                        c.digits,
+                        units
+                    ));
+                    for row in values.chunks(shape.cols.max(1)) {
+                        let row = row
+                            .iter()
+                            .map(|n| fmt_num(*n))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        out.push_str(&format!("      {row}\n"));
+                    }
+                    out.push_str("    </constant>\n");
+                }
+                _ => {
+                    let value_text = value_to_text(&value, &c.kind);
+                    out.push_str(&format!(
+                        "    <constant name=\"{}\">{}</constant>\n",
+                        xml_escape(&c.name),
+                        xml_escape(&value_text)
+                    ));
+                }
+            }
         }
         out.push_str("  </page>\n");
     }
@@ -170,12 +199,12 @@ fn value_to_text(v: &Value, kind: &ConstantKind) -> String {
     match (v, kind) {
         (Value::Enum(idx), ConstantKind::Bits { options, .. }) => options
             .get(*idx as usize)
-            .cloned()
+            .map(|label| format!("\"{label}\""))
             .unwrap_or_else(|| idx.to_string()),
         (Value::Enum(idx), _) => idx.to_string(),
         (Value::Scalar(n), _) => fmt_num(*n),
         (Value::Array(xs), _) => xs.iter().map(|n| fmt_num(*n)).collect::<Vec<_>>().join(" "),
-        (Value::Text(s), _) => s.clone(),
+        (Value::Text(s), _) => format!("\"{s}\""),
     }
 }
 

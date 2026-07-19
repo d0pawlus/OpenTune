@@ -17,7 +17,7 @@ ECUs.
 - [M6 compatibility evidence]({{ '/compatibility/m6/' | relative_url }}) —
   Speeduino, rusEFI, MegaSquirt, and exact reproduction commands.
 - [M6 accessibility evidence]({{ '/accessibility/m6/' | relative_url }}) —
-  automated results, manual gates, and known boundaries.
+  automated and manual results plus known boundaries.
 - [v0.2.0 release notes]({{ '/releases/v0.2.0/' | relative_url }}) — M6
   highlights and explicit limitations.
 - [Architecture]({{ '/architecture/' | relative_url }}) — component boundaries

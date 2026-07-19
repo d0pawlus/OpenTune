@@ -7,6 +7,46 @@ use opentune_model::Value;
 use opentune_project::msq::{load_msq_into, tune_to_msq, MsqError};
 
 #[test]
+fn tunerstudio_metadata_and_quoting_are_serialized() {
+    let mut table = array_on("veTable", 4, 2, 2);
+    table.units = "%".to_string();
+    table.digits = 1;
+    let mut t = tune(vec![
+        table,
+        bits_on("algorithm", 8, &["Speed Density", "Alpha-N"]),
+        text_on("tuneName", 16, 8),
+    ]);
+    t.set("veTable", Value::Array(vec![10.0, 20.0, 30.0, 40.0]))
+        .unwrap();
+    t.set("algorithm", Value::Enum(1)).unwrap();
+    t.set("tuneName", Value::Text("MyTune".to_string()))
+        .unwrap();
+
+    let xml = tune_to_msq(&t);
+
+    assert!(
+        xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"),
+        "the XML declaration must match the UTF-8 bytes written by Rust"
+    );
+    assert!(
+        xml.contains("<constant name=\"veTable\" cols=\"2\" rows=\"2\" digits=\"1\" units=\"%\">"),
+        "array shape and display metadata must be present, got: {xml}"
+    );
+    assert!(
+        xml.contains(">\n      10 20\n      30 40\n    </constant>"),
+        "each TunerStudio array row must be serialized on its own line, got: {xml}"
+    );
+    assert!(
+        xml.contains("<constant name=\"algorithm\">&quot;Alpha-N&quot;</constant>"),
+        "bit labels must be quoted for TunerStudio, got: {xml}"
+    );
+    assert!(
+        xml.contains("<constant name=\"tuneName\">&quot;MyTune&quot;</constant>"),
+        "text values must be quoted for TunerStudio, got: {xml}"
+    );
+}
+
+#[test]
 fn scalar_array_bits_text_round_trip() {
     let mut t = tune(vec![
         scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
@@ -101,7 +141,7 @@ fn out_of_range_array_elements_clamp_like_tunerstudio() {
     t.set("veTable", Value::Array(vec![10.0, 20.0, 30.0, 40.0]))
         .unwrap();
     // 999 exceeds the array's high=255 → that element clamps, rest apply.
-    let xml = tune_to_msq(&t).replace(">10 20 30 40<", ">10 999 30 40<");
+    let xml = tune_to_msq(&t).replace("      10 20\n      30 40", "      10 999\n      30 40");
 
     let mut fresh = tune(vec![array_on("veTable", 4, 2, 2)]);
     let report = load_msq_into(&mut fresh, &xml).unwrap();
@@ -128,7 +168,7 @@ fn bad_bit_label_is_collected_not_fatal() {
         let mut t = good;
         t.set("crankingRPM", Value::Scalar(40.0)).unwrap();
         t.set("algorithm", Value::Enum(1)).unwrap();
-        tune_to_msq(&t).replace(">Alpha-N<", ">Nope-Not-An-Option<")
+        tune_to_msq(&t).replace(">&quot;Alpha-N&quot;<", ">&quot;Nope-Not-An-Option&quot;<")
     };
     let mut fresh = tune(vec![
         scalar("crankingRPM", ScalarType::U08, 0, 1.0, 255.0),
@@ -149,7 +189,7 @@ fn quoted_bit_label_from_tunerstudio_applies() {
     // option list instead of failing as an unknown option.
     let mut t = tune(vec![bits_on("algorithm", 8, &["Speed Density", "Alpha-N"])]);
     t.set("algorithm", Value::Enum(1)).unwrap();
-    let xml = tune_to_msq(&t).replace(">Alpha-N<", ">\"Alpha-N\"<");
+    let xml = tune_to_msq(&t);
 
     let mut fresh = tune(vec![bits_on("algorithm", 8, &["Speed Density", "Alpha-N"])]);
     let report = load_msq_into(&mut fresh, &xml).unwrap();
@@ -165,7 +205,7 @@ fn quoted_text_value_from_tunerstudio_unquotes() {
     let mut t = tune(vec![text_on("tuneName", 16, 8)]);
     t.set("tuneName", Value::Text("MyTune".to_string()))
         .unwrap();
-    let xml = tune_to_msq(&t).replace(">MyTune<", ">\"MyTune\"<");
+    let xml = tune_to_msq(&t);
 
     let mut fresh = tune(vec![text_on("tuneName", 16, 8)]);
     let report = load_msq_into(&mut fresh, &xml).unwrap();
@@ -182,7 +222,7 @@ fn bit_field_serializes_as_label_not_index() {
     t.set("algorithm", Value::Enum(1)).unwrap();
     let xml = tune_to_msq(&t);
     assert!(
-        xml.contains(">Alpha-N<"),
+        xml.contains(">&quot;Alpha-N&quot;<"),
         "bit field must serialize the option label, got: {xml}"
     );
     assert!(!xml.contains(">1<"), "must not serialize the raw index");
