@@ -13,6 +13,8 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::layout::atomic_write;
+
 /// Settings file name inside `app_config_dir` (same directory layout.rs uses).
 pub const AI_SETTINGS_FILE: &str = "ai-settings.json";
 
@@ -133,20 +135,10 @@ impl KeyStore for MemoryKeyStore {
     }
 }
 
-/// Atomic write, mirroring `layout.rs`: temp file + fsync + rename.
+/// Atomic write using the shared helper: temp file + fsync + rename.
 pub fn save_ai_settings_in(dir: &Path, settings: &AiSettings) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string());
-    let json = json?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let tmp = dir.join(format!("{AI_SETTINGS_FILE}.tmp"));
-    let target = dir.join(AI_SETTINGS_FILE);
-    {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        f.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    atomic_write(dir, AI_SETTINGS_FILE, json.as_bytes())
 }
 
 /// Missing file → defaults (fresh install); unreadable/corrupt → Err.
@@ -231,5 +223,43 @@ mod tests {
         let err = validate_provider("acme").unwrap_err();
         assert!(!err.contains("test-key"), "errors never echo secrets");
         assert!(err.contains("acme"));
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_temp_files_on_sequential_saves() {
+        let dir = tmp_dir("atomic-cleanup");
+        let s1 = AiSettings {
+            enabled: false,
+            provider: "anthropic".into(),
+            model: "claude-3".into(),
+        };
+        let s2 = AiSettings {
+            enabled: true,
+            provider: "openai".into(),
+            model: "gpt-4".into(),
+        };
+
+        // First save
+        save_ai_settings_in(&dir, &s1).expect("first save");
+        let back1 = load_ai_settings_in(&dir).expect("load after first save");
+        assert_eq!(back1, s1);
+
+        // Second save should not leave temp files from first save
+        save_ai_settings_in(&dir, &s2).expect("second save");
+        let back2 = load_ai_settings_in(&dir).expect("load after second save");
+        assert_eq!(back2, s2);
+
+        // Verify no stray .tmp files were left behind
+        let entries = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .map(|e| e.map(|entry| entry.file_name().to_string_lossy().to_string()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect entries");
+        assert!(
+            !entries.iter().any(|name| name.ends_with(".tmp")),
+            "no temp files should remain after successful saves, but found: {:?}",
+            entries
+        );
+        assert_eq!(entries.len(), 1, "only the settings file should exist");
     }
 }
