@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pub mod ai_settings;
 pub mod ai_tools;
 mod analysis_bridge;
 mod analysis_commands;
