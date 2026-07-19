@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::ai_settings::{load_ai_settings_in, save_ai_settings_in, validate_provider, KeyStore};
+use crate::ai_settings::{
+    load_ai_settings_in, load_or_create_mcp_token_in, regenerate_mcp_token_in, save_ai_settings_in,
+    validate_provider, KeyStore,
+};
 use crate::dto::AiSettingsDto;
 
 /// Managed handle to the key store (OsKeyStore in production).
@@ -34,6 +37,9 @@ pub(crate) fn set_ai_settings_in(dir: &Path, settings: AiSettingsDto) -> Result<
     validate_provider(&settings.provider)?;
     if settings.enabled && settings.model.trim().is_empty() {
         return Err("model must be set when AI is enabled".into());
+    }
+    if settings.mcp_port < 1024 {
+        return Err("MCP port must be >= 1024 (non-privileged)".into());
     }
     save_ai_settings_in(dir, &settings.into())
 }
@@ -84,6 +90,22 @@ pub async fn ai_key_present(
     store.0.key_present(&provider)
 }
 
+/// Returns the MCP per-install token, creating it if needed (or regenerating
+/// when requested). This is the ONE place the token crosses IPC — the user
+/// needs to copy it into their MCP client configuration. The token is never
+/// persisted in the settings JSON, never logged, and only returned via this
+/// command on explicit request.
+#[tauri::command]
+#[specta::specta]
+pub async fn mcp_token_info(app: tauri::AppHandle, regenerate: bool) -> Result<String, String> {
+    let dir = config_dir(&app)?;
+    if regenerate {
+        regenerate_mcp_token_in(&dir)
+    } else {
+        load_or_create_mcp_token_in(&dir)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,12 +138,16 @@ mod tests {
             enabled: true,
             provider: "openai".into(),
             model: "  ".into(),
+            mcp_enabled: false,
+            mcp_port: 8765,
         };
         assert!(set_ai_settings_in(&dir, bad).is_err());
         let ok = AiSettingsDto {
             enabled: true,
             provider: "openai".into(),
             model: "gpt-x".into(),
+            mcp_enabled: false,
+            mcp_port: 8765,
         };
         set_ai_settings_in(&dir, ok).expect("valid settings persist");
         let read = get_ai_settings_in(&dir).expect("read back");
@@ -138,7 +164,41 @@ mod tests {
             enabled: false,
             provider: "anthropic".into(),
             model: String::new(),
+            mcp_enabled: false,
+            mcp_port: 8765,
         };
         set_ai_settings_in(&dir, s).expect("disabled settings persist without model");
+    }
+
+    #[test]
+    fn mcp_port_validation_rejects_privileged_ports() {
+        let dir = std::env::temp_dir().join(format!("opentune-ai-cmd-port-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = AiSettingsDto {
+            enabled: false,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            mcp_enabled: true,
+            mcp_port: 80, // privileged port
+        };
+        let err = set_ai_settings_in(&dir, bad).unwrap_err();
+        assert!(err.contains("1024"), "error should mention port threshold");
+    }
+
+    #[test]
+    fn mcp_port_validation_accepts_non_privileged_ports() {
+        let dir =
+            std::env::temp_dir().join(format!("opentune-ai-cmd-port-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = AiSettingsDto {
+            enabled: false,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            mcp_enabled: true,
+            mcp_port: 8765,
+        };
+        set_ai_settings_in(&dir, ok).expect("non-privileged port should be accepted");
     }
 }

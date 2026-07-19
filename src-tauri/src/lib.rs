@@ -49,6 +49,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             ai_commands::set_ai_key,
             ai_commands::clear_ai_key,
             ai_commands::ai_key_present,
+            ai_commands::mcp_token_info,
             ai_chat_commands::ai_send,
             ai_chat_commands::ai_cancel,
             ai_chat_commands::ai_reset,

@@ -388,6 +388,8 @@ mod validate_send_tests {
             enabled,
             provider: "anthropic".into(),
             model: "claude-x".into(),
+            mcp_enabled: false,
+            mcp_port: 8765,
         }
     }
 

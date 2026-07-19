@@ -29,6 +29,14 @@ export const commands = {
 	clearAiKey: (provider: string) => typedError<null, string>(__TAURI_INVOKE("clear_ai_key", { provider })),
 	aiKeyPresent: (provider: string) => typedError<boolean, string>(__TAURI_INVOKE("ai_key_present", { provider })),
 	/**
+	 *  Returns the MCP per-install token, creating it if needed (or regenerating
+	 *  when requested). This is the ONE place the token crosses IPC — the user
+	 *  needs to copy it into their MCP client configuration. The token is never
+	 *  persisted in the settings JSON, never logged, and only returned via this
+	 *  command on explicit request.
+	 */
+	mcpTokenInfo: (regenerate: boolean) => typedError<string, string>(__TAURI_INVOKE("mcp_token_info", { regenerate })),
+	/**
 	 *  Validate, then fire-and-forget one user turn: spawns a tokio task
 	 *  running [`run_chat_turn`] and returns immediately — progress streams to
 	 *  the frontend as [`AiStreamEvent`]s, not through this command's return
@@ -217,6 +225,8 @@ export type AiSettingsDto = {
 	enabled: boolean,
 	provider: string,
 	model: string,
+	mcpEnabled: boolean,
+	mcpPort: number,
 };
 
 /**

@@ -15,6 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::atomic_write;
 
+/// Generate a random 32-byte hex-encoded token (64 chars).
+fn generate_token() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
+    hex::encode(&bytes)
+}
+
 /// Settings file name inside `app_config_dir` (same directory layout.rs uses).
 pub const AI_SETTINGS_FILE: &str = "ai-settings.json";
 
@@ -30,6 +38,13 @@ pub fn validate_provider(provider: &str) -> Result<(), String> {
     }
 }
 
+pub const DEFAULT_MCP_PORT: u16 = 8765;
+pub const MCP_TOKEN_FILE: &str = "mcp-token";
+
+pub fn default_mcp_port() -> u16 {
+    DEFAULT_MCP_PORT
+}
+
 /// Persisted AI configuration. The API key is deliberately NOT here — it
 /// lives in the OS credential store only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,6 +53,10 @@ pub struct AiSettings {
     pub enabled: bool,
     pub provider: String,
     pub model: String,
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    #[serde(default = "default_mcp_port")]
+    pub mcp_port: u16,
 }
 
 impl Default for AiSettings {
@@ -47,6 +66,8 @@ impl Default for AiSettings {
             enabled: false,
             provider: "anthropic".into(),
             model,
+            mcp_enabled: false,
+            mcp_port: DEFAULT_MCP_PORT,
         }
     }
 }
@@ -151,6 +172,37 @@ pub fn load_ai_settings_in(dir: &Path) -> Result<AiSettings, String> {
     }
 }
 
+/// Reads the token from `mcp-token` file; if absent or empty/whitespace,
+/// generates a fresh 64-char hex token, writes it, and returns it.
+pub fn load_or_create_mcp_token_in(dir: &Path) -> Result<String, String> {
+    let path = dir.join(MCP_TOKEN_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let token = text.trim();
+            if token.is_empty() {
+                let new_token = generate_token();
+                atomic_write(dir, MCP_TOKEN_FILE, new_token.as_bytes())?;
+                Ok(new_token)
+            } else {
+                Ok(token.to_owned())
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let token = generate_token();
+            atomic_write(dir, MCP_TOKEN_FILE, token.as_bytes())?;
+            Ok(token)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Always generates and writes a fresh 64-char hex token.
+pub fn regenerate_mcp_token_in(dir: &Path) -> Result<String, String> {
+    let token = generate_token();
+    atomic_write(dir, MCP_TOKEN_FILE, token.as_bytes())?;
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,12 +230,16 @@ mod tests {
             enabled: true,
             provider: "openai".into(),
             model: "gpt-x".into(),
+            mcp_enabled: false,
+            mcp_port: DEFAULT_MCP_PORT,
         };
         save_ai_settings_in(&dir, &s).expect("save");
         let back = load_ai_settings_in(&dir).expect("load");
         assert_eq!(back.enabled, s.enabled);
         assert_eq!(back.provider, s.provider);
         assert_eq!(back.model, s.model);
+        assert_eq!(back.mcp_enabled, s.mcp_enabled);
+        assert_eq!(back.mcp_port, s.mcp_port);
     }
 
     #[test]
@@ -232,11 +288,15 @@ mod tests {
             enabled: false,
             provider: "anthropic".into(),
             model: "claude-3".into(),
+            mcp_enabled: false,
+            mcp_port: DEFAULT_MCP_PORT,
         };
         let s2 = AiSettings {
             enabled: true,
             provider: "openai".into(),
             model: "gpt-4".into(),
+            mcp_enabled: false,
+            mcp_port: DEFAULT_MCP_PORT,
         };
 
         // First save
@@ -261,5 +321,84 @@ mod tests {
             entries
         );
         assert_eq!(entries.len(), 1, "only the settings file should exist");
+    }
+
+    #[test]
+    fn old_shape_json_without_mcp_fields_loads_with_defaults() {
+        let dir = tmp_dir("old-shape");
+        // Write a JSON without mcp_enabled/mcp_port (simulating old persisted file)
+        let old_json = r#"{"enabled":true,"provider":"anthropic","model":"claude-sonnet-5"}"#;
+        std::fs::write(dir.join(AI_SETTINGS_FILE), old_json).expect("write old shape");
+        let loaded = load_ai_settings_in(&dir).expect("load old shape");
+        assert_eq!(loaded.enabled, true);
+        assert_eq!(loaded.provider, "anthropic");
+        assert_eq!(loaded.model, "claude-sonnet-5");
+        assert_eq!(loaded.mcp_enabled, false); // default
+        assert_eq!(loaded.mcp_port, DEFAULT_MCP_PORT); // default
+    }
+
+    #[test]
+    fn mcp_fields_round_trip_via_file() {
+        let dir = tmp_dir("mcp-roundtrip");
+        let s = AiSettings {
+            enabled: true,
+            provider: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            mcp_enabled: true,
+            mcp_port: 9000,
+        };
+        save_ai_settings_in(&dir, &s).expect("save");
+        let back = load_ai_settings_in(&dir).expect("load");
+        assert_eq!(back.mcp_enabled, true);
+        assert_eq!(back.mcp_port, 9000);
+    }
+
+    #[test]
+    fn load_or_create_mcp_token_generates_64_hex_chars_when_missing() {
+        let dir = tmp_dir("token-generate");
+        let token = load_or_create_mcp_token_in(&dir).expect("generate token");
+        assert_eq!(token.len(), 64, "token must be 64 hex chars");
+        assert!(
+            token.chars().all(|c| c.is_ascii_hexdigit()),
+            "token must be hex"
+        );
+    }
+
+    #[test]
+    fn load_or_create_mcp_token_returns_same_on_second_call() {
+        let dir = tmp_dir("token-idempotent");
+        let token1 = load_or_create_mcp_token_in(&dir).expect("first load_or_create");
+        let token2 = load_or_create_mcp_token_in(&dir).expect("second load_or_create");
+        assert_eq!(token1, token2, "token must be stable on repeated calls");
+    }
+
+    #[test]
+    fn regenerate_mcp_token_always_returns_different_token() {
+        let dir = tmp_dir("token-regenerate");
+        let token1 = load_or_create_mcp_token_in(&dir).expect("initial");
+        let token2 = regenerate_mcp_token_in(&dir).expect("regenerate");
+        assert_ne!(token1, token2, "regenerated token must be different");
+        assert_eq!(token2.len(), 64, "new token must be 64 hex chars");
+    }
+
+    #[test]
+    fn load_or_create_mcp_token_regenerates_empty_file() {
+        let dir = tmp_dir("token-empty");
+        // Write an empty file
+        std::fs::write(dir.join(MCP_TOKEN_FILE), b"").expect("write empty file");
+        let token = load_or_create_mcp_token_in(&dir).expect("load_or_create with empty file");
+        assert_eq!(token.len(), 64, "should regenerate 64 hex chars");
+        // Verify the file now contains that token
+        let persisted = std::fs::read_to_string(dir.join(MCP_TOKEN_FILE)).expect("read back");
+        assert_eq!(persisted, token);
+    }
+
+    #[test]
+    fn load_or_create_mcp_token_regenerates_whitespace_file() {
+        let dir = tmp_dir("token-whitespace");
+        // Write a whitespace-only file
+        std::fs::write(dir.join(MCP_TOKEN_FILE), b"   \n\t ").expect("write whitespace file");
+        let token = load_or_create_mcp_token_in(&dir).expect("load_or_create with whitespace");
+        assert_eq!(token.len(), 64, "should regenerate 64 hex chars");
     }
 }

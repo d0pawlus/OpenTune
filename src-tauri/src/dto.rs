@@ -822,6 +822,8 @@ pub struct AiSettingsDto {
     pub enabled: bool,
     pub provider: String,
     pub model: String,
+    pub mcp_enabled: bool,
+    pub mcp_port: u16,
 }
 
 impl From<AiSettings> for AiSettingsDto {
@@ -830,6 +832,8 @@ impl From<AiSettings> for AiSettingsDto {
             enabled: s.enabled,
             provider: s.provider,
             model: s.model,
+            mcp_enabled: s.mcp_enabled,
+            mcp_port: s.mcp_port,
         }
     }
 }
@@ -840,6 +844,8 @@ impl From<AiSettingsDto> for AiSettings {
             enabled: s.enabled,
             provider: s.provider,
             model: s.model,
+            mcp_enabled: s.mcp_enabled,
+            mcp_port: s.mcp_port,
         }
     }
 }
