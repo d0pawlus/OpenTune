@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use serde_json;
 use std::fmt;
 
 /// Tool definition for AI provider consumption.
@@ -19,12 +18,6 @@ impl From<opentune_ai::ToolSpec> for ToolDef {
             input_schema: spec.input_schema,
         }
     }
-}
-
-/// User message for chat.
-#[derive(Debug, Clone, PartialEq)]
-pub struct UserMessage {
-    pub text: String,
 }
 
 /// Tool result message.
@@ -116,6 +109,7 @@ impl std::error::Error for ProviderError {}
 pub type OnDelta<'a> = &'a mut (dyn FnMut(&str) + Send);
 
 /// AI provider — enum dispatch (not dyn/async_trait).
+/// ponytail: enum over dyn — two real providers; revisit if a third party needs to plug in
 pub enum Provider {
     Fake(FakeProvider),
     // Tasks 4/5 add Anthropic/OpenAi variants
@@ -172,7 +166,8 @@ impl FakeProvider {
                 let mid_index = char_count / 2;
 
                 if mid_index > 0 {
-                    // Find char boundary at mid_index
+                    // Safe: char_indices().nth(mid_index) is guaranteed to return Some
+                    // since mid_index = char_count / 2 < char_count when mid_index > 0.
                     if let Some((byte_pos, _)) = text.char_indices().nth(mid_index) {
                         let first_half = &text[..byte_pos];
                         let second_half = &text[byte_pos..];
@@ -180,9 +175,6 @@ impl FakeProvider {
                         if !second_half.is_empty() {
                             on_delta(second_half);
                         }
-                    } else {
-                        // Fallback if mid_index is out of bounds
-                        on_delta(text);
                     }
                 } else if !text.is_empty() {
                     on_delta(text);
@@ -224,9 +216,9 @@ mod tests {
             model: "fake".into(),
             max_tokens: 100,
         };
-        let mut deltas = String::new();
+        let mut chunks = Vec::new();
         {
-            let mut on_delta = |d: &str| deltas.push_str(d);
+            let mut on_delta = |d: &str| chunks.push(d.to_string());
             let turn = provider
                 .chat(&req, &mut on_delta)
                 .await
@@ -234,7 +226,16 @@ mod tests {
             assert_eq!(turn.stop_reason, StopReason::ToolUse);
             assert_eq!(turn.blocks.len(), 2);
         }
-        assert_eq!(deltas, "hello world");
+        // Verify the two-chunk streaming shape for the "hello world" text block.
+        let text_chunks: Vec<_> = chunks.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            text_chunks.len(),
+            2,
+            "Text block must stream in exactly 2 chunks"
+        );
+        let concatenated: String = chunks.iter().map(|s| s.as_str()).collect();
+        assert_eq!(concatenated, "hello world");
+        // Verify script exhaustion.
         let mut deltas2 = String::new();
         let mut on_delta2 = |d: &str| deltas2.push_str(d);
         let err = provider.chat(&req, &mut on_delta2).await.unwrap_err();
