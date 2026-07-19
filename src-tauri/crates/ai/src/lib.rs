@@ -52,6 +52,9 @@ impl PermissionPolicy {
     }
 }
 
+mod registry;
+pub use registry::{available_tools, registry, ToolSpec};
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
