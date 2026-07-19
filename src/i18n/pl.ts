@@ -211,4 +211,17 @@ export const pl: Record<keyof typeof en, string> = {
   "datalog.load": "Obciążenie",
   "datalog.knock": "Spalanie stukowe",
   "datalog.dragCoefficient": "Cd",
+  "ai.title": "Asystent AI",
+  "ai.enable": "Włącz AI (opt-in)",
+  "ai.consent":
+    "Po włączeniu dane strojenia są wysyłane do wybranego dostawcy AI. Domyślnie wyłączone.",
+  "ai.provider": "Dostawca",
+  "ai.model": "Model",
+  "ai.saveSettings": "Zapisz ustawienia",
+  "ai.apiKey": "Klucz API",
+  "ai.saveKey": "Zapisz klucz",
+  "ai.clearKey": "Usuń klucz",
+  "ai.keyPresent": "Klucz zapisany",
+  "ai.keyMissing": "Brak klucza",
+  "ai.saved": "Zapisano",
 };

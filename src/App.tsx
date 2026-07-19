@@ -9,6 +9,7 @@ import { Dashboard } from "./components/dashboard/Dashboard";
 import { OfflinePanel } from "./components/offline/OfflinePanel";
 import { TunePanel } from "./components/dialogs/TunePanel";
 import { DatalogPanel } from "./components/datalog/DatalogPanel";
+import { AiSettingsPanel } from "./components/ai/AiSettingsPanel";
 import { Onboarding } from "./components/onboarding/Onboarding";
 import { UpdateNotice } from "./components/update/UpdateNotice";
 import type { Theme } from "./components/gauges/GaugeCanvas";
@@ -121,6 +122,8 @@ function App() {
         <TunePanel locale={locale} />
 
         <DatalogPanel locale={locale} />
+
+        <AiSettingsPanel locale={locale} />
 
         <footer className="app-footer" aria-label={t("app.controls", locale)}>
           <button type="button" onClick={toggleLocale}>

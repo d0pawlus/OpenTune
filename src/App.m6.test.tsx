@@ -33,6 +33,9 @@ vi.mock("./components/dialogs/TunePanel", () => ({
 vi.mock("./components/datalog/DatalogPanel", () => ({
   DatalogPanel: () => <div>datalog</div>,
 }));
+vi.mock("./components/ai/AiSettingsPanel", () => ({
+  AiSettingsPanel: () => <div>ai-settings</div>,
+}));
 vi.mock("./components/update/UpdateNotice", () => ({
   UpdateNotice: ({ locale }: { locale: string }) => <div>update-{locale}</div>,
 }));

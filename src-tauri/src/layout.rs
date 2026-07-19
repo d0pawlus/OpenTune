@@ -22,37 +22,45 @@ const LAYOUT_FILE: &str = "dashboard-layout.json";
 /// directory. `rename` can then atomically publish each complete write.
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Write `json` atomically to `<dir>/dashboard-layout.json`, creating `dir`
-/// if missing.
-fn save_layout_in(dir: &Path, json: &str) -> Result<(), String> {
+/// Shared atomic write helper: write `bytes` to `<dir>/<filename>` atomically
+/// via temp file + fsync + rename, with per-process sequencing to avoid
+/// concurrent interleaving. Missing `dir` is created; write errors clean up
+/// the temp file.
+pub(crate) fn atomic_write(dir: &Path, filename: &str, bytes: &[u8]) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|e| format!("failed to create config dir: {e}"))?;
 
     let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp_path = dir.join(format!(
-        ".{LAYOUT_FILE}.{}.{}.tmp",
+        ".{filename}.{}.{}.tmp",
         std::process::id(),
         sequence
     ));
-    let target_path = dir.join(LAYOUT_FILE);
+    let target_path = dir.join(filename);
 
     let result = (|| -> Result<(), String> {
         let mut temp = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)
-            .map_err(|e| format!("failed to create temporary layout: {e}"))?;
-        temp.write_all(json.as_bytes())
-            .map_err(|e| format!("failed to write temporary layout: {e}"))?;
+            .map_err(|e| format!("failed to create temporary file: {e}"))?;
+        temp.write_all(bytes)
+            .map_err(|e| format!("failed to write temporary file: {e}"))?;
         temp.sync_all()
-            .map_err(|e| format!("failed to sync temporary layout: {e}"))?;
+            .map_err(|e| format!("failed to sync temporary file: {e}"))?;
         drop(temp);
-        fs::rename(&temp_path, &target_path).map_err(|e| format!("failed to publish layout: {e}"))
+        fs::rename(&temp_path, &target_path).map_err(|e| format!("failed to publish file: {e}"))
     })();
 
     if result.is_err() {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+/// Write `json` atomically to `<dir>/dashboard-layout.json`, creating `dir`
+/// if missing.
+fn save_layout_in(dir: &Path, json: &str) -> Result<(), String> {
+    atomic_write(dir, LAYOUT_FILE, json.as_bytes())
 }
 
 /// Read `<dir>/dashboard-layout.json` back; `Ok(None)` when never saved.

@@ -54,6 +54,13 @@ vi.mock("./components/datalog/DatalogPanel", () => ({
     </section>
   ),
 }));
+vi.mock("./components/ai/AiSettingsPanel", () => ({
+  AiSettingsPanel: () => (
+    <section aria-labelledby="mock-ai-settings">
+      <h2 id="mock-ai-settings">AI assistant</h2>
+    </section>
+  ),
+}));
 vi.mock("./components/update/UpdateNotice", () => ({
   UpdateNotice: () => (
     <section aria-labelledby="mock-update">
