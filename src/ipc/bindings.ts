@@ -29,6 +29,36 @@ export const commands = {
 	clearAiKey: (provider: string) => typedError<null, string>(__TAURI_INVOKE("clear_ai_key", { provider })),
 	aiKeyPresent: (provider: string) => typedError<boolean, string>(__TAURI_INVOKE("ai_key_present", { provider })),
 	/**
+	 *  Validate, then fire-and-forget one user turn: spawns a tokio task
+	 *  running [`run_chat_turn`] and returns immediately — progress streams to
+	 *  the frontend as [`AiStreamEvent`]s, not through this command's return
+	 *  value. The assistant never writes to the ECU here or anywhere else in
+	 *  this file; `run_chat_turn`'s `executor.execute` is the only path a tool
+	 *  call can take, and it is gated by the advisory policy (ADR-0008).
+	 */
+	aiSend: (text: string) => typedError<null, string>(__TAURI_INVOKE("ai_send", { text })),
+	/**
+	 *  Signal cancellation of the in-flight turn, if any. Cooperative: the
+	 *  running `run_chat_turn` observes the flag between steps (see its
+	 *  `cancel.load` checks) and stops at the next opportunity — this command
+	 *  does not itself wait for that to happen.
+	 */
+	aiCancel: () => typedError<null, string>(__TAURI_INVOKE("ai_cancel")),
+	/**
+	 *  Clear the conversation and drop any recorded proposals. Errors while a
+	 *  turn is running rather than racing `ai_send`'s task for the history
+	 *  slot. Proposals are not stored in `AiChatState` directly — they live in
+	 *  the executor's in-memory log — so clearing them means replacing the
+	 *  executor itself with `None`; `ai_send` lazily rebuilds one on the next
+	 *  turn (see `AiChatState::executor`'s doc comment).
+	 */
+	aiReset: () => typedError<null, string>(__TAURI_INVOKE("ai_reset")),
+	/**
+	 *  The proposals recorded so far this session (empty before the first
+	 *  `ai_send`, since the executor is lazily created).
+	 */
+	aiProposals: () => typedError<AiProposalDto[], string>(__TAURI_INVOKE("ai_proposals")),
+	/**
 	 *  Return the parsed firmware definition (menus, dialogs, constants, …) for
 	 *  the frontend to render the data-driven UI against.
 	 */
@@ -143,6 +173,7 @@ export const commands = {
 
 /** Events */
 export const events = {
+	aiStreamEvent: makeEvent<AiStreamEvent>("ai-stream-event"),
 	connectionStateEvent: makeEvent<ConnectionStateEvent>("connection-state-event"),
 	heartbeat: makeEvent<Heartbeat>("heartbeat"),
 	realtimeFrameEvent: makeEvent<RealtimeFrameEvent>("realtime-frame-event"),
@@ -150,12 +181,65 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  One cell's guardrail verdict, IPC-projected from
+ *  [`opentune_ai::CellVerdict`]. `note` is `None` when `ok` (nothing to
+ *  explain); for every non-`Ok` [`CellCheck`] it holds a human-readable
+ *  rendering — the frontend shows this string instead of decoding the
+ *  check variant itself.
+ */
+export type AiCellVerdictDto = {
+	index: number,
+	value: number | null,
+	ok: boolean,
+	note: string | null,
+};
+
+/**
+ *  One AI-proposed change, IPC-projected from [`ProposalDto`]
+ *  (`ai_tools`). `edits` is pre-mapped to the exact `{index, value}` list
+ *  the frontend passes straight to `setCells` on Apply: populated with
+ *  every cell only when the proposal as a whole is `ok`, and EMPTY when it
+ *  is not — a not-ok proposal has nothing applicable to apply, so the UI
+ *  must fall back to `cells` to show the user why.
+ */
+export type AiProposalDto = {
+	id: number,
+	constant: string,
+	reason: string,
+	ok: boolean,
+	cells: AiCellVerdictDto[],
+	edits: CellEditDto[],
+};
+
 /**  AI settings as exposed over IPC (M7). Never carries key material. */
 export type AiSettingsDto = {
 	enabled: boolean,
 	provider: string,
 	model: string,
 };
+
+/**
+ *  The M7 slice-3 embedded assistant's streaming progress for one chat
+ *  turn, mirroring [`crate::ai_chat::ChatEvent`] 1:1. Kept as a separate
+ *  type rather than deriving specta directly on `ChatEvent`: `ChatEvent`
+ *  lives in the pure chat-loop module (task 1/2) and stays IPC-agnostic,
+ *  same reasoning as [`ConnectionStateEvent`] mirroring
+ *  `opentune_protocol::ConnectionState` above.
+ * 
+ *  # Variants
+ *  - `Delta` — a streamed text chunk from the model.
+ *  - `ToolStart` / `ToolEnd` — one tool call's lifecycle; `ToolEnd.ok`
+ *    distinguishes a successful result from a tool error (both are still
+ *    returned to the model, never abort the turn — see `ai_chat`).
+ *  - `ProposalReady` — a `propose_change` call recorded a new proposal;
+ *    `id` indexes into `ai_proposals`' list.
+ *  - `Done` — the turn ended normally (model reached `end_turn`).
+ *  - `Cancelled` — `ai_cancel` was observed before the turn finished.
+ *  - `Error` — the turn ended abnormally; `message` is an English
+ *    diagnostic (the frontend renders its own localized copy).
+ */
+export type AiStreamEvent = { kind: "delta"; text: string } | { kind: "toolStart"; name: string } | { kind: "toolEnd"; name: string; ok: boolean; summary: string } | { kind: "proposalReady"; id: number } | { kind: "done" } | { kind: "cancelled" } | { kind: "error"; message: string };
 
 export type AnomalyDto = {
 	row: number,

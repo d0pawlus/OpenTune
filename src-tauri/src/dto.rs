@@ -9,6 +9,7 @@
 //! `Definition` uses for offsets and shapes. Narrowing to `u32`/`f64` here is
 //! both the correct API boundary and what keeps the generated bindings valid.
 
+use opentune_ai::{CellCheck, CellVerdict};
 use opentune_ini::{
     ConstantDef, ConstantKind, CurveAxis, CurveDef, Definition, DialogDef, FieldKind, FrontPageDef,
     GaugeDef, IndicatorDef, MenuDef, Number, TableDef,
@@ -16,6 +17,7 @@ use opentune_ini::{
 use opentune_model::{CellDiff, FieldDiff, MergePick, Value};
 
 use crate::ai_settings::AiSettings;
+use crate::ai_tools::ProposalDto;
 
 /// The UI-facing projection of a [`Definition`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
@@ -842,6 +844,92 @@ impl From<AiSettingsDto> for AiSettings {
     }
 }
 
+// ── M7 slice 3 task 4: assistant proposal DTOs ────────────────────────────
+
+/// One cell's guardrail verdict, IPC-projected from
+/// [`opentune_ai::CellVerdict`]. `note` is `None` when `ok` (nothing to
+/// explain); for every non-`Ok` [`CellCheck`] it holds a human-readable
+/// rendering — the frontend shows this string instead of decoding the
+/// check variant itself.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AiCellVerdictDto {
+    pub index: u32,
+    pub value: f64,
+    pub ok: bool,
+    pub note: Option<String>,
+}
+
+impl From<CellVerdict> for AiCellVerdictDto {
+    fn from(v: CellVerdict) -> Self {
+        Self {
+            index: v.index,
+            value: v.value,
+            ok: v.check == CellCheck::Ok,
+            note: describe_cell_check(&v.check),
+        }
+    }
+}
+
+/// Human-readable rendering of a non-`Ok` [`CellCheck`]. `CellCheck::Ok`
+/// itself never reaches the UI as a note — see `AiCellVerdictDto::from`.
+fn describe_cell_check(check: &CellCheck) -> Option<String> {
+    match check {
+        CellCheck::Ok => None,
+        CellCheck::UnknownIndex { len } => Some(format!(
+            "cell index is out of range (table has {len} cells)"
+        )),
+        CellCheck::OutOfRange { low, high } => Some(format!(
+            "value is outside the allowed range [{low}, {high}]"
+        )),
+        CellCheck::UnknownCurrent => Some("current value could not be read".to_owned()),
+        CellCheck::DeltaTooLarge { delta_pct, max } => Some(format!(
+            "change of {delta_pct:.1}% exceeds the {max:.1}% limit"
+        )),
+    }
+}
+
+/// One AI-proposed change, IPC-projected from [`ProposalDto`]
+/// (`ai_tools`). `edits` is pre-mapped to the exact `{index, value}` list
+/// the frontend passes straight to `setCells` on Apply: populated with
+/// every cell only when the proposal as a whole is `ok`, and EMPTY when it
+/// is not — a not-ok proposal has nothing applicable to apply, so the UI
+/// must fall back to `cells` to show the user why.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProposalDto {
+    pub id: u32,
+    pub constant: String,
+    pub reason: String,
+    pub ok: bool,
+    pub cells: Vec<AiCellVerdictDto>,
+    pub edits: Vec<CellEditDto>,
+}
+
+impl From<ProposalDto> for AiProposalDto {
+    fn from(p: ProposalDto) -> Self {
+        let edits: Vec<CellEditDto> = if p.ok {
+            p.cells
+                .iter()
+                .map(|c| CellEditDto {
+                    index: c.index,
+                    value: c.value,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self {
+            id: p.id,
+            constant: p.constant,
+            reason: p.reason,
+            ok: p.ok,
+            cells: p.cells.into_iter().map(AiCellVerdictDto::from).collect(),
+            edits,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1052,5 +1140,103 @@ mod tests {
                 b: 9.0
             }]
         );
+    }
+
+    // ── M7 slice 3 task 4: ProposalDto -> AiProposalDto ───────────────────
+
+    #[test]
+    fn ok_proposal_maps_every_cell_into_edits() {
+        let proposal = ProposalDto {
+            id: 7,
+            constant: "reqFuel".into(),
+            reason: "lean at part throttle".into(),
+            ok: true,
+            cells: vec![
+                CellVerdict {
+                    index: 0,
+                    value: 13.0,
+                    check: CellCheck::Ok,
+                },
+                CellVerdict {
+                    index: 1,
+                    value: 14.0,
+                    check: CellCheck::Ok,
+                },
+            ],
+        };
+
+        let dto = AiProposalDto::from(proposal);
+
+        assert!(dto.ok);
+        assert_eq!(
+            dto.edits,
+            vec![
+                CellEditDto {
+                    index: 0,
+                    value: 13.0
+                },
+                CellEditDto {
+                    index: 1,
+                    value: 14.0
+                },
+            ],
+            "ok proposal must pre-map every cell into edits for setCells"
+        );
+        assert_eq!(dto.cells.len(), 2);
+        assert!(
+            dto.cells.iter().all(|c| c.ok && c.note.is_none()),
+            "Ok cells carry no note"
+        );
+    }
+
+    #[test]
+    fn not_ok_proposal_has_empty_edits_and_a_note_on_the_bad_cell() {
+        let proposal = ProposalDto {
+            id: 9,
+            constant: "reqFuel".into(),
+            reason: "too rich".into(),
+            ok: false,
+            cells: vec![CellVerdict {
+                index: 0,
+                value: 9999.0,
+                check: CellCheck::OutOfRange {
+                    low: 0.0,
+                    high: 100.0,
+                },
+            }],
+        };
+
+        let dto = AiProposalDto::from(proposal);
+
+        assert!(!dto.ok);
+        assert!(
+            dto.edits.is_empty(),
+            "not-ok proposals must ship nothing applicable to setCells"
+        );
+        assert_eq!(dto.cells.len(), 1);
+        assert!(!dto.cells[0].ok);
+        let note = dto.cells[0]
+            .note
+            .as_deref()
+            .expect("a non-Ok cell must carry a human-readable note");
+        assert!(
+            note.contains('0') && note.contains("100"),
+            "note should mention the bounds: {note}"
+        );
+    }
+
+    #[test]
+    fn describe_cell_check_covers_every_non_ok_variant() {
+        assert!(describe_cell_check(&CellCheck::Ok).is_none());
+        assert!(describe_cell_check(&CellCheck::UnknownIndex { len: 4 })
+            .unwrap()
+            .contains('4'));
+        assert!(describe_cell_check(&CellCheck::UnknownCurrent).is_some());
+        assert!(describe_cell_check(&CellCheck::DeltaTooLarge {
+            delta_pct: 42.0,
+            max: 15.0
+        })
+        .unwrap()
+        .contains("42.0"));
     }
 }

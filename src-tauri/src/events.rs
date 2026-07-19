@@ -68,6 +68,63 @@ pub struct RealtimeFrameEvent {
     pub channels: Vec<(String, f64)>,
 }
 
+/// The M7 slice-3 embedded assistant's streaming progress for one chat
+/// turn, mirroring [`crate::ai_chat::ChatEvent`] 1:1. Kept as a separate
+/// type rather than deriving specta directly on `ChatEvent`: `ChatEvent`
+/// lives in the pure chat-loop module (task 1/2) and stays IPC-agnostic,
+/// same reasoning as [`ConnectionStateEvent`] mirroring
+/// `opentune_protocol::ConnectionState` above.
+///
+/// # Variants
+/// - `Delta` — a streamed text chunk from the model.
+/// - `ToolStart` / `ToolEnd` — one tool call's lifecycle; `ToolEnd.ok`
+///   distinguishes a successful result from a tool error (both are still
+///   returned to the model, never abort the turn — see `ai_chat`).
+/// - `ProposalReady` — a `propose_change` call recorded a new proposal;
+///   `id` indexes into `ai_proposals`' list.
+/// - `Done` — the turn ended normally (model reached `end_turn`).
+/// - `Cancelled` — `ai_cancel` was observed before the turn finished.
+/// - `Error` — the turn ended abnormally; `message` is an English
+///   diagnostic (the frontend renders its own localized copy).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Type, Event)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AiStreamEvent {
+    Delta {
+        text: String,
+    },
+    ToolStart {
+        name: String,
+    },
+    ToolEnd {
+        name: String,
+        ok: bool,
+        summary: String,
+    },
+    ProposalReady {
+        id: u32,
+    },
+    Done,
+    Cancelled,
+    Error {
+        message: String,
+    },
+}
+
+impl From<crate::ai_chat::ChatEvent> for AiStreamEvent {
+    fn from(ev: crate::ai_chat::ChatEvent) -> Self {
+        use crate::ai_chat::ChatEvent;
+        match ev {
+            ChatEvent::Delta { text } => Self::Delta { text },
+            ChatEvent::ToolStart { name } => Self::ToolStart { name },
+            ChatEvent::ToolEnd { name, ok, summary } => Self::ToolEnd { name, ok, summary },
+            ChatEvent::ProposalReady { id } => Self::ProposalReady { id },
+            ChatEvent::Done => Self::Done,
+            ChatEvent::Cancelled => Self::Cancelled,
+            ChatEvent::Error { message } => Self::Error { message },
+        }
+    }
+}
+
 impl From<opentune_protocol::ConnectionState> for ConnectionStateEvent {
     fn from(state: opentune_protocol::ConnectionState) -> Self {
         use opentune_protocol::ConnectionState;
@@ -136,6 +193,85 @@ mod tests {
             ev,
             ConnectionStateEvent::Failed {
                 reason: "too many retries".to_owned(),
+            }
+        );
+    }
+
+    // ── M7 slice 3 task 4: ChatEvent -> AiStreamEvent (mechanical 1:1) ────
+
+    use crate::ai_chat::ChatEvent;
+
+    #[test]
+    fn delta_maps_text() {
+        let ev: AiStreamEvent = ChatEvent::Delta {
+            text: "hi".to_owned(),
+        }
+        .into();
+        assert_eq!(
+            ev,
+            AiStreamEvent::Delta {
+                text: "hi".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn tool_start_maps_name() {
+        let ev: AiStreamEvent = ChatEvent::ToolStart {
+            name: "read_tune".to_owned(),
+        }
+        .into();
+        assert_eq!(
+            ev,
+            AiStreamEvent::ToolStart {
+                name: "read_tune".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn tool_end_maps_name_ok_and_summary() {
+        let ev: AiStreamEvent = ChatEvent::ToolEnd {
+            name: "propose_change".to_owned(),
+            ok: true,
+            summary: "proposal #1 ok=true".to_owned(),
+        }
+        .into();
+        assert_eq!(
+            ev,
+            AiStreamEvent::ToolEnd {
+                name: "propose_change".to_owned(),
+                ok: true,
+                summary: "proposal #1 ok=true".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn proposal_ready_maps_id() {
+        let ev: AiStreamEvent = ChatEvent::ProposalReady { id: 3 }.into();
+        assert_eq!(ev, AiStreamEvent::ProposalReady { id: 3 });
+    }
+
+    #[test]
+    fn done_and_cancelled_map_to_unit_variants() {
+        assert_eq!(AiStreamEvent::from(ChatEvent::Done), AiStreamEvent::Done);
+        assert_eq!(
+            AiStreamEvent::from(ChatEvent::Cancelled),
+            AiStreamEvent::Cancelled
+        );
+    }
+
+    #[test]
+    fn error_maps_message() {
+        let ev: AiStreamEvent = ChatEvent::Error {
+            message: "boom".to_owned(),
+        }
+        .into();
+        assert_eq!(
+            ev,
+            AiStreamEvent::Error {
+                message: "boom".to_owned()
             }
         );
     }

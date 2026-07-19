@@ -25,7 +25,8 @@ pub trait AuditSink: Send + Sync {
     fn append(&self, line: &str);
 }
 
-/// Append-only JSONL file under `app_config_dir` (wired in slice 2 setup).
+/// Append-only JSONL file under `app_config_dir` (wired in slice 3's
+/// `ai_send`, not here — see task-4).
 pub struct FileAuditSink {
     path: std::path::PathBuf,
 }

@@ -8,8 +8,8 @@
 use futures_util::StreamExt;
 
 use crate::ai_provider::{
-    AssistantBlock, ChatMessage, ChatRequest, ChatTurn, OnDelta, ProviderError, StopReason,
-    ToolDef, ToolResultMsg,
+    http_client, truncate_message, AssistantBlock, ChatMessage, ChatRequest, ChatTurn, OnDelta,
+    ProviderError, StopReason, ToolDef, ToolResultMsg,
 };
 
 const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
@@ -33,17 +33,16 @@ impl OpenAiProvider {
     /// Builds the request body, POSTs it with the Bearer auth header, and —
     /// on success — parses the `text/event-stream` response through
     /// [`SseAssembler`]. On a non-success HTTP status, the response body is
-    /// passed through verbatim in [`ProviderError::Http`] (it is the
-    /// provider's own error payload and cannot contain our key, since the
-    /// key is never echoed back).
+    /// truncated (see [`crate::ai_provider::truncate_message`]) and carried
+    /// in [`ProviderError::Http`] (it is the provider's own error payload
+    /// and cannot contain our key, since the key is never echoed back).
     pub async fn chat(
         &self,
         req: &ChatRequest,
         on_delta: OnDelta<'_>,
     ) -> Result<ChatTurn, ProviderError> {
         let body = build_request_body(req);
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = http_client()
             .post(OPENAI_CHAT_COMPLETIONS_URL)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
@@ -58,7 +57,10 @@ impl OpenAiProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "failed to read error response body".to_string());
-            return Err(ProviderError::Http { status, message });
+            return Err(ProviderError::Http {
+                status,
+                message: truncate_message(message),
+            });
         }
 
         let mut assembler = SseAssembler::default();
@@ -202,11 +204,20 @@ fn assistant_message_to_json(blocks: &[AssistantBlock]) -> serde_json::Value {
     message
 }
 
+/// OpenAI's `role:"tool"` message has no error flag on the wire (unlike
+/// Anthropic's `tool_result` content block, which carries `is_error`
+/// natively) — the content string is the only signal available to the
+/// model, so an errored result is prefixed to make the failure visible.
 fn tool_result_to_json(result: &ToolResultMsg) -> serde_json::Value {
+    let content = if result.is_error {
+        format!("Error: {}", result.content)
+    } else {
+        result.content.clone()
+    };
     serde_json::json!({
         "role": "tool",
         "tool_call_id": result.tool_use_id,
-        "content": result.content,
+        "content": content,
     })
 }
 
@@ -455,6 +466,48 @@ mod tests {
         assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
         assert_eq!(body["messages"][2]["role"], "tool");
         assert_eq!(body["messages"][2]["tool_call_id"], "call_2");
+    }
+
+    // --- Task 3: is_error semantics -----------------------------------------
+    //
+    // Unlike Anthropic (which carries `is_error` as a native field on the
+    // `tool_result` content block), OpenAI's `role:"tool"` message has no
+    // error flag — the only signal is the content string itself. An errored
+    // result must be visibly distinguishable to the model, so its content is
+    // prefixed with `"Error: "`.
+
+    #[test]
+    fn errored_tool_result_content_is_prefixed_with_error() {
+        let request = ChatRequest {
+            messages: vec![ChatMessage::ToolResults {
+                results: vec![ToolResultMsg {
+                    tool_use_id: "call_1".into(),
+                    content: "table not found".into(),
+                    is_error: true,
+                }],
+            }],
+            ..req()
+        };
+        let body = build_request_body(&request);
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["content"], "Error: table not found");
+    }
+
+    #[test]
+    fn non_errored_tool_result_content_is_unprefixed() {
+        let request = ChatRequest {
+            messages: vec![ChatMessage::ToolResults {
+                results: vec![ToolResultMsg {
+                    tool_use_id: "call_1".into(),
+                    content: "{\"values\":[]}".into(),
+                    is_error: false,
+                }],
+            }],
+            ..req()
+        };
+        let body = build_request_body(&request);
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["content"], "{\"values\":[]}");
     }
 
     #[test]

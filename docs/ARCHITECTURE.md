@@ -268,11 +268,13 @@ configuration, not hardcoded), and a **provider abstraction** (enum-dispatched
 by-default; local models addable later). **Guardrails live in the tool layer, not
 the prompt** — mutating tools validate against INI limits, rate-limit, require a
 healthy connection, and audit every action, so the LLM has no path to bypass them.
-As of M7 slice 2, the provider layer is complete: `ai_provider.rs` (provider
-abstraction via enum dispatch with Anthropic and OpenAI streaming implementations),
-`ai_settings.rs` (keyring-backed API key storage and persisted opt-in settings),
-and `ai_commands.rs` (IPC bridge to the frontend). The embedded assistant panel
-(§6.5) and MCP server remain for M7 slices 3 and 4. Full design:
+As of M7 slice 3, the embedded assistant is complete: the chat loop
+(`ai_chat.rs`/`ai_chat_tests.rs`) performs provider→executor round-trips at the
+advisory level, with no AI write path — proposals surface in the **streaming panel**
+(§6.5) for user review and manual apply via the same `set_cells` path as AutoTune.
+The provider layer (`ai_provider.rs`, `ai_settings.rs`) and IPC bridge
+(`ai_commands.rs`/`AiStreamEvent`) enable live model conversation. The MCP server
+remains for M7 slice 4. Full design:
 [AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
 
 ## 6. Frontend (React + TS) modules

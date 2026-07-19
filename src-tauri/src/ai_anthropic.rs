@@ -7,8 +7,8 @@
 use futures_util::StreamExt;
 
 use crate::ai_provider::{
-    AssistantBlock, ChatMessage, ChatRequest, ChatTurn, OnDelta, ProviderError, StopReason,
-    ToolDef, ToolResultMsg,
+    http_client, truncate_message, AssistantBlock, ChatMessage, ChatRequest, ChatTurn, OnDelta,
+    ProviderError, StopReason, ToolDef, ToolResultMsg,
 };
 
 const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -33,17 +33,16 @@ impl AnthropicProvider {
     /// Builds the request body, POSTs it with the three required headers,
     /// and — on success — parses the `text/event-stream` response through
     /// [`SseAssembler`]. On a non-success HTTP status, the response body is
-    /// passed through verbatim in [`ProviderError::Http`] (it is the
-    /// provider's own error payload and cannot contain our key, since the
-    /// key is never echoed back).
+    /// truncated (see [`crate::ai_provider::truncate_message`]) and carried
+    /// in [`ProviderError::Http`] (it is the provider's own error payload
+    /// and cannot contain our key, since the key is never echoed back).
     pub async fn chat(
         &self,
         req: &ChatRequest,
         on_delta: OnDelta<'_>,
     ) -> Result<ChatTurn, ProviderError> {
         let body = build_request_body(req);
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = http_client()
             .post(ANTHROPIC_MESSAGES_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
@@ -59,7 +58,10 @@ impl AnthropicProvider {
                 .text()
                 .await
                 .unwrap_or_else(|_| "failed to read error response body".to_string());
-            return Err(ProviderError::Http { status, message });
+            return Err(ProviderError::Http {
+                status,
+                message: truncate_message(message),
+            });
         }
 
         let mut assembler = SseAssembler::default();
@@ -215,35 +217,52 @@ pub(crate) struct SseAssembler {
 }
 
 impl SseAssembler {
-    /// Feed one complete SSE `(event, data)` pair. `data` is parsed as JSON;
-    /// text deltas are forwarded to `on_delta` before being accumulated.
+    /// Feed one complete SSE `(event, data)` pair; text deltas are forwarded
+    /// to `on_delta` before being accumulated. `data` is parsed as JSON only
+    /// for event types that need it — `message_start`/`message_stop`/`ping`
+    /// carry no information this assembler uses, and unknown event types
+    /// (see below) skip parsing entirely, so a non-JSON `data` payload on
+    /// any of those is never an error.
     pub(crate) fn feed(
         &mut self,
         event: &str,
         data: &str,
         on_delta: OnDelta<'_>,
     ) -> Result<(), ProviderError> {
-        let value: serde_json::Value = serde_json::from_str(data)
-            .map_err(|e| ProviderError::Protocol(format!("invalid SSE JSON payload: {e}")))?;
-
         match event {
-            "message_start" | "message_stop" | "ping" => {}
-            "content_block_start" => self.handle_content_block_start(&value)?,
-            "content_block_delta" => self.handle_content_block_delta(&value, on_delta)?,
-            "content_block_stop" => self.handle_content_block_stop(&value)?,
-            "message_delta" => self.handle_message_delta(&value),
+            "message_start" | "message_stop" | "ping" => Ok(()),
+            "content_block_start" => {
+                let value = parse_event_json(data)?;
+                self.handle_content_block_start(&value)
+            }
+            "content_block_delta" => {
+                let value = parse_event_json(data)?;
+                self.handle_content_block_delta(&value, on_delta)
+            }
+            "content_block_stop" => {
+                let value = parse_event_json(data)?;
+                self.handle_content_block_stop(&value)
+            }
+            "message_delta" => {
+                let value = parse_event_json(data)?;
+                self.handle_message_delta(&value);
+                Ok(())
+            }
             "error" => {
+                let value = parse_event_json(data)?;
                 let message = value["error"]["message"]
                     .as_str()
                     .unwrap_or("unknown provider error")
                     .to_string();
-                return Err(ProviderError::Protocol(message));
+                Err(ProviderError::Protocol(message))
             }
             // Unknown events are ignored per Anthropic's versioning policy:
             // new event types may be added and clients must tolerate them.
-            _ => {}
+            // Their `data` payload shape is unknown, so it is never parsed —
+            // tolerance must extend to non-JSON data, not just JSON shapes
+            // we don't recognize.
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     /// Finish the stream, requiring that a `message_delta` was seen (it
@@ -368,6 +387,13 @@ fn parse_tool_input(json: &str) -> Result<serde_json::Value, ProviderError> {
     let json = if json.is_empty() { "{}" } else { json };
     serde_json::from_str(json)
         .map_err(|e| ProviderError::Protocol(format!("invalid tool_use input JSON: {e}")))
+}
+
+/// Parse one SSE event's `data` payload as JSON. Only called for event types
+/// whose handling actually needs the parsed value (see [`SseAssembler::feed`]).
+fn parse_event_json(data: &str) -> Result<serde_json::Value, ProviderError> {
+    serde_json::from_str(data)
+        .map_err(|e| ProviderError::Protocol(format!("invalid SSE JSON payload: {e}")))
 }
 
 /// Extract the required `index` field shared by all content-block events.
@@ -521,6 +547,36 @@ mod tests {
                 r#"{"type":"error","error":{"type":"overloaded_error","message":"try later"}}"#,
                 &mut on_delta,
             )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::ai_provider::ProviderError::Protocol(_)
+        ));
+    }
+
+    // --- Task 3: unknown-event tolerance ------------------------------------
+    //
+    // Anthropic's versioning policy allows new SSE event types to appear at
+    // any time; clients must tolerate them. `feed` must not even attempt to
+    // parse `data` as JSON for an event type it doesn't recognize — a future
+    // event's payload shape is unknown, so requiring it to be valid JSON we
+    // can parse (and erroring when it isn't) would break the app on any
+    // provider-side addition.
+
+    #[test]
+    fn unknown_event_with_non_json_data_is_tolerated() {
+        let mut asm = SseAssembler::default();
+        let mut on_delta = |_: &str| {};
+        let result = asm.feed("some_future_event", "not json", &mut on_delta);
+        assert!(result.is_ok(), "unknown event must not error: {result:?}");
+    }
+
+    #[test]
+    fn known_event_with_non_json_data_still_errors() {
+        let mut asm = SseAssembler::default();
+        let mut on_delta = |_: &str| {};
+        let err = asm
+            .feed("content_block_start", "not json", &mut on_delta)
             .unwrap_err();
         assert!(matches!(
             err,

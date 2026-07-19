@@ -61,6 +61,13 @@ vi.mock("./components/ai/AiSettingsPanel", () => ({
     </section>
   ),
 }));
+vi.mock("./components/ai/AiChatPanel", () => ({
+  AiChatPanel: () => (
+    <section aria-labelledby="mock-ai-chat">
+      <h2 id="mock-ai-chat">Assistant</h2>
+    </section>
+  ),
+}));
 vi.mock("./components/update/UpdateNotice", () => ({
   UpdateNotice: () => (
     <section aria-labelledby="mock-update">

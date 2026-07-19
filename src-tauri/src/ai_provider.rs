@@ -1,6 +1,56 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::fmt;
+use std::sync::OnceLock;
+
+/// Maximum length, in `char`s, of an HTTP error body kept after
+/// [`truncate_message`]. Provider error payloads can be arbitrarily large
+/// (e.g. an HTML error page from a misconfigured proxy); this bounds what
+/// ends up in `ProviderError::Http` and, downstream, in UI/log output.
+pub(crate) const MAX_HTTP_ERROR_LEN: usize = 2000;
+
+/// I2: TCP connect timeout for HTTP requests to AI providers. Generous
+/// enough for a slow network without leaving a hung `ai_send` turn (and its
+/// "running" UI state) waiting indefinitely on a connection that will never
+/// come up.
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// I2: idle-read timeout — the ceiling on how long the client waits between
+/// bytes once a response has started. Deliberately NOT a total-request
+/// timeout (`reqwest::ClientBuilder::timeout`), which would kill a
+/// legitimately long-running SSE stream; `read_timeout` only fires when the
+/// connection goes quiet, so it must comfortably exceed normal SSE
+/// inter-event gaps from either provider.
+const HTTP_READ_TIMEOUT_SECS: u64 = 120;
+
+/// Shared `reqwest::Client` for both providers. `reqwest::Client` holds a
+/// connection pool internally and is meant to be reused — building a fresh
+/// one per `chat()` call (as both providers previously did) throws that
+/// pooling away on every request.
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+/// Return the process-wide shared HTTP client, creating it on first use.
+pub(crate) fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
+            .read_timeout(std::time::Duration::from_secs(HTTP_READ_TIMEOUT_SECS))
+            .build()
+            .expect("client")
+    })
+}
+
+/// Cap `s` at [`MAX_HTTP_ERROR_LEN`] `char`s, appending `"…"` when
+/// truncated. Operates on `char`s (not bytes), so it never splits a
+/// multi-byte UTF-8 sequence. Input at or under the limit is returned
+/// unchanged.
+pub(crate) fn truncate_message(s: String) -> String {
+    if s.chars().count() <= MAX_HTTP_ERROR_LEN {
+        return s;
+    }
+    let mut truncated: String = s.chars().take(MAX_HTTP_ERROR_LEN).collect();
+    truncated.push('…');
+    truncated
+}
 
 /// Tool definition for AI provider consumption.
 #[derive(Debug, Clone, PartialEq)]
@@ -133,7 +183,9 @@ impl Provider {
 
 /// Fake provider for testing — pops scripted turns in order.
 pub struct FakeProvider {
-    turns: std::sync::Mutex<Vec<ChatTurn>>,
+    /// `pub` so tests can assert how many scripted turns went unconsumed
+    /// (e.g. proving a cancelled loop never made a second provider call).
+    pub turns: std::sync::Mutex<Vec<ChatTurn>>,
 }
 
 impl FakeProvider {
@@ -243,6 +295,50 @@ mod tests {
         let mut on_delta2 = |d: &str| deltas2.push_str(d);
         let err = provider.chat(&req, &mut on_delta2).await.unwrap_err();
         assert!(matches!(err, ProviderError::Protocol(_)));
+    }
+
+    // --- Task 3: truncate_message ------------------------------------------
+
+    #[test]
+    fn truncate_message_caps_long_input_and_appends_ellipsis() {
+        // 3000 plain-ASCII chars — well over MAX_HTTP_ERROR_LEN.
+        let input: String = "a".repeat(3000);
+        let result = truncate_message(input);
+        // MAX_HTTP_ERROR_LEN chars kept, plus the appended ellipsis char.
+        assert_eq!(result.chars().count(), MAX_HTTP_ERROR_LEN + 1);
+        assert!(result.ends_with('…'));
+        assert!(result.starts_with(&"a".repeat(MAX_HTTP_ERROR_LEN)));
+    }
+
+    #[test]
+    fn truncate_message_is_multibyte_boundary_safe() {
+        // Put the multi-byte "ż" (U+017C, 2 UTF-8 bytes) straddling the cut:
+        // chars 1998, 1999, 2000, 2001 (0-indexed) are all "ż", so byte-based
+        // slicing at any nearby byte offset would land mid-character and
+        // panic. Char-based truncation must not.
+        let mut input = String::new();
+        for i in 0..3000 {
+            if (1998..=2001).contains(&i) {
+                input.push('ż');
+            } else {
+                input.push('a');
+            }
+        }
+        let result = truncate_message(input);
+        assert_eq!(result.chars().count(), MAX_HTTP_ERROR_LEN + 1);
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_message_leaves_short_input_unchanged() {
+        let input = "short error message".to_string();
+        assert_eq!(truncate_message(input.clone()), input);
+    }
+
+    #[test]
+    fn truncate_message_leaves_input_at_exact_limit_unchanged() {
+        let input = "b".repeat(MAX_HTTP_ERROR_LEN);
+        assert_eq!(truncate_message(input.clone()), input);
     }
 
     #[test]

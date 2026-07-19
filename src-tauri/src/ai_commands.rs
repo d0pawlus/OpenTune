@@ -14,7 +14,9 @@ use crate::dto::AiSettingsDto;
 /// Managed handle to the key store (OsKeyStore in production).
 pub struct AiKeyStoreState(pub Arc<dyn KeyStore>);
 
-fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+/// `pub(crate)` so `ai_chat_commands.rs` (task 4) can locate the same
+/// `app_config_dir` for its audit log without duplicating this lookup.
+pub(crate) fn config_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     use tauri::Manager;
     app.path().app_config_dir().map_err(|e| e.to_string())
 }
