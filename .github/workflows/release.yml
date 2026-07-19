@@ -129,8 +129,39 @@ jobs:
       - name: Verify updater manifest, signatures, and installer coverage
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          # Draft releases expose API asset URLs. Normalize them to the stable,
+          # public download URLs that the updater can use after publication.
+          manifest_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern latest.json --dir "$manifest_dir"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            > "$manifest_dir/assets.json"
+          jq --arg repo "$GITHUB_REPOSITORY" --arg tag "$RELEASE_TAG" \
+            --slurpfile assets "$manifest_dir/assets.json" '
+              .platforms |= with_entries(
+                if (.value.url | test("/releases/assets/[0-9]+$")) then
+                  (.value.url | split("/")[-1] | tonumber) as $asset_id |
+                  ($assets[0] | map(select(.id == $asset_id)) | first | .name) as $asset_name |
+                  if $asset_name == null then
+                    error("release asset not found for id \($asset_id)")
+                  else
+                    .value.url = (
+                      "https://github.com/\($repo)/releases/download/\($tag)/\($asset_name | @uri)"
+                    )
+                  end
+                else
+                  .
+                end
+              )
+            ' "$manifest_dir/latest.json" > "$manifest_dir/latest.normalized.json"
+          mv "$manifest_dir/latest.normalized.json" "$manifest_dir/latest.json"
+          gh release upload "$RELEASE_TAG" "$manifest_dir/latest.json" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
           assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name')"
           [ "$(printf '%s\n' "$assets" | grep -cE '\.dmg$')" -ge 2 ]
