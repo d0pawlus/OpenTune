@@ -8,6 +8,7 @@
   --color-warn: oklch(72% 0.15 80);
   --color-danger: oklch(55% 0.2 25);
   --color-gauge-muted: oklch(70% 0 0);
+  --color-focus: oklch(48% 0.25 255);
   --space-md: clamp(0.75rem, 0.5rem + 1vw, 1.25rem);
   --duration-normal: 300ms;
 }
@@ -19,8 +20,51 @@
   --color-warn: oklch(50% 0.16 80);
   --color-danger: oklch(45% 0.25 25);
   --color-gauge-muted: oklch(45% 0 0);
+  --color-focus: oklch(35% 0.3 255);
 }
 body {
+  margin: 0;
   background: var(--color-surface);
   color: var(--color-text);
+}
+
+main {
+  width: min(100% - 2 * var(--space-md), 90rem);
+  margin-inline: auto;
+  padding-block: var(--space-md);
+}
+
+button,
+select,
+input:not([type="checkbox"]):not([type="radio"]) {
+  min-block-size: 2.75rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-block-start: 2rem;
+  border-block-start: 1px solid var(--color-accent);
+  padding-block-start: var(--space-md);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-normal: 1ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
 }

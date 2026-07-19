@@ -50,6 +50,7 @@ fn main() {
 
     println!("applied: {}", report.applied);
     println!("skipped: {}", report.skipped.len());
+    println!("clamped: {}", report.clamped.len());
     println!("failed : {}", report.failed.len());
 
     println!("\n--- all failed ---");

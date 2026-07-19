@@ -1,3 +1,9 @@
+---
+layout: page
+title: Architecture Decision Records
+permalink: /adr/
+---
+
 # Architecture Decision Records (ADRs)
 
 This directory captures the significant, long-lived decisions behind OpenTune —

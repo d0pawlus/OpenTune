@@ -7,9 +7,9 @@
 
 ---
 
-## Download (pre-release)
+## Download
 
-Unsigned pre-release builds are available now on the
+OpenTune release builds are available on the
 [Releases page](https://github.com/d0pawlus/OpenTune/releases) — grab the
 installer for your OS (macOS `.dmg` for Apple Silicon or Intel, Windows
 `setup.exe`/`.msi`, Linux `.AppImage`/`.deb`/`.rpm`). A rolling `nightly`
@@ -17,7 +17,8 @@ pre-release built from the latest commits is also published there. Prefer to
 build it yourself instead? See [CONTRIBUTING.md](CONTRIBUTING.md) —
 `npm run tauri build`.
 
-These are unsigned pre-release builds, so expect OS warnings:
+macOS and Windows builds do not yet have publisher signatures, so expect OS
+warnings:
 
 - **macOS** — the app is not notarized yet. Open it once (macOS will block
   it), then go to _System Settings → Privacy & Security_ and click
@@ -31,8 +32,10 @@ These are unsigned pre-release builds, so expect OS warnings:
   are also provided. Serial-port access may require adding your user to the
   `dialout` group (`sudo usermod -aG dialout $USER`, then re-login).
 
-Signed and notarized builds are planned before 1.0 (see
-[ROADMAP — M6](docs/ROADMAP.md)).
+Apple notarization and Windows publisher signing are deferred until the project
+owner obtains the required Apple Developer account and Windows certificate.
+Updater archives use a separate Tauri signature and are verified before
+installation. See [install and update guidance](docs/updates.md).
 
 ## Why this project exists
 
@@ -75,12 +78,13 @@ that the community can own and evolve.
 
 ## Target platforms
 
-| Platform                     | Status (planned)   |
-| ---------------------------- | ------------------ |
-| macOS (Apple Silicon, arm64) | First-class target |
-| macOS (Intel, x64)           | Supported          |
-| Windows 10/11 (x64)          | Supported          |
-| Linux (x64, arm64)           | Supported          |
+| Platform                     | M6 release status                  |
+| ---------------------------- | ---------------------------------- |
+| macOS (Apple Silicon, arm64) | Installer + signed updater archive |
+| macOS (Intel, x64)           | Installer + signed updater archive |
+| Windows 10/11 (x64)          | Installer + signed updater archive |
+| Linux (x64)                  | AppImage, deb, rpm + updater        |
+| Linux (arm64)                | Planned                            |
 
 ## Supported ECUs (goal)
 
@@ -97,17 +101,19 @@ See [`docs/protocol.md`](docs/protocol.md) and
 
 ## Project status
 
-🚧 **Pre-alpha — active implementation.** Milestones M0–M5 are implemented:
+🚧 **Pre-1.0 — active implementation.** Milestones M0–M6 are implemented:
 the Tauri application can parse firmware INIs, identify the simulator or a
 serial ECU, and run the end-to-end flow on the hardware-free simulator —
 read/edit/burn, realtime dashboard, table/curve/3D editors, deterministic
-auto-tune, and datalog capture with analysis. M6 (interop hardening, packaging,
-signed/notarized builds, first public release) is in progress; see
+auto-tune, and datalog capture with analysis. The M6 release adds
+interop evidence, signed in-app updates, onboarding, Polish/English preferences,
+an accessibility baseline, cross-platform packaging, and public documentation.
+Publisher signing for macOS/Windows is explicitly deferred; see
 [ROADMAP — M6](docs/ROADMAP.md#m6--interop-polish--first-release-).
 
 The project is not ready for production tuning yet. Real-hardware coverage,
-packaging/signing, and broader firmware compatibility remain pre-1.0 work; see
-the roadmap for the current status.
+publisher signing, and broader firmware compatibility remain pre-1.0 work; see
+the roadmap and [M6 compatibility evidence](docs/compatibility/m6.md).
 
 Start here:
 

@@ -26,6 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -38,6 +40,7 @@ jobs:
             exit 1
           fi
       - name: Create the draft release (re-runs reuse the existing one)
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -45,18 +48,21 @@ jobs:
             --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME) | .id')"
           if [ -n "$existing" ]; then
             echo "release for $GITHUB_REF_NAME already exists — legs will upload into it"
-            exit 0
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "OpenTune $GITHUB_REF_NAME" \
+              --notes 'Unsigned macOS and Windows release. Updater artifacts are cryptographically signed; Apple notarization and Windows publisher signing are deferred until the project owner obtains the required accounts and certificates.'
+            existing="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq '.[] | select(.tag_name == env.GITHUB_REF_NAME) | .id')"
           fi
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft --prerelease \
-            --title "OpenTune $GITHUB_REF_NAME" \
-            --notes 'Unsigned pre-release for testing. See the README "Download (pre-release)" section for per-OS install notes (Gatekeeper / SmartScreen warnings are expected).'
+          echo "release_id=$(printf '%s\n' "$existing" | head -n 1)" >> "$GITHUB_OUTPUT"
 
   build-release:
     needs: prepare
     permissions:
-      contents: write # consumed ONLY by the upload step below, never the build
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -89,46 +95,88 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
       - run: npm ci
-      # Build-only (no tagName/releaseId) and — deliberately — no GITHUB_TOKEN
-      # in env: npm ci / build.rs / proc-macros run untrusted third-party code,
-      # and handing them a contents:write token would defeat
-      # persist-credentials:false above. The gh step below is the only token
-      # holder, and it runs no third-party code.
+      # The pinned official action builds, signs updater archives, merges the
+      # four platform entries into latest.json, and uploads to the one draft
+      # created above. Apple/Windows publisher signing is deliberately absent.
       - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
         id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          tagName: ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
+          updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
-      - name: Upload installers to the draft release
-        shell: bash # windows too — keep one upload script for all legs
+
+  verify-release:
+    needs: [prepare, build-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: stable
+      - name: Verify updater manifest, signatures, and installer coverage
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          # artifactPaths is a JSON array (macOS .app bundles arrive pre-tarred
-          # by tauri-action). gh resolves draft releases by tag via the release
-          # list, and --clobber keeps re-runs idempotent.
-          version="$(jq -r .version src-tauri/tauri.conf.json)"
-          assets=()
-          while IFS= read -r p; do
-            p="${p//\\//}"
-            [ -f "$p" ] || { echo "::warning::skipping missing artifact: $p"; continue; }
-            # The updater archive is named OpenTune.app.tar.gz on disk for BOTH
-            # mac targets — qualify it (tauri-action's own upload naming) or the
-            # two legs would clobber each other's asset.
-            if [ "$(basename "$p")" = "OpenTune.app.tar.gz" ]; then
-              case "$p" in
-                *aarch64-apple-darwin*) arch=aarch64 ;;
-                *) arch=x64 ;;
-              esac
-              dest="$(dirname "$p")/OpenTune_${version}_${arch}.app.tar.gz"
-              mv "$p" "$dest"
-              p="$dest"
-            fi
-            assets+=("$p")
-          done < <(node -e 'for (const p of JSON.parse(process.env.ARTIFACT_PATHS)) console.log(p)')
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "::error::tauri-action reported no artifacts"
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name')"
+          [ "$(printf '%s\n' "$assets" | grep -cE '\.dmg$')" -ge 2 ]
+          printf '%s\n' "$assets" | grep -qE '(_setup\.exe|setup\.exe)$'
+          printf '%s\n' "$assets" | grep -qE '\.msi$'
+          printf '%s\n' "$assets" | grep -qE '\.AppImage$'
+          printf '%s\n' "$assets" | grep -qE '\.deb$'
+          printf '%s\n' "$assets" | grep -qE '\.rpm$'
+          [ "$(printf '%s\n' "$assets" | grep -cE '\.sig$')" -ge 4 ]
+          printf '%s\n' "$assets" | grep -qx latest.json
+
+          release_dir="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir "$release_dir"
+          jq -e '
+            . as $manifest |
+            .version == "0.2.0" and
+            (["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"] |
+              all(. as $platform |
+                ($manifest.platforms[$platform].url | startswith("https://")) and
+                ($manifest.platforms[$platform].signature | length > 0)))
+          ' "$release_dir/latest.json"
+
+          jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json \
+            > "$release_dir/updater.pub"
+          for platform in darwin-aarch64 darwin-x86_64 linux-x86_64 windows-x86_64; do
+            artifact_name="$(jq -r --arg platform "$platform" \
+              '.platforms[$platform].url | split("/")[-1]' \
+              "$release_dir/latest.json")"
+            artifact="$release_dir/$artifact_name"
+            signature="$artifact.sig"
+            [ -f "$artifact" ]
+            [ -f "$signature" ]
+            manifest_signature="$(jq -r --arg platform "$platform" \
+              '.platforms[$platform].signature' "$release_dir/latest.json")"
+            [ "$(tr -d '\r\n' < "$signature")" = "$manifest_signature" ]
+            cargo run --manifest-path src-tauri/Cargo.toml \
+              -p opentune-updater-verify -- \
+              "$release_dir/updater.pub" "$artifact" "$signature"
+          done
+
+          (
+            cd "$release_dir"
+            find . -maxdepth 1 -type f \
+              ! -name SHA256SUMS ! -name updater.pub -print0 \
+              | sort -z | xargs -0 shasum -a 256
+          ) > "$release_dir/SHA256SUMS"
+          gh release upload "$RELEASE_TAG" "$release_dir/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" --clobber

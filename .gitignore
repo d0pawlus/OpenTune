@@ -12,6 +12,7 @@ dist-ssr/
 *.local
 *.tsbuildinfo
 .tsc-cache/
+/_site/
 
 # --- Tauri ---
 src-tauri/target/

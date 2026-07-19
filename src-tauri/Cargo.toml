@@ -42,6 +42,9 @@ opentune-datalog = { path = "crates/datalog" }
 # §9 owner task: mpsc/oneshot channels + spawn_blocking for the blocking
 # serial transport. Already in the tree transitively via tauri.
 tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde_json = "1.0.150"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }

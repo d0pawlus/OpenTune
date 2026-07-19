@@ -1,3 +1,9 @@
+---
+layout: page
+title: ECU communication protocol
+permalink: /protocol/
+---
+
 # ECU communication protocol
 
 This document describes how OpenTune talks to an ECU. Like the rest of the system,

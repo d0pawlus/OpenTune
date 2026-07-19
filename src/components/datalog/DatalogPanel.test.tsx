@@ -31,6 +31,14 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   save: vi.fn(async () => null),
 }));
 
+// Panel tests exercise state, IPC, and chart controls. The uPlot renderer has
+// its own focused tests and requires a real Canvas 2D context that jsdom does
+// not provide; keep that browser-only boundary out of this unit suite.
+vi.mock("./DatalogCharts", () => ({
+  DatalogCharts: () => <div data-testid="datalog-charts" />,
+  DynoChart: () => <div data-testid="dyno-chart" />,
+}));
+
 // jsdom has no `matchMedia` implementation; the lazily-loaded uPlot chart
 // (mounted once a log is loaded) queries it for device-pixel-ratio changes.
 if (!window.matchMedia) {

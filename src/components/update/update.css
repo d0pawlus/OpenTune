@@ -1,0 +1,30 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+.update-control,
+.update-notice {
+  margin-block: var(--space-md);
+}
+
+.update-notice {
+  border: 1px solid var(--color-accent);
+  border-radius: 0.5rem;
+  padding: var(--space-md);
+}
+
+.update-notice p,
+.update-control p {
+  margin-block: 0 0.5rem;
+}
+
+.update-notes {
+  white-space: pre-wrap;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.update-error {
+  color: var(--color-danger);
+}
