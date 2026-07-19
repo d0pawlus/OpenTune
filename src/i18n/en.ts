@@ -222,4 +222,13 @@ export const en = {
   "ai.keyPresent": "API key saved",
   "ai.keyMissing": "No API key saved",
   "ai.saved": "Saved",
+  "ai.chat.title": "Assistant",
+  "ai.chat.placeholder": "Ask about your tune…",
+  "ai.chat.send": "Send",
+  "ai.chat.cancel": "Cancel",
+  "ai.chat.reset": "Reset",
+  "ai.chat.running": "Assistant is responding…",
+  "ai.chat.toolOk": "tool",
+  "ai.chat.toolFailed": "tool failed",
+  "ai.chat.you": "You",
 } as const;
