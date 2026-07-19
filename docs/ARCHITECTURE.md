@@ -163,7 +163,7 @@ src-tauri/
 │   ├── realtime/     # Polling loop, channel decoding, broadcasting
 │   ├── datalog/      # MLG/CSV readers & writers
 │   ├── analysis/     # Deterministic tuning/analysis: ve_analyze, virtual_dyno, …
-│   ├── ai/           # (planned, M7) AI tool registry, permission policy, provider abstraction
+│   ├── ai/           # (M7) AI tool registry, permission policy, guardrails, audit records
 │   ├── project/      # .msq read/write, project save/load, settings
 │   └── simulator/    # Virtual ECU for dev/testing
 └── src/              # Tauri app: wires crates together, defines commands/events
@@ -481,7 +481,8 @@ plus the app shell, typed IPC, CI, table/curve/3D editors, deterministic auto-tu
 and datalog capture with analysis. M6 — interop hardening, packaging, signed
 updates, onboarding/accessibility, and the first public release — is complete;
 Apple/Windows publisher signing remains deferred. See the [roadmap](ROADMAP.md). The
-`ai` crate (§5.10) is planned for M7.)
+`ai` crate (§5.10) exists as of M7 slice 1 (registry + policy + guardrails + audit);
+provider abstraction and access channels follow in later M7 slices.)
 
 ## 15. Risks and open questions
 
