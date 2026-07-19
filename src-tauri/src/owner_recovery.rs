@@ -103,11 +103,14 @@ impl Owner {
                         active.push(&frame);
                     }
                     if emit_to_ui && self.polling {
-                        let channels = frame
+                        let channels: Vec<(String, f64)> = frame
                             .channels
                             .into_iter()
                             .map(|c| (c.name, c.value))
                             .collect();
+                        // Retained for the AI `read_realtime` tool (M7) — the
+                        // same coalesced frame the UI is about to receive.
+                        self.last_frame = Some((std::time::Instant::now(), channels.clone()));
                         (self.emit)(OwnerEvent::Realtime(RealtimeFrameEvent { channels }));
                     }
                 }

@@ -526,6 +526,15 @@ pub struct CaptureStatusDto {
     pub dropped: u32,
 }
 
+/// Latest retained realtime frame, served to the AI `read_realtime` tool
+/// (M7). `age_ms` is how stale the frame was at query time.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RealtimeSnapshotDto {
+    pub channels: Vec<(String, f64)>,
+    pub age_ms: u64,
+}
+
 /// IPC projection of `opentune_analysis::CellResult`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, specta::Type)]
 pub struct CellResultDto {
