@@ -267,9 +267,12 @@ configuration, not hardcoded), and a **provider abstraction** (`AiProvider` trai
 BYOK cloud, off by default, opt-in — preserving offline-first/privacy-by-default;
 local models addable later). **Guardrails live in the tool layer, not the prompt**
 — mutating tools validate against INI limits, rate-limit, require a healthy
-connection, and audit every action, so the LLM has no path to bypass them. Exposed
-through two channels: the frontend **embedded assistant** (§6.5) and an **MCP
-server**. Full design:
+connection, and audit every action, so the LLM has no path to bypass them. As of
+M7 slice 2, the provider layer is complete: `ai_provider.rs` (trait abstraction
+with Anthropic and OpenAI streaming implementations), `ai_settings.rs` (keyring-
+backed API key storage and persisted opt-in settings), and `ai_commands.rs` (IPC
+bridge to the frontend). The embedded assistant panel (§6.5) and MCP server remain
+for M7 slices 3 and 4. Full design:
 [AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
 
 ## 6. Frontend (React + TS) modules
