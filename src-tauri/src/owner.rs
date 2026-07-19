@@ -135,6 +135,9 @@ struct Owner {
     session: Option<Session>,
     polling: bool,
     poller: Option<RealtimePoller>,
+    /// Latest realtime frame + when it arrived, retained for the AI
+    /// `read_realtime` tool (M7). `None` until the first poll frame.
+    last_frame: Option<(std::time::Instant, Vec<(String, f64)>)>,
     capture: Option<CaptureBuffer>,
     capturing: bool,
     active_log: Option<ActiveLog>,
@@ -173,6 +176,7 @@ async fn run_owner(
         session: None,
         polling: false,
         poller: None,
+        last_frame: None,
         capture: None,
         capturing: false,
         active_log: None,
@@ -500,6 +504,27 @@ impl Owner {
             } => {
                 let _ = reply.send(self.run_virtual_dyno(log_id, params).await);
             }
+            Command::RealtimeSnapshot { reply } => {
+                let snap = self.last_frame.as_ref().map(|(at, channels)| {
+                    crate::dto::RealtimeSnapshotDto {
+                        channels: channels.clone(),
+                        age_ms: at.elapsed().as_millis() as u64,
+                    }
+                });
+                let _ = reply.send(Ok(snap));
+            }
+            Command::ConstantBounds { name, reply } => {
+                let r = self
+                    .with_session(move |s| {
+                        let tune = s
+                            .tune
+                            .as_ref()
+                            .ok_or_else(|| crate::session::NO_TUNE.to_string())?;
+                        tune.bounds(&name).map_err(crate::session::fmt_model_err)
+                    })
+                    .await;
+                let _ = reply.send(r);
+            }
             #[cfg(test)]
             Command::DebugSimulator { reply } => {
                 let r = match &self.session {
@@ -730,3 +755,7 @@ mod analysis_tests;
 #[cfg(test)]
 #[path = "owner_log_tests.rs"]
 mod log_tests;
+
+#[cfg(test)]
+#[path = "owner_ai_tests.rs"]
+mod ai_tests;

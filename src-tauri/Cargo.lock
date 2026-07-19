@@ -2437,6 +2437,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 name = "opentune"
 version = "0.2.0"
 dependencies = [
+ "opentune-ai",
  "opentune-analysis",
  "opentune-datalog",
  "opentune-ini",
@@ -2458,6 +2459,14 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tokio",
+]
+
+[[package]]
+name = "opentune-ai"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

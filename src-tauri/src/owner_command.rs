@@ -13,8 +13,8 @@ use crate::connection::{ConnectSource, Session};
 use crate::dto::{
     AnomalyReportDto, AnomalyThresholdsDto, CaptureStatusDto, CellEditDto, DefinitionDto,
     FieldDiffDto, LogDataDto, LogFormatDto, LogStatsParamsDto, LogStatsReportDto, LogStatusDto,
-    LogSummaryDto, MergePickDto, ResolvedGaugeBoundsDto, VeAnalysisReportDto, VirtualDynoParamsDto,
-    VirtualDynoReportDto,
+    LogSummaryDto, MergePickDto, RealtimeSnapshotDto, ResolvedGaugeBoundsDto, VeAnalysisReportDto,
+    VirtualDynoParamsDto, VirtualDynoReportDto,
 };
 use crate::events::TuneDirtyEvent;
 use crate::events::{ConnectionStateEvent, RealtimeFrameEvent};
@@ -164,6 +164,16 @@ pub enum Command {
         log_id: u32,
         params: VirtualDynoParamsDto,
         reply: Reply<VirtualDynoReportDto>,
+    },
+    /// Latest retained realtime frame for the AI `read_realtime` tool (M7).
+    RealtimeSnapshot {
+        reply: Reply<Option<RealtimeSnapshotDto>>,
+    },
+    /// Resolved INI `[low, high]` bounds of a constant — the guardrail
+    /// input for AI change proposals (M7).
+    ConstantBounds {
+        name: String,
+        reply: Reply<(f64, f64)>,
     },
     /// Test-only: hand back the live simulator so tests can drive secl /
     /// reboot scenarios (same access the M2 session tests used directly).
