@@ -55,6 +55,12 @@ impl PermissionPolicy {
 mod registry;
 pub use registry::{available_tools, registry, ToolSpec};
 
+mod guardrails;
+pub use guardrails::{
+    validate_change, CellCheck, CellVerdict, ChangeRequest, GuardrailLimits, GuardrailViolation,
+    RateLimiter, ValidatedChange,
+};
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
