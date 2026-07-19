@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pub mod ai_anthropic;
 pub mod ai_commands;
 pub mod ai_provider;
 pub mod ai_settings;

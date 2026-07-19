@@ -112,7 +112,8 @@ pub type OnDelta<'a> = &'a mut (dyn FnMut(&str) + Send);
 /// ponytail: enum over dyn — two real providers; revisit if a third party needs to plug in
 pub enum Provider {
     Fake(FakeProvider),
-    // Tasks 4/5 add Anthropic/OpenAi variants
+    Anthropic(crate::ai_anthropic::AnthropicProvider),
+    // Task 5 adds an OpenAi variant
 }
 
 impl Provider {
@@ -124,6 +125,7 @@ impl Provider {
     ) -> Result<ChatTurn, ProviderError> {
         match self {
             Provider::Fake(fake) => fake.chat(req, on_delta).await,
+            Provider::Anthropic(anthropic) => anthropic.chat(req, on_delta).await,
         }
     }
 }
