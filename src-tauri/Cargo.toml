@@ -37,6 +37,7 @@ opentune-model = { path = "crates/model" }
 opentune-realtime = { path = "crates/realtime" }
 # M4 Task 8: SampleSet is the capture ring's export shape (Task 0 seam).
 opentune-analysis = { path = "crates/analysis" }
+opentune-ai = { path = "crates/ai" }
 opentune-project = { path = "crates/project" }
 opentune-datalog = { path = "crates/datalog" }
 # §9 owner task: mpsc/oneshot channels + spawn_blocking for the blocking
