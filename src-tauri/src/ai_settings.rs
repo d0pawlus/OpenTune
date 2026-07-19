@@ -17,10 +17,10 @@ use crate::layout::atomic_write;
 
 /// Generate a random 32-byte hex-encoded token (64 chars).
 fn generate_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let bytes: Vec<u8> = (0..32).map(|_| rng.gen()).collect();
-    hex::encode(&bytes)
+    use rand::RngExt;
+    let mut b = [0u8; 32];
+    rand::rng().fill(&mut b);
+    hex::encode(b)
 }
 
 /// Settings file name inside `app_config_dir` (same directory layout.rs uses).
