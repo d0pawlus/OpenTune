@@ -121,15 +121,20 @@ fn consume_lines(
 /// no network, no secrets (the key never enters the body).
 pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
     let messages: Vec<serde_json::Value> = req.messages.iter().map(message_to_json).collect();
-    let tools: Vec<serde_json::Value> = req.tools.iter().map(tool_to_json).collect();
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": req.model,
         "max_tokens": req.max_tokens,
         "system": req.system,
         "stream": true,
-        "tools": tools,
         "messages": messages,
-    })
+    });
+    // Omitting `tools` when there are none is the documented shape (and
+    // mirrors OpenAI, which returns HTTP 400 for `"tools": []`).
+    if !req.tools.is_empty() {
+        let tools: Vec<serde_json::Value> = req.tools.iter().map(tool_to_json).collect();
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    body
 }
 
 fn tool_to_json(tool: &ToolDef) -> serde_json::Value {
@@ -428,6 +433,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_tools_key_is_omitted() {
+        let mut request = req();
+        request.tools = vec![];
+        let body = build_request_body(&request);
+        assert!(
+            body.get("tools").is_none(),
+            "empty tools array must be omitted, not sent as `\"tools\": []`"
+        );
+    }
+
+    #[test]
     fn sse_assembler_builds_text_and_tool_use_turn() {
         let mut asm = SseAssembler::default();
         let mut deltas = String::new();
@@ -519,5 +535,154 @@ mod tests {
         };
         let dbg = format!("{p:?}");
         assert!(!dbg.contains("test-key"));
+    }
+
+    // --- F2: consume_lines chunk-split table test ---------------------------
+    //
+    // `consume_lines` is pure over a `&mut Vec<u8>` line buffer plus the
+    // `current_event` cell, so it can be driven directly with the transcript
+    // re-chunked at awkward byte positions to prove line/event reassembly is
+    // chunk-boundary independent.
+
+    /// A realistic transcript: `event:`/`data:` pairs, a `ping` event, a
+    /// blank-line event-name reset between every message (per the SSE
+    /// spec), a text delta containing the Polish "ż" (U+017C / UTF-8
+    /// `C5 BC`, to exercise a multi-byte char split), and a tool-use block
+    /// whose JSON input streams across two `input_json_delta` fragments.
+    const ANTHROPIC_TRANSCRIPT: &str = r#"event: message_start
+data: {"type":"message_start"}
+
+event: content_block_start
+data: {"index":0,"content_block":{"type":"text","text":""}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"index":0,"delta":{"type":"text_delta","text":"Lean at "}}
+
+event: content_block_delta
+data: {"index":0,"delta":{"type":"text_delta","text":"4500rpm ż"}}
+
+event: content_block_stop
+data: {"index":0}
+
+event: content_block_start
+data: {"index":1,"content_block":{"type":"tool_use","id":"tu_9","name":"run_ve_analyze","input":{}}}
+
+event: content_block_delta
+data: {"index":1,"delta":{"type":"input_json_delta","partial_json":"{\"table\":"}}
+
+event: content_block_delta
+data: {"index":1,"delta":{"type":"input_json_delta","partial_json":"\"veTable1Tbl\"}"}}
+
+event: content_block_stop
+data: {"index":1}
+
+event: message_delta
+data: {"delta":{"stop_reason":"tool_use"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+    fn expected_transcript_turn() -> ChatTurn {
+        ChatTurn {
+            blocks: vec![
+                AssistantBlock::Text {
+                    text: "Lean at 4500rpm ż".into(),
+                },
+                AssistantBlock::ToolUse {
+                    id: "tu_9".into(),
+                    name: "run_ve_analyze".into(),
+                    input: serde_json::json!({ "table": "veTable1Tbl" }),
+                },
+            ],
+            stop_reason: StopReason::ToolUse,
+        }
+    }
+
+    fn chunks_of_one_byte(bytes: &[u8]) -> Vec<Vec<u8>> {
+        bytes.iter().map(|&b| vec![b]).collect()
+    }
+
+    fn split_at(bytes: &[u8], mut positions: Vec<usize>) -> Vec<Vec<u8>> {
+        positions.retain(|&p| p > 0 && p < bytes.len());
+        positions.sort_unstable();
+        positions.dedup();
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        for pos in positions {
+            chunks.push(bytes[start..pos].to_vec());
+            start = pos;
+        }
+        chunks.push(bytes[start..].to_vec());
+        chunks
+    }
+
+    /// Split every `data:` line right between `"da"` and `"ta:"`.
+    fn mid_data_keyword_splits(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let needle = b"data:";
+        let positions = (0..bytes.len().saturating_sub(needle.len() - 1))
+            .filter(|&i| &bytes[i..i + needle.len()] == needle)
+            .map(|i| i + 2)
+            .collect();
+        split_at(bytes, positions)
+    }
+
+    /// Split mid the multi-byte UTF-8 encoding of "ż" (`C5 BC`).
+    fn mid_utf8_char_splits(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let pos = bytes
+            .windows(2)
+            .position(|w| w == [0xC5, 0xBC])
+            .expect("transcript must contain the 'ż' fixture");
+        split_at(bytes, vec![pos + 1])
+    }
+
+    /// Feed `chunks` through `consume_lines` exactly as
+    /// `AnthropicProvider::chat` does (extend the buffer, drain complete
+    /// lines against the running `current_event`) and return the assembled
+    /// turn.
+    fn assemble_over_chunks(chunks: Vec<Vec<u8>>) -> ChatTurn {
+        let mut line_buffer: Vec<u8> = Vec::new();
+        let mut current_event: Option<String> = None;
+        let mut assembler = SseAssembler::default();
+        let mut deltas = String::new();
+        let mut on_delta = |d: &str| deltas.push_str(d);
+        for chunk in chunks {
+            line_buffer.extend_from_slice(&chunk);
+            consume_lines(
+                &mut line_buffer,
+                &mut current_event,
+                &mut assembler,
+                &mut on_delta,
+            )
+            .unwrap();
+        }
+        assembler.finish().expect("complete turn")
+    }
+
+    #[test]
+    fn consume_lines_reassembles_identically_across_chunk_splits() {
+        let lf_bytes = ANTHROPIC_TRANSCRIPT.as_bytes();
+        let crlf_transcript = ANTHROPIC_TRANSCRIPT.replace('\n', "\r\n");
+        let expected = expected_transcript_turn();
+
+        let cases: Vec<(&str, Vec<Vec<u8>>)> = vec![
+            ("single_chunk", vec![lf_bytes.to_vec()]),
+            ("one_byte_at_a_time", chunks_of_one_byte(lf_bytes)),
+            ("mid_data_keyword_split", mid_data_keyword_splits(lf_bytes)),
+            ("mid_utf8_char_split", mid_utf8_char_splits(lf_bytes)),
+            ("crlf_whole_transcript", vec![crlf_transcript.into_bytes()]),
+        ];
+
+        for (name, chunks) in cases {
+            let turn = assemble_over_chunks(chunks);
+            assert_eq!(
+                turn, expected,
+                "chunking case {name:?} produced a different turn"
+            );
+        }
     }
 }

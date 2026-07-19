@@ -119,14 +119,19 @@ pub(crate) fn build_request_body(req: &ChatRequest) -> serde_json::Value {
     for msg in &req.messages {
         messages.extend(message_to_json(msg));
     }
-    let tools: Vec<serde_json::Value> = req.tools.iter().map(tool_to_json).collect();
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "model": req.model,
         "stream": true,
         "max_completion_tokens": req.max_tokens,
         "messages": messages,
-        "tools": tools,
-    })
+    });
+    // OpenAI returns HTTP 400 for `"tools": []` — omit the key entirely
+    // when there are no tools to offer.
+    if !req.tools.is_empty() {
+        let tools: Vec<serde_json::Value> = req.tools.iter().map(tool_to_json).collect();
+        body["tools"] = serde_json::Value::Array(tools);
+    }
+    body
 }
 
 fn tool_to_json(tool: &ToolDef) -> serde_json::Value {
@@ -394,6 +399,78 @@ mod tests {
     }
 
     #[test]
+    fn empty_tools_key_is_omitted() {
+        let mut request = req();
+        request.tools = vec![];
+        let body = build_request_body(&request);
+        assert!(
+            body.get("tools").is_none(),
+            "empty tools array must be omitted, not sent as `\"tools\": []`"
+        );
+    }
+
+    // --- F3: builder branches not covered by request_body_matches_wire_contract ---
+
+    #[test]
+    fn assistant_message_with_text_and_tool_use_carries_both() {
+        let body = assistant_message_to_json(&[
+            AssistantBlock::Text {
+                text: "checking AFR first".into(),
+            },
+            AssistantBlock::ToolUse {
+                id: "call_1".into(),
+                name: "read_tune".into(),
+                input: serde_json::json!({ "names": ["reqFuel"] }),
+            },
+        ]);
+        assert_eq!(body["content"], "checking AFR first");
+        assert_eq!(body["tool_calls"][0]["id"], "call_1");
+        assert_eq!(body["tool_calls"][0]["function"]["name"], "read_tune");
+    }
+
+    #[test]
+    fn two_tool_results_become_two_consecutive_tool_messages() {
+        let request = ChatRequest {
+            messages: vec![ChatMessage::ToolResults {
+                results: vec![
+                    ToolResultMsg {
+                        tool_use_id: "call_1".into(),
+                        content: "{\"values\":[]}".into(),
+                        is_error: false,
+                    },
+                    ToolResultMsg {
+                        tool_use_id: "call_2".into(),
+                        content: "{\"values\":[1]}".into(),
+                        is_error: false,
+                    },
+                ],
+            }],
+            ..req()
+        };
+        let body = build_request_body(&request);
+        // messages[0] is the leading system message; the two tool results
+        // follow as two separate `role:"tool"` messages, each keyed by its
+        // own `tool_call_id`.
+        assert_eq!(body["messages"][1]["role"], "tool");
+        assert_eq!(body["messages"][1]["tool_call_id"], "call_1");
+        assert_eq!(body["messages"][2]["role"], "tool");
+        assert_eq!(body["messages"][2]["tool_call_id"], "call_2");
+    }
+
+    #[test]
+    fn parse_tool_arguments_empty_string_is_empty_object() {
+        assert_eq!(parse_tool_arguments("").unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_tool_arguments_invalid_json_is_protocol_error() {
+        assert!(matches!(
+            parse_tool_arguments("{not json"),
+            Err(ProviderError::Protocol(_))
+        ));
+    }
+
+    #[test]
     fn sse_assembler_builds_text_and_tool_call_turn() {
         let mut asm = SseAssembler::default();
         let mut deltas = String::new();
@@ -461,5 +538,116 @@ mod tests {
             api_key: "test-key".into(),
         };
         assert!(!format!("{p:?}").contains("test-key"));
+    }
+
+    // --- F2: consume_lines chunk-split table test ---------------------------
+    //
+    // `consume_lines` is pure over a `&mut Vec<u8>` line buffer, so it can be
+    // driven directly with the transcript re-chunked at awkward byte
+    // positions to prove line reassembly is chunk-boundary independent.
+
+    /// A realistic transcript: two `content` deltas (the second containing
+    /// the Polish "ż", U+017C / UTF-8 `C5 BC`, to exercise a multi-byte
+    /// char split), a tool-call fragment split across two `data:` lines,
+    /// the terminal `finish_reason` chunk, and the `[DONE]` sentinel.
+    const OPENAI_TRANSCRIPT: &str = r#"data: {"choices":[{"delta":{"content":"Lean at "}}]}
+data: {"choices":[{"delta":{"content":"4500rpm ż"}}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"name":"run_ve_analyze","arguments":"{\"table\":"}}]}}]}
+data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"veTable1Tbl\"}"}}]},"finish_reason":null}]}
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}
+data: [DONE]
+"#;
+
+    fn expected_transcript_turn() -> ChatTurn {
+        ChatTurn {
+            blocks: vec![
+                AssistantBlock::Text {
+                    text: "Lean at 4500rpm ż".into(),
+                },
+                AssistantBlock::ToolUse {
+                    id: "call_9".into(),
+                    name: "run_ve_analyze".into(),
+                    input: serde_json::json!({ "table": "veTable1Tbl" }),
+                },
+            ],
+            stop_reason: StopReason::ToolUse,
+        }
+    }
+
+    fn chunks_of_one_byte(bytes: &[u8]) -> Vec<Vec<u8>> {
+        bytes.iter().map(|&b| vec![b]).collect()
+    }
+
+    fn split_at(bytes: &[u8], mut positions: Vec<usize>) -> Vec<Vec<u8>> {
+        positions.retain(|&p| p > 0 && p < bytes.len());
+        positions.sort_unstable();
+        positions.dedup();
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        for pos in positions {
+            chunks.push(bytes[start..pos].to_vec());
+            start = pos;
+        }
+        chunks.push(bytes[start..].to_vec());
+        chunks
+    }
+
+    /// Split every `data:` line right between `"da"` and `"ta:"`.
+    fn mid_data_keyword_splits(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let needle = b"data:";
+        let positions = (0..bytes.len().saturating_sub(needle.len() - 1))
+            .filter(|&i| &bytes[i..i + needle.len()] == needle)
+            .map(|i| i + 2)
+            .collect();
+        split_at(bytes, positions)
+    }
+
+    /// Split mid the multi-byte UTF-8 encoding of "ż" (`C5 BC`).
+    fn mid_utf8_char_splits(bytes: &[u8]) -> Vec<Vec<u8>> {
+        let pos = bytes
+            .windows(2)
+            .position(|w| w == [0xC5, 0xBC])
+            .expect("transcript must contain the 'ż' fixture");
+        split_at(bytes, vec![pos + 1])
+    }
+
+    /// Feed `chunks` through `consume_lines` exactly as `OpenAiProvider::chat`
+    /// does (extend the buffer, drain complete lines, stop once `[DONE]` is
+    /// seen) and return the assembled turn.
+    fn assemble_over_chunks(chunks: Vec<Vec<u8>>) -> ChatTurn {
+        let mut line_buffer: Vec<u8> = Vec::new();
+        let mut assembler = SseAssembler::default();
+        let mut deltas = String::new();
+        let mut on_delta = |d: &str| deltas.push_str(d);
+        for chunk in chunks {
+            line_buffer.extend_from_slice(&chunk);
+            if consume_lines(&mut line_buffer, &mut assembler, &mut on_delta).unwrap() {
+                break;
+            }
+        }
+        assembler.finish().expect("complete turn")
+    }
+
+    #[test]
+    fn consume_lines_reassembles_identically_across_chunk_splits() {
+        let lf_bytes = OPENAI_TRANSCRIPT.as_bytes();
+        let crlf_transcript = OPENAI_TRANSCRIPT.replace('\n', "\r\n");
+        let expected = expected_transcript_turn();
+
+        let cases: Vec<(&str, Vec<Vec<u8>>)> = vec![
+            ("single_chunk", vec![lf_bytes.to_vec()]),
+            ("one_byte_at_a_time", chunks_of_one_byte(lf_bytes)),
+            ("mid_data_keyword_split", mid_data_keyword_splits(lf_bytes)),
+            ("mid_utf8_char_split", mid_utf8_char_splits(lf_bytes)),
+            ("crlf_whole_transcript", vec![crlf_transcript.into_bytes()]),
+        ];
+
+        for (name, chunks) in cases {
+            let turn = assemble_over_chunks(chunks);
+            assert_eq!(
+                turn, expected,
+                "chunking case {name:?} produced a different turn"
+            );
+        }
     }
 }
