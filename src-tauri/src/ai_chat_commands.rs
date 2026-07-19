@@ -17,17 +17,30 @@
 //! awaiting, so it would only add a dependency and a `.lock().await` at
 //! every call site for no benefit — the simpler std primitive is enough.
 //!
-//! `running` is cleared by [`RunningGuard`], an RAII guard constructed as
-//! the first statement inside the spawned task. That makes it correct on
-//! every exit path: `run_chat_turn` returning `Ok`/`Err`, an in-task
-//! validation failure (e.g. the key vanished between the presence check in
-//! `ai_send` and the read inside the task), and even an unexpected panic —
-//! this crate does not set `panic = "abort"`, so `Drop` still runs during
-//! unwind. A caveat documented on `RunningGuard`: a panic after `history`
-//! has been taken out of the `Mutex` loses that turn's messages (the slot
-//! is left holding the pre-turn history), since the `history_handle.lock()
-//! = history` restore never executes. `running` still clears either way,
-//! so the UI never gets stuck — only that one turn's history is lost.
+//! `running` is cleared by [`RunningGuard`], an RAII guard constructed
+//! immediately after `ai_send`'s `compare_exchange` succeeds — *before* the
+//! executor/provider setup that follows it — and then moved into the
+//! spawned task. Constructing it that early (I3) means a panic during that
+//! synchronous setup (still inside `ai_send`, not yet in the spawned task)
+//! also clears `running` via unwind, not just a panic inside the task
+//! itself. `Drop` runs on every exit path: `run_chat_turn` returning
+//! `Ok`/`Err`, an in-task validation failure (e.g. the key vanished between
+//! the presence check in `ai_send` and the read inside the task), and even
+//! an unexpected panic — this crate does not set `panic = "abort"`, so
+//! `Drop` still runs during unwind. A caveat documented on `RunningGuard`: a
+//! panic after `history` has been taken out of the `Mutex` loses that
+//! turn's messages (the slot is left holding the pre-turn history), since
+//! the `history_handle.lock() = history` restore never executes. `running`
+//! still clears either way, so the UI never gets stuck — only that one
+//! turn's history is lost.
+//!
+//! `RunningGuard` also guarantees the frontend always sees a terminal
+//! stream event (I3): every `ChatEvent` on the task's one send path goes
+//! through `RunningGuard::emit`, which flags `terminal_emitted` when the
+//! event is `Done`/`Cancelled`/`Error`. If `Drop` runs and that flag is
+//! still unset — the task returned or panicked without ever reaching a
+//! terminal event — it sends a best-effort synthetic `Error` itself, so the
+//! UI is never left stuck on "running" with no explanation.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -95,18 +108,61 @@ pub struct AiChatState {
     executor: Mutex<Option<Arc<AiToolExecutor>>>,
 }
 
-/// RAII guard that clears `running` when the spawned chat task ends —
-/// constructed as the task's first statement so every exit after that
-/// point (`return`s on an in-task validation failure, `run_chat_turn`'s
-/// `Ok`/`Err`, or an unexpected panic) clears it via `Drop`. This is the
-/// single place `running` is cleared inside the task, so exit paths added
-/// later stay covered automatically instead of needing their own
-/// `running.store(false, ..)` call.
-struct RunningGuard(Arc<AtomicBool>);
+/// RAII guard that (1) clears `running` when the chat turn ends and (2)
+/// guarantees a terminal `AiStreamEvent` reaches the frontend, even if the
+/// turn ends via panic (I3). Constructed immediately after `ai_send`'s
+/// `compare_exchange` succeeds and then moved into the spawned task — see
+/// the module doc comment for why that timing matters. Every `ChatEvent`
+/// the send path emits should go through [`RunningGuard::emit`] rather than
+/// straight to `AiStreamEvent::emit`, so `terminal_emitted` stays accurate;
+/// this is the single place `running` is cleared and a terminal event is
+/// guaranteed, so exit paths added later stay covered automatically
+/// instead of needing their own bookkeeping.
+///
+/// Generic over the sink function (rather than boxing it as
+/// `Arc<dyn Fn(..)>`) so the guard has no runtime dispatch cost and — more
+/// usefully for tests — a unit test can plug in a plain `Vec`-collecting
+/// closure without needing a real `AppHandle`.
+struct RunningGuard<F: Fn(ChatEvent) + Send + Sync> {
+    running: Arc<AtomicBool>,
+    /// Set once a `Done`/`Cancelled`/`Error` event has actually been sent
+    /// through `emit`. `Drop` checks this to decide whether it needs to
+    /// synthesize one.
+    terminal_emitted: Arc<AtomicBool>,
+    /// Where events actually go — `AiStreamEvent::from(ev).emit(&app)` in
+    /// production, a `Vec` collector in tests.
+    sink: F,
+}
 
-impl Drop for RunningGuard {
+impl<F: Fn(ChatEvent) + Send + Sync> RunningGuard<F> {
+    /// Send one `ChatEvent` through the guard's sink, marking
+    /// `terminal_emitted` first if `ev` is `Done`/`Cancelled`/`Error` — the
+    /// single place that decides "did this turn reach a terminal event",
+    /// shared by every call site (the task's early-return branches and
+    /// `run_chat_turn`'s callback).
+    fn emit(&self, ev: ChatEvent) {
+        if matches!(
+            ev,
+            ChatEvent::Done | ChatEvent::Cancelled | ChatEvent::Error { .. }
+        ) {
+            self.terminal_emitted.store(true, Ordering::SeqCst);
+        }
+        (self.sink)(ev);
+    }
+}
+
+impl<F: Fn(ChatEvent) + Send + Sync> Drop for RunningGuard<F> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.running.store(false, Ordering::SeqCst);
+        // `swap` (not `load` then `store`) so this check-and-set is a
+        // single atomic step — irrelevant for the single-threaded drop
+        // path today, but it's the same guarantee `running`'s
+        // `compare_exchange` relies on, for free.
+        if !self.terminal_emitted.swap(true, Ordering::SeqCst) {
+            (self.sink)(ChatEvent::Error {
+                message: "assistant task failed unexpectedly".into(),
+            });
+        }
     }
 }
 
@@ -152,12 +208,6 @@ fn build_provider(provider_name: &str, api_key: String) -> Result<Provider, Stri
     }
 }
 
-/// Emit an `AiStreamEvent::Error` best-effort — a failed emit (e.g. no
-/// window left to deliver to) must never panic the background task.
-fn emit_error(app: &AppHandle, message: String) {
-    let _ = AiStreamEvent::Error { message }.emit(app);
-}
-
 /// Validate, then fire-and-forget one user turn: spawns a tokio task
 /// running [`run_chat_turn`] and returns immediately — progress streams to
 /// the frontend as [`AiStreamEvent`]s, not through this command's return
@@ -186,6 +236,23 @@ pub async fn ai_send(
     chat.running
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .map_err(|_| ALREADY_RUNNING_MSG.to_owned())?;
+
+    // I3: built immediately after the compare_exchange succeeds, before any
+    // of the executor/provider setup below — so a panic in that setup
+    // (still synchronous, still inside `ai_send`, before the task exists)
+    // clears `running` via this guard's `Drop` during unwind, the same as a
+    // panic inside the spawned task would.
+    let running_guard = {
+        let app = app.clone();
+        RunningGuard {
+            running: Arc::clone(&chat.running),
+            terminal_emitted: Arc::new(AtomicBool::new(false)),
+            sink: move |ev: ChatEvent| {
+                let _ = AiStreamEvent::from(ev).emit(&app);
+            },
+        }
+    };
+
     chat.cancel.store(false, Ordering::SeqCst);
 
     // Advisory is the only authority level any UI can reach (ADR-0008):
@@ -216,31 +283,28 @@ pub async fn ai_send(
 
     let history_handle = Arc::clone(&chat.history);
     let cancel_handle = Arc::clone(&chat.cancel);
-    let running_handle = Arc::clone(&chat.running);
     let key_store = Arc::clone(&keys.0);
-    let app_for_task = app.clone();
 
     tauri::async_runtime::spawn(async move {
-        let _running_guard = RunningGuard(running_handle);
+        let running_guard = running_guard;
 
         let key = match key_store.get_key(&provider_name) {
             Ok(Some(key)) => key,
             Ok(None) => {
-                emit_error(
-                    &app_for_task,
-                    format!("no API key configured for provider \"{provider_name}\""),
-                );
+                running_guard.emit(ChatEvent::Error {
+                    message: format!("no API key configured for provider \"{provider_name}\""),
+                });
                 return;
             }
             Err(message) => {
-                emit_error(&app_for_task, message);
+                running_guard.emit(ChatEvent::Error { message });
                 return;
             }
         };
         let provider = match build_provider(&provider_name, key) {
             Ok(provider) => provider,
             Err(message) => {
-                emit_error(&app_for_task, message);
+                running_guard.emit(ChatEvent::Error { message });
                 return;
             }
         };
@@ -250,9 +314,7 @@ pub async fn ai_send(
             std::mem::take(&mut *guard)
         };
 
-        let emit = move |ev: ChatEvent| {
-            let _ = AiStreamEvent::from(ev).emit(&app_for_task);
-        };
+        let emit = |ev: ChatEvent| running_guard.emit(ev);
         let _ = run_chat_turn(
             &provider,
             &executor,
@@ -419,12 +481,72 @@ mod state_tests {
     fn running_guard_clears_flag_on_drop_even_on_early_return() {
         let running = Arc::new(AtomicBool::new(true));
         {
-            let _guard = RunningGuard(Arc::clone(&running));
+            let _guard = RunningGuard {
+                running: Arc::clone(&running),
+                terminal_emitted: Arc::new(AtomicBool::new(false)),
+                sink: |_ev: ChatEvent| {},
+            };
             assert!(running.load(Ordering::SeqCst), "still running under guard");
         }
         assert!(
             !running.load(Ordering::SeqCst),
             "guard must clear on drop, including panic unwind"
         );
+    }
+
+    // I3: RunningGuard also guarantees a terminal stream event — these two
+    // tests exercise that mechanism directly (a plain Vec-collecting sink,
+    // no real AppHandle needed), covering both the "task exited without
+    // ever emitting a terminal event" case (e.g. a panic mid-turn) and the
+    // "no double emission" case (a real terminal event already went
+    // through `.emit`).
+
+    #[test]
+    fn running_guard_synthesizes_a_terminal_error_on_drop_when_none_was_emitted() {
+        let running = Arc::new(AtomicBool::new(true));
+        let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let events_sink = Arc::clone(&events);
+            let _guard = RunningGuard {
+                running: Arc::clone(&running),
+                terminal_emitted: Arc::new(AtomicBool::new(false)),
+                sink: move |ev: ChatEvent| events_sink.lock().unwrap().push(ev),
+            };
+            // Simulates a task that returns (or panics) without the turn
+            // ever reaching Done/Cancelled/Error.
+        }
+        assert!(!running.load(Ordering::SeqCst), "guard clears running");
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "drop synthesizes exactly one terminal event: {events:?}"
+        );
+        assert!(
+            matches!(&events[0], ChatEvent::Error { message } if message.contains("unexpectedly")),
+            "synthetic error names the failure: {events:?}"
+        );
+    }
+
+    #[test]
+    fn running_guard_does_not_double_emit_when_a_terminal_event_already_went_through() {
+        let running = Arc::new(AtomicBool::new(true));
+        let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let events_sink = Arc::clone(&events);
+            let guard = RunningGuard {
+                running: Arc::clone(&running),
+                terminal_emitted: Arc::new(AtomicBool::new(false)),
+                sink: move |ev: ChatEvent| events_sink.lock().unwrap().push(ev),
+            };
+            guard.emit(ChatEvent::Done);
+        }
+        let events = events.lock().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "only the real Done event — no synthetic duplicate: {events:?}"
+        );
+        assert!(matches!(&events[0], ChatEvent::Done));
     }
 }

@@ -9,6 +9,19 @@ use std::sync::OnceLock;
 /// ends up in `ProviderError::Http` and, downstream, in UI/log output.
 pub(crate) const MAX_HTTP_ERROR_LEN: usize = 2000;
 
+/// I2: TCP connect timeout for HTTP requests to AI providers. Generous
+/// enough for a slow network without leaving a hung `ai_send` turn (and its
+/// "running" UI state) waiting indefinitely on a connection that will never
+/// come up.
+const HTTP_CONNECT_TIMEOUT_SECS: u64 = 10;
+/// I2: idle-read timeout — the ceiling on how long the client waits between
+/// bytes once a response has started. Deliberately NOT a total-request
+/// timeout (`reqwest::ClientBuilder::timeout`), which would kill a
+/// legitimately long-running SSE stream; `read_timeout` only fires when the
+/// connection goes quiet, so it must comfortably exceed normal SSE
+/// inter-event gaps from either provider.
+const HTTP_READ_TIMEOUT_SECS: u64 = 120;
+
 /// Shared `reqwest::Client` for both providers. `reqwest::Client` holds a
 /// connection pool internally and is meant to be reused — building a fresh
 /// one per `chat()` call (as both providers previously did) throws that
@@ -17,7 +30,13 @@ static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// Return the process-wide shared HTTP client, creating it on first use.
 pub(crate) fn http_client() -> &'static reqwest::Client {
-    HTTP_CLIENT.get_or_init(reqwest::Client::new)
+    HTTP_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECS))
+            .read_timeout(std::time::Duration::from_secs(HTTP_READ_TIMEOUT_SECS))
+            .build()
+            .expect("client")
+    })
 }
 
 /// Cap `s` at [`MAX_HTTP_ERROR_LEN`] `char`s, appending `"…"` when

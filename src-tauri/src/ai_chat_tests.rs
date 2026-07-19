@@ -349,6 +349,215 @@ async fn cancel_flag_stops_before_next_provider_call() {
 }
 
 #[tokio::test]
+async fn cancel_mid_tool_block_loop_synthesizes_missing_tool_results() {
+    // C1: two ToolUse blocks in one Assistant message; cancel flips from
+    // inside the FIRST tool's ToolEnd emit, i.e. call_1 has already run for
+    // real by the time the loop's cancel check (at the top of the NEXT
+    // iteration, before call_2) observes it. Regression coverage for the
+    // wedge: history must never end Assistant(tool_use x2) with no
+    // ToolResults message at all — both real providers reject the next
+    // send in that shape.
+    let (executor, _sink) = connected_executor().await;
+    let provider = Provider::Fake(FakeProvider::new(vec![
+        ChatTurn {
+            blocks: vec![
+                AssistantBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "read_tune".into(),
+                    input: serde_json::json!({ "names": ["reqFuel"] }),
+                },
+                AssistantBlock::ToolUse {
+                    id: "call_2".into(),
+                    name: "read_tune".into(),
+                    input: serde_json::json!({ "names": ["reqFuel"] }),
+                },
+            ],
+            stop_reason: StopReason::ToolUse,
+        },
+        ChatTurn {
+            blocks: vec![AssistantBlock::Text {
+                text: "should never be reached".into(),
+            }],
+            stop_reason: StopReason::EndTurn,
+        },
+    ]));
+
+    let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_writer = cancel.clone();
+    let emit = move |ev: ChatEvent| {
+        if matches!(ev, ChatEvent::ToolEnd { .. }) {
+            cancel_writer.store(true, Ordering::SeqCst);
+        }
+        events_sink.lock().unwrap().push(ev);
+    };
+
+    let mut history = ChatHistory::new();
+    let result = run_chat_turn(
+        &provider,
+        &executor,
+        &mut history,
+        &tools(),
+        "system prompt",
+        "fake-model",
+        1024,
+        "cancel me mid-tools".to_owned(),
+        cancel.as_ref(),
+        &emit,
+    )
+    .await;
+    assert_eq!(result, Ok(()));
+
+    let events = events.lock().unwrap();
+    assert!(
+        matches!(events.last(), Some(ChatEvent::Cancelled)),
+        "Cancelled is the last event: {events:?}"
+    );
+    drop(events);
+
+    let messages = history.messages();
+    assert_eq!(
+        messages.len(),
+        3,
+        "User, Assistant(tool_use x2), ToolResults(covering both ids): {messages:?}"
+    );
+    assert!(matches!(&messages[1], ChatMessage::Assistant { .. }));
+    let ChatMessage::ToolResults { results } = &messages[2] else {
+        panic!("expected ToolResults at index 2, got {:?}", messages[2]);
+    };
+    assert_eq!(results.len(), 2, "covers both tool_use ids: {results:?}");
+    assert_eq!(results[0].tool_use_id, "call_1");
+    assert!(!results[0].is_error, "call_1 ran for real before cancel");
+    assert_eq!(results[1].tool_use_id, "call_2");
+    assert!(
+        results[1].is_error,
+        "call_2 never ran — synthesized as an error"
+    );
+    assert_eq!(results[1].content, "cancelled by user");
+
+    let remaining = match &provider {
+        Provider::Fake(fake) => fake.turns.lock().unwrap().len(),
+        _ => panic!("expected the fake provider"),
+    };
+    assert_eq!(
+        remaining, 1,
+        "the second scripted turn was never consumed — no second provider call"
+    );
+}
+
+#[tokio::test]
+async fn max_tokens_with_pending_tool_use_synthesizes_tool_results() {
+    // C1: the model can be truncated mid tool-call — stop_reason MaxTokens
+    // with a ToolUse block still in the Assistant message. The MaxTokens
+    // arm returns without ever executing tools; it must still leave a
+    // matching ToolResults message behind so the wedge can't happen.
+    let (executor, _sink) = connected_executor().await;
+    let provider = Provider::Fake(FakeProvider::new(vec![ChatTurn {
+        blocks: vec![AssistantBlock::ToolUse {
+            id: "call_1".into(),
+            name: "read_tune".into(),
+            input: serde_json::json!({ "names": ["reqFuel"] }),
+        }],
+        stop_reason: StopReason::MaxTokens,
+    }]));
+
+    let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    let emit = move |ev: ChatEvent| events_sink.lock().unwrap().push(ev);
+
+    let mut history = ChatHistory::new();
+    let cancel = AtomicBool::new(false);
+    let result = run_chat_turn(
+        &provider,
+        &executor,
+        &mut history,
+        &tools(),
+        "system prompt",
+        "fake-model",
+        1024,
+        "keep going".to_owned(),
+        &cancel,
+        &emit,
+    )
+    .await;
+    assert_eq!(result, Ok(()), "MaxTokens is reported, not fatal");
+
+    let events = events.lock().unwrap();
+    match events.last() {
+        Some(ChatEvent::Error { message }) => {
+            assert!(
+                message.contains("max-tokens limit"),
+                "error names the stop reason: {message}"
+            );
+        }
+        other => panic!("expected a final Error event naming MaxTokens, got {other:?}"),
+    }
+    drop(events);
+
+    let messages = history.messages();
+    assert_eq!(
+        messages.len(),
+        3,
+        "User, Assistant(tool_use), ToolResults(synthetic): {messages:?}"
+    );
+    let ChatMessage::ToolResults { results } = &messages[2] else {
+        panic!("expected ToolResults at index 2, got {:?}", messages[2]);
+    };
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tool_use_id, "call_1");
+    assert!(
+        results[0].is_error,
+        "never executed: synthesized as an error"
+    );
+    assert_eq!(results[0].content, "not executed (max_tokens)");
+}
+
+#[tokio::test]
+async fn other_stop_reason_with_pending_tool_use_synthesizes_tool_results() {
+    // C1: same shape as the MaxTokens case, for the StopReason::Other arm.
+    let (executor, _sink) = connected_executor().await;
+    let provider = Provider::Fake(FakeProvider::new(vec![ChatTurn {
+        blocks: vec![AssistantBlock::ToolUse {
+            id: "call_1".into(),
+            name: "read_tune".into(),
+            input: serde_json::json!({ "names": ["reqFuel"] }),
+        }],
+        stop_reason: StopReason::Other("content_filter".into()),
+    }]));
+
+    let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    let emit = move |ev: ChatEvent| events_sink.lock().unwrap().push(ev);
+
+    let mut history = ChatHistory::new();
+    let cancel = AtomicBool::new(false);
+    let result = run_chat_turn(
+        &provider,
+        &executor,
+        &mut history,
+        &tools(),
+        "system prompt",
+        "fake-model",
+        1024,
+        "keep going".to_owned(),
+        &cancel,
+        &emit,
+    )
+    .await;
+    assert_eq!(result, Ok(()));
+
+    let messages = history.messages();
+    assert_eq!(messages.len(), 3, "{messages:?}");
+    let ChatMessage::ToolResults { results } = &messages[2] else {
+        panic!("expected ToolResults at index 2, got {:?}", messages[2]);
+    };
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_error);
+    assert_eq!(results[0].content, "not executed (content_filter)");
+}
+
+#[tokio::test]
 async fn propose_change_emits_proposal_ready() {
     let (executor, _sink) = connected_executor().await;
     let provider = Provider::Fake(FakeProvider::new(vec![

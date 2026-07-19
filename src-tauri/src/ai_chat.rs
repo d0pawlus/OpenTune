@@ -37,6 +37,16 @@ impl ChatHistory {
         while self.messages.len() > MAX_HISTORY_MESSAGES {
             self.messages.remove(0);
         }
+        // I1: the single-item eviction above can stop mid tool-pair,
+        // leaving a dangling Assistant or ToolResults message at the head
+        // — not a legal provider-facing history prefix (both Anthropic and
+        // OpenAI expect the conversation to open with a user turn), and a
+        // stray ToolResults head would reference tool_use ids no longer in
+        // history. Keep dropping from the head until it's a User message
+        // (or history is empty).
+        while !matches!(self.messages.first(), None | Some(ChatMessage::User { .. })) {
+            self.messages.remove(0);
+        }
     }
 
     pub fn messages(&self) -> &[ChatMessage] {
@@ -183,12 +193,24 @@ pub async fn run_chat_turn(
                 return Ok(());
             }
             StopReason::MaxTokens => {
+                push_pending_tool_results(
+                    history,
+                    &turn.blocks,
+                    Vec::new(),
+                    "not executed (max_tokens)",
+                );
                 emit(ChatEvent::Error {
                     message: "stopped: the model hit its max-tokens limit".into(),
                 });
                 return Ok(());
             }
             StopReason::Other(reason) => {
+                push_pending_tool_results(
+                    history,
+                    &turn.blocks,
+                    Vec::new(),
+                    &format!("not executed ({reason})"),
+                );
                 emit(ChatEvent::Error {
                     message: format!("stopped: {reason}"),
                 });
@@ -201,6 +223,12 @@ pub async fn run_chat_turn(
                         continue;
                     };
                     if cancel.load(Ordering::SeqCst) {
+                        push_pending_tool_results(
+                            history,
+                            &turn.blocks,
+                            results,
+                            "cancelled by user",
+                        );
                         emit(ChatEvent::Cancelled);
                         return Ok(());
                     }
@@ -217,6 +245,53 @@ pub async fn run_chat_turn(
         ),
     });
     Ok(())
+}
+
+/// C1: push a `ChatMessage::ToolResults` covering every `ToolUse` id in
+/// `blocks`, if any — used by exit paths that have already pushed an
+/// Assistant message containing tool calls but then leave before executing
+/// all of them (a mid-loop cancel, or a `MaxTokens`/`Other` stop that ends
+/// the turn without ever reaching the `ToolUse` match arm). Both real
+/// providers reject the *next* send if history ends with an Assistant
+/// message whose `tool_use` blocks have no matching result: Anthropic
+/// requires a `tool_result` in the following user message, OpenAI requires
+/// a `role: "tool"` message per `tool_call`. `collected` carries any real
+/// results already produced (e.g. earlier tool calls in the same message
+/// that ran before a mid-loop cancel); every remaining id is synthesized as
+/// `is_error: true` with `reason` as its content, in block order. A no-op
+/// when `blocks` has no `ToolUse` block, so a plain-text `MaxTokens`/cancel
+/// exit never appends a spurious empty `ToolResults` message.
+fn push_pending_tool_results(
+    history: &mut ChatHistory,
+    blocks: &[AssistantBlock],
+    collected: Vec<ToolResultMsg>,
+    reason: &str,
+) {
+    let tool_use_ids: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| match b {
+            AssistantBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    if tool_use_ids.is_empty() {
+        return;
+    }
+    let results = tool_use_ids
+        .into_iter()
+        .map(|id| {
+            collected
+                .iter()
+                .find(|r| r.tool_use_id == id)
+                .cloned()
+                .unwrap_or_else(|| ToolResultMsg {
+                    tool_use_id: id.to_owned(),
+                    content: reason.to_owned(),
+                    is_error: true,
+                })
+        })
+        .collect();
+    history.push(ChatMessage::ToolResults { results });
 }
 
 /// Execute one `ToolUse` block: emits `ToolStart`/`ToolEnd`, annotates
@@ -303,6 +378,37 @@ mod core_tests {
         }
         h.clear();
         assert!(h.is_empty());
+    }
+
+    #[test]
+    fn eviction_never_leaves_a_non_user_head() {
+        // I1: naive single-item head-eviction can stop mid tool-pair,
+        // leaving a dangling Assistant or ToolResults message at index 0 —
+        // illegal as a provider-facing history prefix (both Anthropic and
+        // OpenAI expect the conversation to open with a user turn), and a
+        // stray ToolResults head references tool_use ids no longer present
+        // in history. 40 (the cap) is not a multiple of 3, so repeatedly
+        // pushing User/Assistant/ToolResults triples and evicting one
+        // message at a time drifts the head across all three message kinds
+        // over time — this reliably lands on a non-User head without the
+        // fix.
+        let mut h = ChatHistory::new();
+        for i in 0..MAX_HISTORY_MESSAGES {
+            h.push(ChatMessage::User {
+                text: format!("u{i}"),
+            });
+            h.push(ChatMessage::Assistant { blocks: vec![] });
+            h.push(ChatMessage::ToolResults { results: vec![] });
+        }
+        assert!(
+            h.len() <= MAX_HISTORY_MESSAGES,
+            "still within the cap: {}",
+            h.len()
+        );
+        match h.messages().first() {
+            Some(ChatMessage::User { .. }) => {}
+            other => panic!("head must be a User message (or history empty), got {other:?}"),
+        }
     }
 
     #[test]

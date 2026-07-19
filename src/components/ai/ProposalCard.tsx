@@ -51,6 +51,7 @@ export function ProposalCard({
   const canApply = proposal.ok && proposal.edits.length > 0;
 
   const handleApply = async () => {
+    if (!canApply || applying || applied) return;
     setError(null);
     setApplying(true);
     try {

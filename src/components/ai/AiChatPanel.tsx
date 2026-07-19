@@ -152,6 +152,9 @@ export function AiChatPanel({ locale }: { locale: Locale }) {
   const handleSend = async () => {
     const text = input.trim();
     if (!text || running) return;
+    // M: a stray delta that arrives after a prior turn's terminal event
+    // (already flushed) must not prepend into this new turn's transcript.
+    deltaBuffer.current = "";
     setEntries((prev) => [...prev, { kind: "message", role: "user", text }]);
     setInput("");
     setError(null);
