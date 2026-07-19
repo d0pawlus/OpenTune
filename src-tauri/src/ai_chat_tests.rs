@@ -407,3 +407,106 @@ async fn propose_change_emits_proposal_ready() {
     assert_eq!(proposals[0].constant, "reqFuel");
     assert_eq!(proposals[0].id, 1);
 }
+
+#[tokio::test]
+async fn provider_error_is_terminal() {
+    let (executor, _sink) = connected_executor().await;
+    // An empty script — the fake provider's first call already finds
+    // nothing to pop, returning ProviderError::Protocol.
+    let provider = Provider::Fake(FakeProvider::new(vec![]));
+
+    let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    let emit = move |ev: ChatEvent| events_sink.lock().unwrap().push(ev);
+
+    let mut history = ChatHistory::new();
+    let cancel = AtomicBool::new(false);
+    let result = run_chat_turn(
+        &provider,
+        &executor,
+        &mut history,
+        &tools(),
+        "system prompt",
+        "fake-model",
+        1024,
+        "hello".to_owned(),
+        &cancel,
+        &emit,
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "provider error propagates as Err: {result:?}"
+    );
+
+    let events = events.lock().unwrap();
+    match events.last() {
+        Some(ChatEvent::Error { message }) => {
+            assert!(!message.is_empty(), "error event carries a message");
+        }
+        other => panic!("expected a final Error event, got {other:?}"),
+    }
+    drop(events);
+
+    let messages = history.messages();
+    assert_eq!(messages.len(), 1, "only the pushed User message");
+    assert!(matches!(&messages[0], ChatMessage::User { text } if text == "hello"));
+}
+
+#[tokio::test]
+async fn max_tokens_stop_reason_is_non_fatal() {
+    let (executor, _sink) = connected_executor().await;
+    let provider = Provider::Fake(FakeProvider::new(vec![ChatTurn {
+        blocks: vec![AssistantBlock::Text {
+            text: "partial".into(),
+        }],
+        stop_reason: StopReason::MaxTokens,
+    }]));
+
+    let events: Arc<Mutex<Vec<ChatEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_sink = events.clone();
+    let emit = move |ev: ChatEvent| events_sink.lock().unwrap().push(ev);
+
+    let mut history = ChatHistory::new();
+    let cancel = AtomicBool::new(false);
+    let result = run_chat_turn(
+        &provider,
+        &executor,
+        &mut history,
+        &tools(),
+        "system prompt",
+        "fake-model",
+        1024,
+        "keep going".to_owned(),
+        &cancel,
+        &emit,
+    )
+    .await;
+    assert_eq!(result, Ok(()), "MaxTokens is reported, not fatal");
+
+    let events = events.lock().unwrap();
+    match events.last() {
+        Some(ChatEvent::Error { message }) => {
+            assert!(
+                message.contains("max-tokens limit"),
+                "error names the stop reason: {message}"
+            );
+        }
+        other => panic!("expected a final Error event naming MaxTokens, got {other:?}"),
+    }
+    drop(events);
+
+    let messages = history.messages();
+    assert_eq!(messages.len(), 2, "User then the preserved Assistant turn");
+    match messages.last() {
+        Some(ChatMessage::Assistant { blocks }) => {
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| matches!(b, AssistantBlock::Text { text } if text == "partial")),
+                "the partial assistant turn is preserved in history: {blocks:?}"
+            );
+        }
+        other => panic!("expected the last message to be Assistant, got {other:?}"),
+    }
+}
