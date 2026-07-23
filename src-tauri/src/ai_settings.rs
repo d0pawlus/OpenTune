@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::atomic_write;
 
-/// Generate a random 32-byte hex-encoded token (64 chars).
+/// Generate a random 32-byte hex-encoded token (64 chars). Dependency-free
+/// hex encoding — the plan calls out an unadjudicated `hex` crate here as a
+/// review finding for one 32-byte fold; no crate needed.
 fn generate_token() -> String {
     use rand::RngExt;
     let mut b = [0u8; 32];
     rand::rng().fill(&mut b);
-    hex::encode(b)
+    b.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Settings file name inside `app_config_dir` (same directory layout.rs uses).
@@ -172,6 +174,25 @@ pub fn load_ai_settings_in(dir: &Path) -> Result<AiSettings, String> {
     }
 }
 
+/// Write the MCP bearer token to `<dir>/mcp-token`, then (unix only)
+/// restrict its permissions to owner-only (`0600`) — the token file's
+/// default `atomic_write` perms (~`0644`) would otherwise let any other
+/// local user read the bearer token. Scoped to the token file alone:
+/// `atomic_write` itself stays unchanged for every other caller.
+fn write_mcp_token(dir: &Path, token: &str) -> Result<(), String> {
+    atomic_write(dir, MCP_TOKEN_FILE, token.as_bytes())?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(MCP_TOKEN_FILE);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("failed to restrict token file permissions: {e}"))?;
+    }
+
+    Ok(())
+}
+
 /// Reads the token from `mcp-token` file; if absent or empty/whitespace,
 /// generates a fresh 64-char hex token, writes it, and returns it.
 pub fn load_or_create_mcp_token_in(dir: &Path) -> Result<String, String> {
@@ -181,7 +202,7 @@ pub fn load_or_create_mcp_token_in(dir: &Path) -> Result<String, String> {
             let token = text.trim();
             if token.is_empty() {
                 let new_token = generate_token();
-                atomic_write(dir, MCP_TOKEN_FILE, new_token.as_bytes())?;
+                write_mcp_token(dir, &new_token)?;
                 Ok(new_token)
             } else {
                 Ok(token.to_owned())
@@ -189,7 +210,7 @@ pub fn load_or_create_mcp_token_in(dir: &Path) -> Result<String, String> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let token = generate_token();
-            atomic_write(dir, MCP_TOKEN_FILE, token.as_bytes())?;
+            write_mcp_token(dir, &token)?;
             Ok(token)
         }
         Err(e) => Err(e.to_string()),
@@ -199,7 +220,7 @@ pub fn load_or_create_mcp_token_in(dir: &Path) -> Result<String, String> {
 /// Always generates and writes a fresh 64-char hex token.
 pub fn regenerate_mcp_token_in(dir: &Path) -> Result<String, String> {
     let token = generate_token();
-    atomic_write(dir, MCP_TOKEN_FILE, token.as_bytes())?;
+    write_mcp_token(dir, &token)?;
     Ok(token)
 }
 
@@ -400,5 +421,39 @@ mod tests {
         std::fs::write(dir.join(MCP_TOKEN_FILE), b"   \n\t ").expect("write whitespace file");
         let token = load_or_create_mcp_token_in(&dir).expect("load_or_create with whitespace");
         assert_eq!(token.len(), 64, "should regenerate 64 hex chars");
+    }
+
+    /// The token file grants read/access to any tune configuration secrets
+    /// only to its owner — a `0644`-default token file would let any other
+    /// local user read the bearer token. Checked after both the
+    /// create-on-first-use path and the explicit regenerate path.
+    #[cfg(unix)]
+    #[test]
+    fn mcp_token_file_is_owner_only_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("token-perms");
+
+        load_or_create_mcp_token_in(&dir).expect("create token");
+        let mode = std::fs::metadata(dir.join(MCP_TOKEN_FILE))
+            .expect("token file metadata readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "token file must be owner-only (0600) after create"
+        );
+
+        regenerate_mcp_token_in(&dir).expect("regenerate token");
+        let mode = std::fs::metadata(dir.join(MCP_TOKEN_FILE))
+            .expect("token file metadata readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "token file must be owner-only (0600) after regenerate"
+        );
     }
 }

@@ -51,7 +51,6 @@ keyring = { version = "4", features = ["apple-native-keyring-store", "windows-na
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 rand = "0.10"
-hex = "0.4"
 rmcp = { version = "2.2", features = ["server", "transport-streamable-http-server"] }
 # M7 slice 4 task 4: mounts rmcp's `StreamableHttpService` (a tower
 # `Service`) and layers the bearer-auth middleware in front of it. Version

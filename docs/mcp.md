@@ -114,11 +114,10 @@ Proposals are rate-limited to one per 1000 milliseconds (1 proposal per second).
 ## Debugging
 
 - Check `ai-audit.jsonl` in the app config directory for a log of all MCP calls and responses.
-- If authentication fails, verify the token hasn't been regenerated on a different machine or session.
+- If authentication fails, verify the token wasn't regenerated from the settings panel since the client was configured — open **Settings** → **AI** and copy the current token again.
 - If the server fails to start, check that port 8765 (or your configured port) is not in use; use `lsof -i :8765` (macOS/Linux) or `netstat -ano` (Windows) to diagnose.
 
 ## Related
 
-- [Architecture § 5.10]({{ '/architecture/' | relative_url }}) — AI layer design
 - [Architecture § 5.9]({{ '/architecture/' | relative_url }}) — Deterministic analysis tools
-- [Architecture § 5.10]({{ '/architecture/' | relative_url }}#510-ai--the-ai-orchestration-layer-built-on-analysis) — Embedded assistant guide (how the same tools power the in-app AI chat)
+- [Architecture § 5.10]({{ '/architecture/' | relative_url }}#510-ai--the-ai-orchestration-layer-built-on-analysis) — AI layer design and embedded assistant guide (how the same tools power the in-app AI chat)

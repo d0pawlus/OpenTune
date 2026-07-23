@@ -2722,7 +2722,6 @@ version = "0.2.0"
 dependencies = [
  "axum",
  "futures-util",
- "hex",
  "keyring",
  "opentune-ai",
  "opentune-analysis",
