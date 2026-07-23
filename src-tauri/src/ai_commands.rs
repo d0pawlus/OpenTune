@@ -54,10 +54,36 @@ pub async fn get_ai_settings(app: tauri::AppHandle) -> Result<AiSettingsDto, Str
     get_ai_settings_in(&config_dir(&app)?)
 }
 
+/// Persist settings, then reconcile the MCP server's running state against
+/// the freshly saved `mcpEnabled`/`mcpPort` (M7 slice 4 task 4) — covers
+/// enable, disable, and a port change while already enabled. A reconcile
+/// failure (most commonly: the newly configured port is already taken)
+/// surfaces as this command's `Err`, which the frontend shows via its
+/// existing alert; the settings themselves are already saved by that point,
+/// so the user's other choices are not lost.
 #[tauri::command]
 #[specta::specta]
-pub async fn set_ai_settings(app: tauri::AppHandle, settings: AiSettingsDto) -> Result<(), String> {
-    set_ai_settings_in(&config_dir(&app)?, settings)
+pub async fn set_ai_settings(
+    app: tauri::AppHandle,
+    settings: AiSettingsDto,
+    mcp_state: State<'_, crate::ai_mcp_server::McpServerState>,
+    executor_state: State<'_, Arc<crate::ai_tools::AiExecutorState>>,
+    owner: State<'_, crate::owner::OwnerHandle>,
+) -> Result<(), String> {
+    let dir = config_dir(&app)?;
+    let mcp_enabled = settings.mcp_enabled;
+    let mcp_port = settings.mcp_port;
+    set_ai_settings_in(&dir, settings)?;
+
+    crate::ai_mcp_server::reconcile_mcp_server(
+        &mcp_state,
+        executor_state.inner().clone(),
+        owner.inner().clone(),
+        dir,
+        mcp_enabled,
+        mcp_port,
+    )
+    .await
 }
 
 #[tauri::command]

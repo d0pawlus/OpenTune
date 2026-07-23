@@ -850,6 +850,16 @@ impl From<AiSettingsDto> for AiSettings {
     }
 }
 
+/// The MCP server's current lifecycle status (M7 slice 4 task 4), served by
+/// `ai_mcp_server::mcp_status` for the Settings UI's status line. `port` is
+/// the real bound port while running (`0` while stopped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatusDto {
+    pub running: bool,
+    pub port: u16,
+}
+
 // ── M7 slice 3 task 4: assistant proposal DTOs ────────────────────────────
 
 /// One cell's guardrail verdict, IPC-projected from

@@ -24,6 +24,15 @@ export const commands = {
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 	getAiSettings: () => typedError<AiSettingsDto, string>(__TAURI_INVOKE("get_ai_settings")),
+	/**
+	 *  Persist settings, then reconcile the MCP server's running state against
+	 *  the freshly saved `mcpEnabled`/`mcpPort` (M7 slice 4 task 4) — covers
+	 *  enable, disable, and a port change while already enabled. A reconcile
+	 *  failure (most commonly: the newly configured port is already taken)
+	 *  surfaces as this command's `Err`, which the frontend shows via its
+	 *  existing alert; the settings themselves are already saved by that point,
+	 *  so the user's other choices are not lost.
+	 */
 	setAiSettings: (settings: AiSettingsDto) => typedError<null, string>(__TAURI_INVOKE("set_ai_settings", { settings })),
 	setAiKey: (provider: string, key: string) => typedError<null, string>(__TAURI_INVOKE("set_ai_key", { provider, key })),
 	clearAiKey: (provider: string) => typedError<null, string>(__TAURI_INVOKE("clear_ai_key", { provider })),
@@ -36,6 +45,12 @@ export const commands = {
 	 *  command on explicit request.
 	 */
 	mcpTokenInfo: (regenerate: boolean) => typedError<string, string>(__TAURI_INVOKE("mcp_token_info", { regenerate })),
+	/**
+	 *  Current server status for the Settings UI (task 5). `port` is the real
+	 *  bound port when running (meaningful even when the configured port was
+	 *  `0`, e.g. in tests) and `0` when stopped.
+	 */
+	mcpStatus: () => typedError<McpStatusDto, string>(__TAURI_INVOKE("mcp_status")),
 	/**
 	 *  Validate, then fire-and-forget one user turn: spawns a tokio task
 	 *  running [`run_chat_turn`] and returns immediately — progress streams to
@@ -624,6 +639,16 @@ export type MarkerDto = {
 	record_index: number,
 	t_ms: number | null,
 	text: string,
+};
+
+/**
+ *  The MCP server's current lifecycle status (M7 slice 4 task 4), served by
+ *  `ai_mcp_server::mcp_status` for the Settings UI's status line. `port` is
+ *  the real bound port while running (`0` while stopped).
+ */
+export type McpStatusDto = {
+	running: boolean,
+	port: number,
 };
 
 /**  A top-level menu. */

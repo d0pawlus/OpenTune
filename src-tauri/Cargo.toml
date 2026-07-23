@@ -41,8 +41,9 @@ opentune-ai = { path = "crates/ai" }
 opentune-project = { path = "crates/project" }
 opentune-datalog = { path = "crates/datalog" }
 # §9 owner task: mpsc/oneshot channels + spawn_blocking for the blocking
-# serial transport. Already in the tree transitively via tauri.
-tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+# serial transport. Already in the tree transitively via tauri. `net` added
+# in M7 slice 4 task 4 for `tokio::net::TcpListener` (the MCP HTTP server).
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde_json = "1.0.150"
@@ -51,7 +52,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 futures-util = "0.3"
 rand = "0.10"
 hex = "0.4"
-rmcp = { version = "2.2", features = ["server"] }
+rmcp = { version = "2.2", features = ["server", "transport-streamable-http-server"] }
+# M7 slice 4 task 4: mounts rmcp's `StreamableHttpService` (a tower
+# `Service`) and layers the bearer-auth middleware in front of it. Version
+# aligned with what rmcp 2.2.0 itself tests against (its dev-dependencies
+# pin axum = "0.8").
+axum = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }

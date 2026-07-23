@@ -102,8 +102,11 @@ pub struct AiChatState {
     // to the app-wide `AiExecutorState` (`ai_tools.rs`), shared with the MCP
     // server, so the assistant and MCP draw from ONE rate-limit budget and
     // ONE proposal-id space instead of one executor each. `ai_send` and
-    // `ai_proposals` now take `State<'_, AiExecutorState>` directly instead
-    // of reaching into this struct.
+    // `ai_proposals` now take `State<'_, Arc<AiExecutorState>>` directly
+    // instead of reaching into this struct — `Arc`-wrapped (M7 slice 4 task
+    // 4) so `ai_mcp_server::start_mcp_server` can hold its own clone across
+    // the MCP server task's lifetime, the same shared slot the assistant
+    // uses, without borrowing from a live `AppHandle`.
 }
 
 /// RAII guard that (1) clears `running` when the chat turn ends and (2)
@@ -220,7 +223,7 @@ pub async fn ai_send(
     owner: State<'_, OwnerHandle>,
     keys: State<'_, AiKeyStoreState>,
     chat: State<'_, AiChatState>,
-    executor_state: State<'_, AiExecutorState>,
+    executor_state: State<'_, Arc<AiExecutorState>>,
 ) -> Result<(), String> {
     let dir = config_dir(&app)?;
     let settings = load_ai_settings_in(&dir)?;
@@ -350,7 +353,7 @@ pub async fn ai_cancel(chat: State<'_, AiChatState>) -> Result<(), String> {
 #[specta::specta]
 pub async fn ai_reset(
     chat: State<'_, AiChatState>,
-    executor_state: State<'_, AiExecutorState>,
+    executor_state: State<'_, Arc<AiExecutorState>>,
 ) -> Result<(), String> {
     if chat.running.load(Ordering::SeqCst) {
         return Err("cannot reset while a chat turn is running — cancel it first".into());
@@ -367,7 +370,7 @@ pub async fn ai_reset(
 #[tauri::command]
 #[specta::specta]
 pub async fn ai_proposals(
-    executor_state: State<'_, AiExecutorState>,
+    executor_state: State<'_, Arc<AiExecutorState>>,
 ) -> Result<Vec<AiProposalDto>, String> {
     let executor = executor_state.0.lock().unwrap().clone();
     Ok(executor

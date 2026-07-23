@@ -4,6 +4,7 @@ pub mod ai_chat;
 pub mod ai_chat_commands;
 pub mod ai_commands;
 pub mod ai_mcp;
+pub mod ai_mcp_server;
 pub mod ai_openai;
 pub mod ai_provider;
 pub mod ai_settings;
@@ -51,6 +52,7 @@ fn build_specta() -> Builder<tauri::Wry> {
             ai_commands::clear_ai_key,
             ai_commands::ai_key_present,
             ai_commands::mcp_token_info,
+            ai_mcp_server::mcp_status,
             ai_chat_commands::ai_send,
             ai_chat_commands::ai_cancel,
             ai_chat_commands::ai_reset,
@@ -210,7 +212,32 @@ pub fn run() {
             // shared by the embedded assistant and the MCP server — one
             // rate-limit budget, one proposal-id space, each call tagged
             // with its own audit channel via `AiToolExecutor::execute_as`.
-            app.manage(crate::ai_tools::AiExecutorState::default());
+            // `Arc`-wrapped (task 4) so `ai_mcp_server::start_mcp_server`
+            // can hold its own clone across the MCP server task's lifetime
+            // without borrowing from a live `AppHandle`.
+            app.manage(std::sync::Arc::new(
+                crate::ai_tools::AiExecutorState::default(),
+            ));
+
+            // M7 slice 4 task 4: the MCP server's current lifecycle handle
+            // (task + shutdown signal) — empty until the first start.
+            app.manage(crate::ai_mcp_server::McpServerState::default());
+
+            // M7 slice 4 task 4: start the MCP server at boot if the user
+            // already enabled it in a previous run. Binding is async, so
+            // this runs on the async runtime rather than inline in this
+            // synchronous setup closure; a failure (e.g. the configured
+            // port is now taken by something else) is logged and does not
+            // stop the app from starting — the user can still fix it from
+            // Settings, which re-reconciles on every save.
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(message) = crate::ai_mcp_server::start_on_boot(&app_handle).await {
+                        eprintln!("MCP server did not start at boot: {message}");
+                    }
+                });
+            }
 
             let handle = app.handle().clone();
             std::thread::spawn(move || {
@@ -472,6 +499,17 @@ mod binding_gen {
             "AiProposalDto",
             "AiCellVerdictDto",
         ] {
+            assert!(
+                contents.contains(needle),
+                "bindings.ts should contain `{needle}`, got:\n{contents}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_typescript_bindings_includes_mcp_status_command_and_dto() {
+        let contents = export_and_read();
+        for needle in ["mcpStatus", "McpStatusDto"] {
             assert!(
                 contents.contains(needle),
                 "bindings.ts should contain `{needle}`, got:\n{contents}"
