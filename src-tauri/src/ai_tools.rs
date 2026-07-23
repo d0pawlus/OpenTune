@@ -391,7 +391,9 @@ impl AiToolExecutor {
 /// Audit log filename inside `app_config_dir`, alongside
 /// `ai_settings::AI_SETTINGS_FILE`. Shared by every [`AiExecutorState::get_or_build`]
 /// caller so the assistant and the MCP server always write the same file.
-const AI_AUDIT_FILE: &str = "ai-audit.jsonl";
+/// `pub(crate)` (not just module-private): `ai_mcp.rs`'s tests read this
+/// same file back to assert on `channel: "mcp"` audit lines.
+pub(crate) const AI_AUDIT_FILE: &str = "ai-audit.jsonl";
 
 /// The app-wide shared executor slot (M7 slice 4 task 2, issue #29): ONE
 /// [`AiToolExecutor`] — one rate-limit budget, one proposal-id space — used

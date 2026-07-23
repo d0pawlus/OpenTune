@@ -3,6 +3,7 @@ pub mod ai_anthropic;
 pub mod ai_chat;
 pub mod ai_chat_commands;
 pub mod ai_commands;
+pub mod ai_mcp;
 pub mod ai_openai;
 pub mod ai_provider;
 pub mod ai_settings;
