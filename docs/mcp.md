@@ -14,7 +14,7 @@ The server is **advisory-only**: agents can read tune data and propose changes, 
 
 1. Launch OpenTune.
 2. Navigate to **Settings** → **AI**.
-3. Toggle **Enable MCP server** to on.
+3. Toggle **Expose tools over MCP (local)** to on.
 4. The server starts immediately and listens on `127.0.0.1:8765` (or your configured port).
 5. To stop, toggle it off or close OpenTune.
 
@@ -26,10 +26,10 @@ Every MCP request must include a bearer token in the `Authorization` header. The
 
 **To regenerate the token** (instantly invalidating the old one):
 1. Open **Settings** → **AI**.
-2. Click **Regenerate Token**.
+2. Click **Regenerate**.
 3. Update your client configuration with the new token.
 
-Tokens are stored in the app config directory (`mcp_token` file) and are not logged.
+Tokens are stored in the app config directory (`mcp-token` file) and are not logged.
 
 ## Security
 
@@ -67,7 +67,7 @@ claude mcp add --transport http opentune http://127.0.0.1:8765/mcp \
   --header "Authorization: Bearer TOKEN"
 ```
 
-Replace `TOKEN` with the token shown in **Settings** → **AI** → **MCP Token**.
+Replace `TOKEN` with the **Access token** shown under the **MCP server** section in **Settings** → **AI**.
 
 ## Connecting Claude Desktop
 
@@ -87,13 +87,13 @@ Claude Desktop does not support static headers in its UI config, so use the `npx
 }
 ```
 
-Replace `TOKEN` with your token. **Note:** Node.js (v18+) must be installed on your machine.
+Replace `TOKEN` with your token. **Note:** Node.js must be installed on your machine.
 
 The space in `Authorization:${AUTH_HEADER}` is deliberately placed in the environment variable to work around a platform-specific escaping issue in Claude Desktop.
 
 ## Configuration
 
-The MCP server port can be changed in **Settings** → **AI** → **MCP Port** (minimum 1024). The server automatically restarts on port changes or when the toggle is toggled.
+The MCP server port can be changed in **Settings** → **AI** under the **MCP server** heading via the **Port** field (minimum 1024). The server automatically restarts on port changes or when the toggle is toggled.
 
 ## Workflow example
 
@@ -121,4 +121,4 @@ Proposals are rate-limited to one per 1000 milliseconds (1 proposal per second).
 
 - [Architecture § 5.10]({{ '/architecture/' | relative_url }}) — AI layer design
 - [Architecture § 5.9]({{ '/architecture/' | relative_url }}) — Deterministic analysis tools
-- [Embedded assistant guide](#) — how the same tools power the in-app AI chat
+- [Architecture § 5.10]({{ '/architecture/' | relative_url }}#510-ai--the-ai-orchestration-layer-built-on-analysis) — Embedded assistant guide (how the same tools power the in-app AI chat)

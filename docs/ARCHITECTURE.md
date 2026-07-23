@@ -278,8 +278,8 @@ the **MCP server** is available: a loopback-only HTTP server at `127.0.0.1:8765`
 that exposes the same tool registry to external agents (Claude Code, Claude Desktop, or
 other MCP clients) via a per-install bearer token, at the advisory level — external
 agents can read and propose, but not write to the ECU. One shared `AiToolExecutor`
-backs both the embedded assistant and the MCP server (one rate-limit budget, one
-audit log channel). See [MCP documentation]({{ '/mcp/' | relative_url }}). Full design:
+backs both the embedded assistant and the MCP server (one rate-limit budget and one
+shared audit log file, with each call tagged by its channel (`assistant` / `mcp`)). See [MCP documentation]({{ '/mcp/' | relative_url }}). Full design:
 [AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
 
 ## 6. Frontend (React + TS) modules
