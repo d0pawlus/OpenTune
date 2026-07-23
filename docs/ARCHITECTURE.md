@@ -273,8 +273,13 @@ As of M7 slice 3, the embedded assistant is complete: the chat loop
 advisory level, with no AI write path — proposals surface in the **streaming panel**
 (§6.5) for user review and manual apply via the same `set_cells` path as AutoTune.
 The provider layer (`ai_provider.rs`, `ai_settings.rs`) and IPC bridge
-(`ai_commands.rs`/`AiStreamEvent`) enable live model conversation. The MCP server
-remains for M7 slice 4. Full design:
+(`ai_commands.rs`/`AiStreamEvent`) enable live model conversation. As of M7 slice 4,
+the **MCP server** is available: a loopback-only HTTP server at `127.0.0.1:8765` (default)
+that exposes the same tool registry to external agents (Claude Code, Claude Desktop, or
+other MCP clients) via a per-install bearer token, at the advisory level — external
+agents can read and propose, but not write to the ECU. One shared `AiToolExecutor`
+backs both the embedded assistant and the MCP server (one rate-limit budget, one
+audit log channel). See [MCP documentation]({{ '/mcp/' | relative_url }}). Full design:
 [AI tuning & analysis design](superpowers/specs/2026-06-21-ai-tuning-and-analysis-design.md).
 
 ## 6. Frontend (React + TS) modules
