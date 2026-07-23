@@ -330,10 +330,10 @@ mod tests {
         let old_json = r#"{"enabled":true,"provider":"anthropic","model":"claude-sonnet-5"}"#;
         std::fs::write(dir.join(AI_SETTINGS_FILE), old_json).expect("write old shape");
         let loaded = load_ai_settings_in(&dir).expect("load old shape");
-        assert_eq!(loaded.enabled, true);
+        assert!(loaded.enabled);
         assert_eq!(loaded.provider, "anthropic");
         assert_eq!(loaded.model, "claude-sonnet-5");
-        assert_eq!(loaded.mcp_enabled, false); // default
+        assert!(!loaded.mcp_enabled); // default
         assert_eq!(loaded.mcp_port, DEFAULT_MCP_PORT); // default
     }
 
@@ -349,7 +349,7 @@ mod tests {
         };
         save_ai_settings_in(&dir, &s).expect("save");
         let back = load_ai_settings_in(&dir).expect("load");
-        assert_eq!(back.mcp_enabled, true);
+        assert!(back.mcp_enabled);
         assert_eq!(back.mcp_port, 9000);
     }
 
