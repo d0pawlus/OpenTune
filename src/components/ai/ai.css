@@ -48,8 +48,46 @@
 }
 
 .ai-saved,
-.ai-key-status {
+.ai-key-status,
+.ai-mcp-status,
+.ai-mcp-copied,
+.ai-mcp-regenerated {
   margin: 0;
+}
+
+.ai-mcp {
+  margin-top: calc(var(--space-md) * 1.5);
+}
+
+.ai-mcp h3 {
+  margin: 0.7rem 0 0.3rem;
+}
+
+.ai-mcp-token-label {
+  font-size: 0.85rem;
+  font-weight: 550;
+}
+
+.ai-mcp-token-value {
+  font-family: monospace;
+  opacity: 0.85;
+}
+
+.ai-mcp-hint {
+  margin: var(--space-md) 0;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.ai-mcp-hint code {
+  display: inline-block;
+  margin-top: 0.25rem;
+  padding: 0.3rem 0.5rem;
+  overflow-x: auto;
+  font-family: monospace;
+  white-space: pre;
+  background: color-mix(in oklch, var(--color-text) 6%, transparent);
+  border-radius: 0.3rem;
 }
 
 .ai-chat {
