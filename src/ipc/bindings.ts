@@ -43,6 +43,12 @@ export const commands = {
 	 *  needs to copy it into their MCP client configuration. The token is never
 	 *  persisted in the settings JSON, never logged, and only returned via this
 	 *  command on explicit request.
+	 * 
+	 *  A regenerate that finds the MCP server currently running restarts it with
+	 *  the fresh token (`ai_mcp_server::regenerate_mcp_token`) so the old,
+	 *  possibly-leaked token stops working immediately instead of staying valid
+	 *  until some later, unrelated reconcile or app restart — mirrors how
+	 *  `set_ai_settings` is a thin adapter over `reconcile_mcp_server`.
 	 */
 	mcpTokenInfo: (regenerate: boolean) => typedError<string, string>(__TAURI_INVOKE("mcp_token_info", { regenerate })),
 	/**

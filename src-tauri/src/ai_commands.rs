@@ -9,8 +9,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::ai_settings::{
-    load_ai_settings_in, load_or_create_mcp_token_in, regenerate_mcp_token_in, save_ai_settings_in,
-    validate_provider, KeyStore,
+    load_ai_settings_in, load_or_create_mcp_token_in, save_ai_settings_in, validate_provider,
+    KeyStore,
 };
 use crate::dto::AiSettingsDto;
 
@@ -121,12 +121,30 @@ pub async fn ai_key_present(
 /// needs to copy it into their MCP client configuration. The token is never
 /// persisted in the settings JSON, never logged, and only returned via this
 /// command on explicit request.
+///
+/// A regenerate that finds the MCP server currently running restarts it with
+/// the fresh token (`ai_mcp_server::regenerate_mcp_token`) so the old,
+/// possibly-leaked token stops working immediately instead of staying valid
+/// until some later, unrelated reconcile or app restart — mirrors how
+/// `set_ai_settings` is a thin adapter over `reconcile_mcp_server`.
 #[tauri::command]
 #[specta::specta]
-pub async fn mcp_token_info(app: tauri::AppHandle, regenerate: bool) -> Result<String, String> {
+pub async fn mcp_token_info(
+    app: tauri::AppHandle,
+    regenerate: bool,
+    mcp_state: State<'_, crate::ai_mcp_server::McpServerState>,
+    executor_state: State<'_, Arc<crate::ai_tools::AiExecutorState>>,
+    owner: State<'_, crate::owner::OwnerHandle>,
+) -> Result<String, String> {
     let dir = config_dir(&app)?;
     if regenerate {
-        regenerate_mcp_token_in(&dir)
+        crate::ai_mcp_server::regenerate_mcp_token(
+            &mcp_state,
+            executor_state.inner().clone(),
+            owner.inner().clone(),
+            dir,
+        )
+        .await
     } else {
         load_or_create_mcp_token_in(&dir)
     }

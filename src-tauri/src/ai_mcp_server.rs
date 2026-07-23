@@ -15,6 +15,20 @@
 //! - rmcp's Host-header validation stays on ([`build_router`] pins
 //!   `allowed_hosts` to loopback forms explicitly, rather than relying on
 //!   the library default silently doing the same thing).
+//! - rmcp's Origin validation is turned ON explicitly ([`build_router`] sets
+//!   `allowed_origins` to loopback forms too) — the library's own default is
+//!   an *empty* list, which SKIPS Origin checking entirely
+//!   (`validate_origin_header` in rmcp's vendored `tower.rs` returns `Ok`
+//!   immediately when `allowed_origins.is_empty()`). The loopback entries
+//!   below deliberately omit a port (`"http://127.0.0.1"`, not
+//!   `"http://127.0.0.1:8765"`): rmcp's `origin_is_allowed` only compares the
+//!   port when the *allow-list entry* itself specifies one
+//!   (`a_port.is_none() || a_port == o_port`), so a portless entry matches
+//!   every port for that host — required here since `port == 0` (OS-assigned,
+//!   used by every test and by a fresh install before the user's chosen port
+//!   is known) makes the real bound port unpredictable ahead of time.
+//!   Requests with no `Origin` header (every real MCP client, since `Origin`
+//!   is a browser-only header) still pass unconditionally either way.
 //! - The bearer token is never logged: [`start_mcp_server`]'s only error
 //!   paths name the port, never the token, and the token is wrapped in an
 //!   `Arc<str>` that only the middleware closure ever reads.
@@ -73,7 +87,9 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 
 use crate::ai_commands::config_dir;
 use crate::ai_mcp::OpenTuneMcp;
-use crate::ai_settings::{load_ai_settings_in, load_or_create_mcp_token_in};
+use crate::ai_settings::{
+    load_ai_settings_in, load_or_create_mcp_token_in, regenerate_mcp_token_in,
+};
 use crate::ai_tools::AiExecutorState;
 use crate::dto::McpStatusDto;
 use crate::owner::OwnerHandle;
@@ -143,7 +159,13 @@ fn build_router(
             // Explicit, not just relying on the library default: pins the
             // DNS-rebinding-prevention Host check to loopback forms so a
             // future rmcp default change can't silently widen it here.
-            .with_allowed_hosts(["localhost", "127.0.0.1", "::1"]),
+            .with_allowed_hosts(["localhost", "127.0.0.1", "::1"])
+            // The library default for `allowed_origins` is an EMPTY list,
+            // which skips Origin checking entirely — unlike `allowed_hosts`,
+            // leaving this unset would silently turn Origin validation OFF.
+            // Portless entries so any bound port matches (see the module
+            // doc's "Security invariants" section for why).
+            .with_allowed_origins(["http://localhost", "http://127.0.0.1", "http://[::1]"]),
     );
 
     Router::new()
@@ -325,6 +347,39 @@ pub async fn reconcile_mcp_server(
         .await?;
     }
     Ok(())
+}
+
+/// Regenerate the per-install MCP bearer token in `config_dir` and, if a
+/// server is currently running on `state`, restart it on the *same* port so
+/// the fresh token takes effect immediately. Without this, a running server
+/// keeps accepting the old (possibly leaked) token forever — and the newly
+/// issued token 401s — until some unrelated later reconcile or app restart,
+/// the opposite of what "regenerate" is meant to accomplish. A no-op restart
+/// (server left stopped) when nothing is running: regenerating the token
+/// must not have the side effect of starting a server the user never asked
+/// to enable. This is the core function `ai_commands::mcp_token_info` calls
+/// for `regenerate: true` — extracted here (mirrors [`reconcile_mcp_server`])
+/// so this module's own loopback-HTTP test helpers can drive it directly.
+pub(crate) async fn regenerate_mcp_token(
+    state: &McpServerState,
+    executor_state: Arc<AiExecutorState>,
+    owner: OwnerHandle,
+    config_dir: PathBuf,
+) -> Result<String, String> {
+    let token = regenerate_mcp_token_in(&config_dir)?;
+    if let Some(port) = state.local_addr().map(|addr| addr.port()) {
+        stop_mcp_server(state).await;
+        start_mcp_server(
+            state,
+            executor_state,
+            owner,
+            config_dir,
+            token.clone(),
+            port,
+        )
+        .await?;
+    }
+    Ok(token)
 }
 
 /// Start the server at app boot if MCP was already enabled in a previous
@@ -722,5 +777,227 @@ mod tests {
         );
 
         stop_mcp_server(&state_a).await;
+    }
+
+    // ── regenerate_mcp_token restarts a running server ──────────────────
+
+    #[tokio::test]
+    async fn regenerating_the_token_while_running_restarts_it_with_the_fresh_token() {
+        let dir = temp_config_dir("regenerate-running");
+        let old_token = load_or_create_mcp_token_in(&dir).expect("token A written to disk");
+        let state = McpServerState::default();
+        start_mcp_server(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir.clone(),
+            old_token.clone(),
+            0,
+        )
+        .await
+        .expect("server starts on an OS-assigned port with token A");
+        let port_before = state.local_addr().expect("running").port();
+
+        let new_token = regenerate_mcp_token(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir.clone(),
+        )
+        .await
+        .expect("regenerate succeeds while the server is running");
+        assert_ne!(new_token, old_token, "a fresh token must be issued");
+
+        let port_after = state
+            .local_addr()
+            .expect("still running after the restart")
+            .port();
+        assert_eq!(port_before, port_after, "restart reuses the same port");
+
+        let token_on_disk =
+            load_or_create_mcp_token_in(&dir).expect("token file readable after regenerate");
+        assert_eq!(
+            token_on_disk, new_token,
+            "regenerate returns the same token it wrote to disk"
+        );
+
+        let url = format!("http://127.0.0.1:{port_after}/mcp");
+        let client = crate::ai_provider::http_client();
+
+        let old_token_response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {old_token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(INITIALIZE_BODY)
+            .send()
+            .await
+            .expect("request reaches the restarted server");
+        assert_eq!(
+            old_token_response.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "the old (regenerated-away) token must no longer work"
+        );
+
+        let new_token_response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {new_token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(INITIALIZE_BODY)
+            .send()
+            .await
+            .expect("request reaches the restarted server");
+        assert_eq!(
+            new_token_response.status(),
+            200,
+            "the fresh token must work against the restarted server"
+        );
+
+        stop_mcp_server(&state).await;
+    }
+
+    #[tokio::test]
+    async fn regenerating_the_token_while_not_running_does_not_start_it() {
+        let dir = temp_config_dir("regenerate-not-running");
+        let old_token = load_or_create_mcp_token_in(&dir).expect("token A written to disk");
+        let state = McpServerState::default();
+
+        let new_token = regenerate_mcp_token(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir.clone(),
+        )
+        .await
+        .expect("regenerate succeeds even when nothing is running");
+
+        assert_ne!(new_token, old_token, "a fresh token must be issued");
+        assert!(
+            state.local_addr().is_none(),
+            "regenerate must not start a server that was not already running"
+        );
+
+        let token_on_disk =
+            load_or_create_mcp_token_in(&dir).expect("token file readable after regenerate");
+        assert_eq!(
+            token_on_disk, new_token,
+            "the token file was actually rewritten"
+        );
+    }
+
+    // ── Origin validation ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn initialize_without_an_origin_header_still_succeeds() {
+        let dir = temp_config_dir("origin-absent");
+        let state = McpServerState::default();
+        let token = "the-real-token";
+        start_mcp_server(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir,
+            token.into(),
+            0,
+        )
+        .await
+        .expect("server starts on an OS-assigned port");
+        let port = state.local_addr().expect("running").port();
+
+        // No `Origin` header at all: real MCP clients never send one (it is
+        // a browser-only header) and this must keep working exactly as it
+        // did before Origin validation was turned on.
+        let response = crate::ai_provider::http_client()
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(INITIALIZE_BODY)
+            .send()
+            .await
+            .expect("request reaches the server");
+
+        assert_eq!(response.status(), 200);
+
+        stop_mcp_server(&state).await;
+    }
+
+    #[tokio::test]
+    async fn initialize_with_a_disallowed_origin_is_rejected() {
+        let dir = temp_config_dir("origin-disallowed");
+        let state = McpServerState::default();
+        let token = "the-real-token";
+        start_mcp_server(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir,
+            token.into(),
+            0,
+        )
+        .await
+        .expect("server starts on an OS-assigned port");
+        let port = state.local_addr().expect("running").port();
+
+        let response = crate::ai_provider::http_client()
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Origin", "http://evil.example.com")
+            .body(INITIALIZE_BODY)
+            .send()
+            .await
+            .expect("request reaches the server");
+
+        assert!(
+            response.status().is_client_error(),
+            "a disallowed Origin must be rejected with a 4xx, got: {}",
+            response.status()
+        );
+
+        stop_mcp_server(&state).await;
+    }
+
+    #[tokio::test]
+    async fn initialize_with_an_allowed_loopback_origin_on_the_bound_port_succeeds() {
+        // Backs the module doc's claim that the portless allow-list entries
+        // (`"http://127.0.0.1"`, not `"http://127.0.0.1:<port>"`) match
+        // every port for that host — required since the real bound port is
+        // only known after `bind`, here and for a fresh install alike.
+        let dir = temp_config_dir("origin-allowed");
+        let state = McpServerState::default();
+        let token = "the-real-token";
+        start_mcp_server(
+            &state,
+            Arc::new(AiExecutorState::default()),
+            bare_owner(),
+            dir,
+            token.into(),
+            0,
+        )
+        .await
+        .expect("server starts on an OS-assigned port");
+        let port = state.local_addr().expect("running").port();
+
+        let response = crate::ai_provider::http_client()
+            .post(format!("http://127.0.0.1:{port}/mcp"))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Origin", format!("http://127.0.0.1:{port}"))
+            .body(INITIALIZE_BODY)
+            .send()
+            .await
+            .expect("request reaches the server");
+
+        assert_eq!(
+            response.status(),
+            200,
+            "a loopback Origin on the actual bound port must be allowed"
+        );
+
+        stop_mcp_server(&state).await;
     }
 }
