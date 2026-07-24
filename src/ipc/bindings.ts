@@ -24,10 +24,39 @@ export const commands = {
 	 */
 	simulateLinkDrop: () => typedError<null, string>(__TAURI_INVOKE("simulate_link_drop")),
 	getAiSettings: () => typedError<AiSettingsDto, string>(__TAURI_INVOKE("get_ai_settings")),
+	/**
+	 *  Persist settings, then reconcile the MCP server's running state against
+	 *  the freshly saved `mcpEnabled`/`mcpPort` (M7 slice 4 task 4) — covers
+	 *  enable, disable, and a port change while already enabled. A reconcile
+	 *  failure (most commonly: the newly configured port is already taken)
+	 *  surfaces as this command's `Err`, which the frontend shows via its
+	 *  existing alert; the settings themselves are already saved by that point,
+	 *  so the user's other choices are not lost.
+	 */
 	setAiSettings: (settings: AiSettingsDto) => typedError<null, string>(__TAURI_INVOKE("set_ai_settings", { settings })),
 	setAiKey: (provider: string, key: string) => typedError<null, string>(__TAURI_INVOKE("set_ai_key", { provider, key })),
 	clearAiKey: (provider: string) => typedError<null, string>(__TAURI_INVOKE("clear_ai_key", { provider })),
 	aiKeyPresent: (provider: string) => typedError<boolean, string>(__TAURI_INVOKE("ai_key_present", { provider })),
+	/**
+	 *  Returns the MCP per-install token, creating it if needed (or regenerating
+	 *  when requested). This is the ONE place the token crosses IPC — the user
+	 *  needs to copy it into their MCP client configuration. The token is never
+	 *  persisted in the settings JSON, never logged, and only returned via this
+	 *  command on explicit request.
+	 * 
+	 *  A regenerate that finds the MCP server currently running restarts it with
+	 *  the fresh token (`ai_mcp_server::regenerate_mcp_token`) so the old,
+	 *  possibly-leaked token stops working immediately instead of staying valid
+	 *  until some later, unrelated reconcile or app restart — mirrors how
+	 *  `set_ai_settings` is a thin adapter over `reconcile_mcp_server`.
+	 */
+	mcpTokenInfo: (regenerate: boolean) => typedError<string, string>(__TAURI_INVOKE("mcp_token_info", { regenerate })),
+	/**
+	 *  Current server status for the Settings UI (task 5). `port` is the real
+	 *  bound port when running (meaningful even when the configured port was
+	 *  `0`, e.g. in tests) and `0` when stopped.
+	 */
+	mcpStatus: () => typedError<McpStatusDto, string>(__TAURI_INVOKE("mcp_status")),
 	/**
 	 *  Validate, then fire-and-forget one user turn: spawns a tokio task
 	 *  running [`run_chat_turn`] and returns immediately — progress streams to
@@ -47,15 +76,20 @@ export const commands = {
 	/**
 	 *  Clear the conversation and drop any recorded proposals. Errors while a
 	 *  turn is running rather than racing `ai_send`'s task for the history
-	 *  slot. Proposals are not stored in `AiChatState` directly — they live in
-	 *  the executor's in-memory log — so clearing them means replacing the
-	 *  executor itself with `None`; `ai_send` lazily rebuilds one on the next
-	 *  turn (see `AiChatState::executor`'s doc comment).
+	 *  slot. Proposals are not stored in `AiChatState` — they live in the
+	 *  shared `AiExecutorState`'s executor's in-memory log (M7 slice 4 task 2:
+	 *  that executor is now app-wide, shared with the MCP server) — so clearing
+	 *  them means replacing the executor itself with `None`. That drops ANY
+	 *  proposal recorded so far, MCP-made ones included, not just this chat
+	 *  session's; the next call on either channel — `ai_send` or an MCP tool
+	 *  call — lazily rebuilds a fresh executor, whose proposal ids restart at 1.
 	 */
 	aiReset: () => typedError<null, string>(__TAURI_INVOKE("ai_reset")),
 	/**
-	 *  The proposals recorded so far this session (empty before the first
-	 *  `ai_send`, since the executor is lazily created).
+	 *  The proposals recorded so far this session (empty before the first tool
+	 *  call on either channel, since the shared executor is lazily created) —
+	 *  assistant- and MCP-made proposals both, since they share one executor
+	 *  and one proposal-id space (M7 slice 4 task 2).
 	 */
 	aiProposals: () => typedError<AiProposalDto[], string>(__TAURI_INVOKE("ai_proposals")),
 	/**
@@ -217,6 +251,8 @@ export type AiSettingsDto = {
 	enabled: boolean,
 	provider: string,
 	model: string,
+	mcpEnabled: boolean,
+	mcpPort: number,
 };
 
 /**
@@ -609,6 +645,16 @@ export type MarkerDto = {
 	record_index: number,
 	t_ms: number | null,
 	text: string,
+};
+
+/**
+ *  The MCP server's current lifecycle status (M7 slice 4 task 4), served by
+ *  `ai_mcp_server::mcp_status` for the Settings UI's status line. `port` is
+ *  the real bound port while running (`0` while stopped).
+ */
+export type McpStatusDto = {
+	running: boolean,
+	port: number,
 };
 
 /**  A top-level menu. */

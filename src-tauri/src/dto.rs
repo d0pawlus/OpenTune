@@ -822,6 +822,8 @@ pub struct AiSettingsDto {
     pub enabled: bool,
     pub provider: String,
     pub model: String,
+    pub mcp_enabled: bool,
+    pub mcp_port: u16,
 }
 
 impl From<AiSettings> for AiSettingsDto {
@@ -830,6 +832,8 @@ impl From<AiSettings> for AiSettingsDto {
             enabled: s.enabled,
             provider: s.provider,
             model: s.model,
+            mcp_enabled: s.mcp_enabled,
+            mcp_port: s.mcp_port,
         }
     }
 }
@@ -840,8 +844,20 @@ impl From<AiSettingsDto> for AiSettings {
             enabled: s.enabled,
             provider: s.provider,
             model: s.model,
+            mcp_enabled: s.mcp_enabled,
+            mcp_port: s.mcp_port,
         }
     }
+}
+
+/// The MCP server's current lifecycle status (M7 slice 4 task 4), served by
+/// `ai_mcp_server::mcp_status` for the Settings UI's status line. `port` is
+/// the real bound port while running (`0` while stopped).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct McpStatusDto {
+    pub running: bool,
+    pub port: u16,
 }
 
 // ── M7 slice 3 task 4: assistant proposal DTOs ────────────────────────────

@@ -22,6 +22,8 @@ ECUs.
   highlights and explicit limitations.
 - [Architecture]({{ '/architecture/' | relative_url }}) — component boundaries
   and data flow.
+- [MCP server]({{ '/mcp/' | relative_url }}) — connect external AI agents
+  (Claude Code, Claude Desktop).
 - [ECU protocol]({{ '/protocol/' | relative_url }}) and
   [INI format]({{ '/ini-format/' | relative_url }}) — technical references.
 - [Roadmap]({{ '/roadmap/' | relative_url }}) and
